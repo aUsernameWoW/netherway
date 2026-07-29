@@ -43,7 +43,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.xtcpi
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 68 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 87 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -61,13 +61,30 @@ java -cp mod/build/classes:mod/build/testres \
 Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者唯一的耦合点：
 
 ```json
-{"event":"starting","port":63128}
+{"event":"starting","backend":"frp-xtcp","port":63128}
 {"event":"ready","port":63128,"elapsedMs":1792,"rttMs":31,"version":"1.7.10","online":1}
 {"event":"failed","reason":"打洞超时"}
 ```
 
 字段定义在 Go 侧 `cmd/xtcpinmc/modbridge.go` 的 `event` 结构与 Java 侧
-`AgentEvent` 中，**改动必须两边同步**。
+`AgentEvent` 中，**改动必须两边同步**。同样必须两边同步的还有各 backend 的
+参数键名：Go 侧实现包的常量（如 `internal/backend/frpxtcp`）↔ Java 侧
+`Credentials` 的对应工厂方法（如 `Credentials.frpXtcp`）。
+
+### backend 抽象
+
+具体隧道方案经 `internal/backend` 的接口抽象：一个 backend 只承诺「在本机
+指定地址开一个 TCP 端口，通向 MC 服务器」，就绪与否由调用方用 SLP 探测判定。
+`tunnel` 子命令里选端口、起 backend、探测、输出 JSON 四件事都与方案无关。
+
+新增一种隧道方案 = 一个 Go 实现包 + `cmd/xtcpinmc/backends.go` 里注册一行 +
+Java 侧 `Credentials` 加一个工厂方法（可选，服务端也可直接构造参数表）。
+core 与平台适配层不解释参数，无需改动。约束：**backend 实现不得自带中转
+兜底**（否则就绪探测分不清打没打通）；**无法识别的参数键必须忽略**（服务端
+可能比 agent 先更新）。
+
+凭证 v2 起是「backendId + 参数表」，由服务端决定用哪个 backend；v1
+（frp 专用布局）仍可解码，会被翻译成等价的 frp-xtcp 参数表。
 
 ### Go agent 的三种运行模式
 
@@ -75,11 +92,12 @@ Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者�
 |---|---|---|
 | `serve` | 服务器宿主机 | 注册 xtcp + stcp 两个代理 |
 | `join` | 独立运行的玩家侧 | 带 stcp 兜底，并做局域网广播 |
-| `tunnel` | 供 mod 调用 | **纯 xtcp 无兜底**，超时即退出，stdout 输出 JSON |
+| `tunnel` | 供 mod 调用 | **经 backend 抽象、无兜底**，超时即退出，stdout 输出 JSON |
 
-`tunnel` 刻意不带 stcp 兜底：mod 场景下玩家此刻已通过既有中转隧道连着服务器，
-打洞失败就该留在那条连接上。更重要的是，有了兜底通道后「隧道可用」的探测会
-永远成功，反而分不清到底有没有打通。
+`tunnel` 刻意不带兜底：mod 场景下玩家此刻已通过既有中转隧道连着服务器，
+建链失败就该留在那条连接上。更重要的是，有了兜底通道后「隧道可用」的探测会
+永远成功，反而分不清到底有没有打通——这条已上升为 backend 接口的契约。
+`serve`/`join` 是独立运行的 frp 工具，不走 backend 抽象。
 
 ### 就绪判断靠主动探测
 
@@ -159,4 +177,4 @@ mod 加载器的序列化机制。Forge 在 1.13 之后把网络 API 整个重�
 
 mod 方案的核心安全价值在于：**凭证由服务端在玩家登录后下发**，而非随客户端分发。
 能拿到密钥的必然是通过了服务器既有正版验证/白名单的玩家，因此不需要另建鉴权系统。
-`Credentials.toString()` 刻意不输出 token 与 secretKey。
+`Credentials.toString()` 刻意不输出任何参数值（token 与密钥都在其中），只列键名。

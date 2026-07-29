@@ -28,7 +28,9 @@ platform/sponge/           仅服务端（Sponge 没有客户端）
 就要重写一遍编解码；而裸字节在所有加载器所有版本上都一样，适配层只需负责搬运
 `byte[]`。凭证走的是 Minecraft 原生的自定义频道，这个机制 Bukkit/Spigot/Paper
 插件、Sponge 插件、Forge/Fabric mod 甚至 BungeeCord/Velocity 代理都能收发，
-所以服务端那半几乎能覆盖所有平台。
+所以服务端那半几乎能覆盖所有平台。凭证自 v2 起是「backend 标识 + 参数表」，
+core 不解释参数、只原样转交 agent——将来把 frp 换成别的隧道方案，
+core 与适配层同样零改动。
 
 **core 零第三方依赖**，连 JSON 解析都是手写的（`Json`，约 150 行）。Minecraft
 自带 Gson，但依赖它就等于依赖 Minecraft；而 1.7.10 的类路径上挤着几百个 mod，
@@ -42,7 +44,7 @@ platform/sponge/           仅服务端（Sponge 没有客户端）
 | `BinaryStore` | 从 jar 释放二进制，文件名带内容摘要 |
 | `AgentProcess` | 启动 agent 子进程，读状态、管生命周期 |
 | `AgentEvent` / `Json` | 解析 agent 的逐行 JSON 状态输出 |
-| `Credentials` | 凭证结构与跨版本安全的编解码 |
+| `Credentials` | 凭证（backend 标识 + 参数表）与跨版本安全的编解码 |
 | `UpgradeController` | 状态机：何时升级、何时放弃 |
 | `ClientBridge` | 唯一的平台适配接口 |
 | `Timings` | 可调时间参数，默认值来自实测 |
@@ -55,16 +57,18 @@ platform/sponge/           仅服务端（Sponge 没有客户端）
 一次「未知子命令」的问题。现在保留最近 8 行并附在失败原因里。
 
 **必须识别重复下发的凭证。** 切换连接后玩家会重新登录一次，服务端会再下发一次
-凭证；不加判断就会陷入「升级→重连→再升级」的死循环。`UpgradeController` 按房间名
-去重，且本次会话内放弃过的房间不再重试。
+凭证；不加判断就会陷入「升级→重连→再升级」的死循环。`UpgradeController` 按
+`Credentials.dedupKey()`（backend + 房间名）去重，且本次会话内放弃过的房间
+不再重试。
 
 **连接切换必须回到游戏主线程。** agent 的状态事件到达时在后台线程，在那里动
 网络管理器会引发难以复现的崩溃，所以走 `ClientBridge.runOnGameThread`。
 
 ## 验证状态
 
-`SelfTest` 共 68 项，覆盖平台识别、JSON 转义、事件解析容错、凭证往返（含中文）、
-命令行构造、时间参数回填、状态机去重。刻意不依赖 JUnit，一条 javac + java 就能跑：
+`SelfTest` 共 87 项，覆盖平台识别、JSON 转义、事件解析容错、凭证往返（含中文与
+任意 backend）、v1 兼容与前向兼容、命令行构造、时间参数回填、状态机去重。
+刻意不依赖 JUnit，一条 javac + java 就能跑：
 
 ```bash
 JAVA8=/path/to/jdk8
@@ -72,8 +76,8 @@ $JAVA8/bin/javac -encoding UTF-8 -d build/classes $(find core/src -name "*.java"
 $JAVA8/bin/java -cp build/classes cn.ripplecraft.xtcpinmc.core.SelfTest
 ```
 
-**兼容性已实测**：用 Java 8 编译的字节码在 **Java 8 / 17 / 21 / 25（GraalVM）**
-上均 68 项全过。这正是 GTNH 用 lwjgl3ify 让 1.7.10 跑在现代 JVM 上的场景。
+**兼容性已实测**：用 Java 8 编译的字节码在 **Java 8 / 17 / 21 / 25**
+上均 87 项全过。这正是 GTNH 用 lwjgl3ify 让 1.7.10 跑在现代 JVM 上的场景。
 代码只用 `ProcessBuilder`、`java.nio.file`、`java.net` 这类公共稳定 API，
 不碰 `sun.misc.*` 和 JDK 内部反射（Java 16+ 的强封装会直接拒绝）。
 

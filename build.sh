@@ -16,7 +16,9 @@ PKG=github.com/ripplecraft/xtcpinmc/internal/config
 SERVER_ADDR="${SERVER_ADDR:-203.0.113.10}"
 SERVER_PORT="${SERVER_PORT:-7000}"
 ROOM="${ROOM:-gtnh}"
-STUN="${STUN:-stun.miwifi.com:3478}"
+# 逗号分隔的候选列表，与 internal/config 的默认一致：单台 STUN 会间歇性
+# 超时，agent 启动前会并行探测并选用当场验证过的一台。
+STUN="${STUN:-stun.miwifi.com:3478,stun.easyvoip.com:3478,stun.qq.com:3478}"
 MOTD="${MOTD:-涟漪GT:New Horizons}"
 
 : "${TOKEN:?请设置 TOKEN（frps 的 auth.token）}"

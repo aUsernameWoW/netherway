@@ -30,8 +30,12 @@ public final class SelfTest {
         testAgentEventParsing();
         testAgentEventTolerance();
         testCredentialsRoundTrip();
+        testCredentialsGenericBackend();
+        testCredentialsV1Compat();
+        testCredentialsForwardCompat();
         testCredentialsValidation();
         testCredentialsHidesSecrets();
+        testCredentialsDedupKey();
         testBuildCommand();
         testTimingsNormalization();
         testUpgradeGivesUpWithoutBinary();
@@ -160,33 +164,111 @@ public final class SelfTest {
     // ---------- Credentials ----------
 
     private static void testCredentialsRoundTrip() throws Exception {
-        Credentials orig = new Credentials("203.0.113.10", 7000, "tok3n",
+        Credentials orig = Credentials.frpXtcp("203.0.113.10", 7000, "tok3n",
                 "stun.miwifi.com:3478", "gtnh", "s3cr3t", 15000);
         Credentials back = Credentials.decode(orig.encode());
 
-        check("往返 serverAddr", back.serverAddr().equals(orig.serverAddr()));
-        check("往返 serverPort", back.serverPort() == 7000);
-        check("往返 token", back.token().equals("tok3n"));
-        check("往返 stun", back.stunServer().equals("stun.miwifi.com:3478"));
-        check("往返 room", back.roomName().equals("gtnh"));
-        check("往返 secret", back.secretKey().equals("s3cr3t"));
+        check("往返 backend", Credentials.BACKEND_FRP_XTCP.equals(back.backendId()));
+        check("往返 server 参数", "203.0.113.10".equals(back.param("server")));
+        check("往返 serverPort 参数", "7000".equals(back.param("serverPort")));
+        check("往返 token 参数", "tok3n".equals(back.param("token")));
+        check("往返 stun 参数", "stun.miwifi.com:3478".equals(back.param("stun")));
+        check("往返 room", back.room().equals("gtnh"));
+        check("往返 secret 参数", "s3cr3t".equals(back.param("secret")));
         check("往返 timeout", back.punchTimeoutMs() == 15000);
+        check("参数保持下发顺序",
+                new ArrayList<String>(back.params().keySet()).get(0).equals("server"));
 
         // 中文和特殊字符要能安全通过（writeUTF 是 modified UTF-8）
-        Credentials cn = new Credentials("a.example.com", 1, "令牌", "s:1", "涟漪GT", "密钥#1", 0);
+        Credentials cn = Credentials.frpXtcp("a.example.com", 1, "令牌", "s:1",
+                "涟漪GT", "密钥#1", 0);
         Credentials cnBack = Credentials.decode(cn.encode());
-        check("往返中文房间名", cnBack.roomName().equals("涟漪GT"));
-        check("往返中文密钥", cnBack.secretKey().equals("密钥#1"));
+        check("往返中文房间名", cnBack.room().equals("涟漪GT"));
+        check("往返中文密钥", "密钥#1".equals(cnBack.param("secret")));
+    }
+
+    private static void testCredentialsGenericBackend() throws Exception {
+        // 核心承诺：新增隧道方案时 core 无需任何改动。
+        // 用一个 core 从未听说过的 backend 走一遍编解码验证这一点。
+        java.util.Map<String, String> p = new java.util.LinkedHashMap<String, String>();
+        p.put(Credentials.PARAM_ROOM, "gtnh");
+        p.put("endpoint", "relay.example.com:443");
+        p.put("auth", "k3y");
+        Credentials back = Credentials.decode(new Credentials("hysteria2", p, 8000).encode());
+        check("未知 backend 原样往返", back.backendId().equals("hysteria2"));
+        check("未知参数原样往返", "relay.example.com:443".equals(back.param("endpoint")));
+        check("未知 backend 也有房间名", back.room().equals("gtnh"));
+    }
+
+    private static void testCredentialsV1Compat() throws Exception {
+        // 老服务端下发的 v1（frp 专用布局）必须仍能解出来
+        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+        java.io.DataOutputStream out = new java.io.DataOutputStream(buf);
+        out.writeByte(1);
+        out.writeUTF("1.2.3.4");
+        out.writeInt(7000);
+        out.writeUTF("tok");
+        out.writeUTF("stun:1");
+        out.writeUTF("gtnh");
+        out.writeUTF("sec");
+        out.writeInt(3000);
+
+        Credentials v1 = Credentials.decode(buf.toByteArray());
+        check("v1 识别为 frp-xtcp", Credentials.BACKEND_FRP_XTCP.equals(v1.backendId()));
+        check("v1 字段映射到参数", "1.2.3.4".equals(v1.param("server"))
+                && "sec".equals(v1.param("secret")));
+        check("v1 房间名", v1.room().equals("gtnh"));
+        check("v1 超时", v1.punchTimeoutMs() == 3000);
+    }
+
+    private static void testCredentialsForwardCompat() throws Exception {
+        // 未来版本在尾部追加字段时，老客户端读已知前缀、忽略其余
+        byte[] v2 = Credentials.frpXtcp("h", 1, "t", "s:1", "gtnh", "k", 0).encode();
+        byte[] v3 = new byte[v2.length + 5];
+        System.arraycopy(v2, 0, v3, 0, v2.length);
+        v3[0] = 3;
+        Credentials fut = Credentials.decode(v3);
+        check("未来版本读已知前缀", fut.room().equals("gtnh"));
+        check("未来版本参数完整", "t".equals(fut.param("token")));
     }
 
     private static void testCredentialsValidation() {
         boolean threw = false;
         try {
-            new Credentials("", 7000, "t", "s", "r", "k", 0);
+            Credentials.frpXtcp("", 7000, "t", "s", "r", "k", 0);
         } catch (IllegalArgumentException e) {
             threw = true;
         }
         check("空 serverAddr 应拒绝", threw);
+
+        boolean threwBackend = false;
+        try {
+            new Credentials("", new java.util.LinkedHashMap<String, String>(), 0);
+        } catch (IllegalArgumentException e) {
+            threwBackend = true;
+        }
+        check("空 backendId 应拒绝", threwBackend);
+
+        boolean threwRoom = false;
+        try {
+            java.util.Map<String, String> p = new java.util.LinkedHashMap<String, String>();
+            p.put("endpoint", "x");
+            new Credentials("b", p, 0);
+        } catch (IllegalArgumentException e) {
+            threwRoom = true;
+        }
+        check("缺 room 参数应拒绝", threwRoom);
+
+        boolean threwKey = false;
+        try {
+            java.util.Map<String, String> p = new java.util.LinkedHashMap<String, String>();
+            p.put(Credentials.PARAM_ROOM, "r");
+            p.put("a=b", "x"); // 会破坏 -O key=value 的拆分
+            new Credentials("b", p, 0);
+        } catch (IllegalArgumentException e) {
+            threwKey = true;
+        }
+        check("键含等号应拒绝", threwKey);
 
         boolean threwEmpty = false;
         try {
@@ -195,34 +277,53 @@ public final class SelfTest {
             threwEmpty = true;
         }
         check("空数据应拒绝", threwEmpty);
+
+        boolean threwOld = false;
+        try {
+            Credentials.decode(new byte[]{0});
+        } catch (Exception e) {
+            threwOld = true;
+        }
+        check("未知旧版本应拒绝", threwOld);
     }
 
     private static void testCredentialsHidesSecrets() {
-        Credentials c = new Credentials("host", 7000, "SUPER_TOKEN",
-                "stun:1", "room", "SUPER_SECRET", 0);
+        Credentials c = Credentials.frpXtcp("host", 7000, "SUPER_TOKEN",
+                "stun:1", "room-x", "SUPER_SECRET", 0);
         String s = c.toString();
         check("toString 不含 token", !s.contains("SUPER_TOKEN"));
         check("toString 不含密钥", !s.contains("SUPER_SECRET"));
-        check("toString 含房间名便于排查", s.contains("room"));
+        check("toString 含房间名便于排查", s.contains("room-x"));
+        check("toString 含 backend", s.contains(Credentials.BACKEND_FRP_XTCP));
+    }
+
+    private static void testCredentialsDedupKey() {
+        Credentials a = Credentials.frpXtcp("h1", 1, "t1", "s:1", "gtnh", "k1", 0);
+        Credentials b = Credentials.frpXtcp("h2", 2, "t2", "s:2", "gtnh", "k2", 9);
+        Credentials c = Credentials.frpXtcp("h1", 1, "t1", "s:1", "other", "k1", 0);
+        check("同 backend 同房间去重键一致", a.dedupKey().equals(b.dedupKey()));
+        check("不同房间去重键不同", !a.dedupKey().equals(c.dedupKey()));
     }
 
     // ---------- AgentProcess 命令行 ----------
 
     private static void testBuildCommand() {
-        Credentials cred = new Credentials("1.2.3.4", 7000, "tok",
+        Credentials cred = Credentials.frpXtcp("1.2.3.4", 7000, "tok",
                 "stun.miwifi.com:3478", "gtnh", "sec", 0);
         List<String> cmd = AgentProcess.buildCommand(
                 Paths.get("/tmp/xtcpinmc"), cred, Timings.defaults());
 
         check("首个参数是可执行文件", cmd.get(0).endsWith("xtcpinmc"));
         check("子命令是 tunnel", "tunnel".equals(cmd.get(1)));
-        check("包含 -server", cmd.contains("-server") && cmd.contains("1.2.3.4"));
-        check("包含 -room", cmd.contains("-room") && cmd.contains("gtnh"));
-        check("包含 -secret", cmd.contains("-secret") && cmd.contains("sec"));
+        int at = cmd.indexOf("-backend");
+        check("指定 backend", at >= 0 && Credentials.BACKEND_FRP_XTCP.equals(cmd.get(at + 1)));
+        check("server 经 -O 传递", cmd.contains("-O") && cmd.contains("server=1.2.3.4"));
+        check("room 经 -O 传递", cmd.contains("room=gtnh"));
+        check("secret 经 -O 传递", cmd.contains("secret=sec"));
         check("默认超时 15s", cmd.contains("15.000"));
 
         // 服务端下发的超时应当覆盖客户端默认值
-        Credentials override = new Credentials("1.2.3.4", 7000, "tok",
+        Credentials override = Credentials.frpXtcp("1.2.3.4", 7000, "tok",
                 "stun:1", "gtnh", "sec", 3000);
         List<String> cmd2 = AgentProcess.buildCommand(
                 Paths.get("/tmp/xtcpinmc"), override, Timings.defaults());
@@ -299,7 +400,7 @@ public final class SelfTest {
         FakeBridge bridge = new FakeBridge(tmp);
         UpgradeController c = new UpgradeController(bridge, Timings.defaults());
 
-        Credentials cred = new Credentials("127.0.0.1", 7000, "t",
+        Credentials cred = Credentials.frpXtcp("127.0.0.1", 7000, "t",
                 "stun:1", "room-a", "k", 1000);
         check("首次凭证启动升级", c.onCredentials(cred));
 
@@ -315,7 +416,7 @@ public final class SelfTest {
         FakeBridge bridge = new FakeBridge(tmp);
         UpgradeController c = new UpgradeController(bridge, Timings.defaults());
 
-        Credentials cred = new Credentials("127.0.0.1", 7000, "t",
+        Credentials cred = Credentials.frpXtcp("127.0.0.1", 7000, "t",
                 "stun:1", "room-b", "k", 1000);
         c.onCredentials(cred);
         bridge.settled.await(10, TimeUnit.SECONDS);

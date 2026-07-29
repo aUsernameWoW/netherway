@@ -4,28 +4,37 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/ripplecraft/xtcpinmc/internal/backend"
+	"github.com/ripplecraft/xtcpinmc/internal/backend/frpxtcp"
 	"github.com/ripplecraft/xtcpinmc/internal/config"
 	"github.com/ripplecraft/xtcpinmc/internal/mcping"
-	"github.com/ripplecraft/xtcpinmc/internal/tunnel"
 )
 
 // tunnel 子命令供 Minecraft mod 作为子进程调用。
 //
 // 与 join 的区别：
 //   - 不做局域网广播，mod 直接把连接指向本地端口
-//   - 不带 stcp 兜底：玩家此刻已经通过既有中转隧道连着服务器，
-//     打洞失败就该留在那条连接上，而不是再开一条中转
-//   - stdout 输出逐行 JSON 状态，供 mod 解析；frp 自身日志改写到文件
-//   - 打洞超时未就绪则退出并返回非零码，mod 据此放弃升级
+//   - 不带兜底通道：玩家此刻已经通过既有中转隧道连着服务器，
+//     建链失败就该留在那条连接上，而不是再开一条中转
+//   - stdout 输出逐行 JSON 状态，供 mod 解析；backend 自身日志改写到文件
+//   - 建链超时未就绪则退出并返回非零码，mod 据此放弃升级
+//
+// 具体隧道方案经 internal/backend 抽象：这里只负责选端口、起 backend、
+// 用 Minecraft 握手探测就绪、输出状态 JSON，四件事都与方案无关。
+// 注册新 backend 见 backends.go。
 
 type event struct {
 	Event string `json:"event"`
-	Port  int    `json:"port,omitempty"`
-	// ElapsedMs 是从进程启动到隧道可用的总耗时，含 STUN 探测与打洞，
+	// Backend 仅 starting 携带，标明本次用的隧道方案，便于日志排查。
+	Backend string `json:"backend,omitempty"`
+	Port    int    `json:"port,omitempty"`
+	// ElapsedMs 是从进程启动到隧道可用的总耗时，含建链前置工作，
 	// mod 用它决定要不要在界面上提示玩家「正在建立直连」。
 	ElapsedMs int64 `json:"elapsedMs,omitempty"`
 	// RTTMs 是隧道就绪后单独测得的往返延迟，不含建链开销，
@@ -63,9 +72,54 @@ func emit(e event) {
 	fmt.Fprintln(os.Stdout, string(b))
 }
 
+// paramFlags 收集可重复的 -O key=value。
+type paramFlags map[string]string
+
+func (p paramFlags) String() string {
+	return fmt.Sprintf("%d 个参数", len(p))
+}
+
+func (p paramFlags) Set(s string) error {
+	eq := strings.IndexByte(s, '=')
+	if eq <= 0 {
+		return fmt.Errorf("参数格式应为 key=value: %q", s)
+	}
+	p[s[:eq]] = s[eq+1:]
+	return nil
+}
+
+// mergedParams 组装传给 backend 的参数表。
+//
+// frp 的老旗标（-server/-token/…）作为糖保留：手工调试和旧调用方都还能用。
+// 只并入显式传了的，未传的留给 backend 用构建期注入的默认值补齐；
+// -O 是新契约，写了就覆盖同名的糖。
+func mergedParams(fs *flag.FlagSet, backendName string, explicit map[string]string) map[string]string {
+	merged := map[string]string{}
+	if backendName == frpxtcp.Name {
+		sugar := map[string]string{
+			"server":      frpxtcp.ParamServer,
+			"server-port": frpxtcp.ParamServerPort,
+			"token":       frpxtcp.ParamToken,
+			"stun":        frpxtcp.ParamSTUN,
+			"room":        frpxtcp.ParamRoom,
+			"secret":      frpxtcp.ParamSecret,
+		}
+		fs.Visit(func(f *flag.Flag) {
+			if key, ok := sugar[f.Name]; ok {
+				merged[key] = f.Value.String()
+			}
+		})
+	}
+	maps.Copy(merged, explicit)
+	return merged
+}
+
 func cmdTunnel(args []string) error {
 	fs := flag.NewFlagSet("tunnel", flag.ExitOnError)
-	ep, room, verbose := endpointFlags(fs)
+	backendName := fs.String("backend", frpxtcp.Name, "隧道 backend")
+	params := paramFlags{}
+	fs.Var(params, "O", "backend 参数，可重复：-O key=value")
+	_, _, verbose := endpointFlags(fs)
 	wantPort := fs.Int("port", 0, "本地监听端口，0 表示自动分配")
 	// 实测顺利时约 4.8s 就绪（含 STUN 探测与打洞），但重新打洞的慢路径
 	// 会明显更久，12s 都可能擦边。玩家此刻已经在中转连接上正常游戏，
@@ -74,19 +128,24 @@ func cmdTunnel(args []string) error {
 	// 这些时间参数全部可覆盖：不同玩家网络差异很大，
 	// mod 侧的配置文件会把玩家设定的值经这里传进来。
 	d := config.DefaultTimings()
-	timeout := fs.Float64("timeout", d.PunchTimeout.Seconds(), "打洞超时秒数，超时则放弃升级")
+	timeout := fs.Float64("timeout", d.PunchTimeout.Seconds(), "建链超时秒数，超时则放弃升级")
 	probeInterval := fs.Float64("probe-interval", d.ProbeInterval.Seconds(), "就绪探测间隔秒数")
 	probeTimeout := fs.Float64("probe-timeout", d.ProbeTimeout.Seconds(), "单次就绪探测超时秒数")
-	retryInterval := fs.Float64("retry-interval", d.RetryMinInterval.Seconds(), "打洞失败后最小重试间隔秒数")
-	maxRetries := fs.Int("max-retries-hour", d.MaxRetriesAnHour, "每小时打洞重试次数上限")
-	logPath := fs.String("log-file", "", "frp 日志文件，默认写入系统临时目录")
+	retryInterval := fs.Float64("retry-interval", d.RetryMinInterval.Seconds(), "建链失败后最小重试间隔秒数")
+	maxRetries := fs.Int("max-retries-hour", d.MaxRetriesAnHour, "每小时建链重试次数上限")
+	logPath := fs.String("log-file", "", "backend 日志文件，默认写入系统临时目录")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := validate(ep, room); err != nil {
+
+	b, ok := backend.Lookup(*backendName)
+	if !ok {
+		err := fmt.Errorf("未知 backend %q，可用: %s",
+			*backendName, strings.Join(backend.Names(), ", "))
 		emit(event{Event: "failed", Reason: err.Error()})
 		return err
 	}
+	merged := mergedParams(fs, *backendName, params)
 
 	// 默认自动分配端口：玩家本机可能自己开着 25565，
 	// 固定端口会撞车，而 mod 是从状态输出里读端口的，用哪个都无所谓。
@@ -104,16 +163,7 @@ func cmdTunnel(args []string) error {
 	defer stop()
 
 	started := time.Now()
-	emit(event{Event: "starting", Port: port})
-
-	// 先当场验证一个可用的 STUN 再启动 frp：frp 只认单个地址，
-	// 押在一台上会因它的偶发抖动而白白失去一次升级机会。
-	picked, err := resolveSTUN(ep.STUNServer, nil)
-	if err != nil {
-		emit(event{Event: "failed", Reason: err.Error()})
-		return err
-	}
-	ep.STUNServer = picked
+	emit(event{Event: "starting", Backend: b.Name(), Port: port})
 
 	secs := func(v float64) time.Duration { return time.Duration(v * float64(time.Second)) }
 	timings := config.Timings{
@@ -126,16 +176,17 @@ func cmdTunnel(args []string) error {
 
 	tunnelErr := make(chan error, 1)
 	go func() {
-		tunnelErr <- tunnel.Join(ctx, *ep, *room, tunnel.JoinOptions{
-			BindAddr:   "127.0.0.1",
-			BindPort:   port,
-			NoFallback: true,
-			Timings:    timings,
-		}, tunnel.LogOptions{Level: logLevelOf(*verbose), To: *logPath})
+		tunnelErr <- b.Run(ctx, merged, backend.Options{
+			BindAddr: "127.0.0.1",
+			BindPort: port,
+			Timings:  timings,
+			LogLevel: logLevelOf(*verbose),
+			LogTo:    *logPath,
+		})
 	}()
 
-	// 没有 stcp 兜底，所以探测成功就一定意味着打洞成功——
-	// 这正是这里刻意关掉 fallback 的原因。
+	// 没有兜底通道，所以探测成功就一定意味着隧道真的建成了——
+	// 这正是 backend 接口禁止自带 fallback 的原因。
 	deadline := time.Now().Add(timings.PunchTimeout)
 	ready := make(chan *mcping.Status, 1)
 	rttCh := make(chan time.Duration, 1)
@@ -161,11 +212,11 @@ func cmdTunnel(args []string) error {
 		return fmt.Errorf("%s", reason)
 
 	case err := <-probeErr:
-		emit(event{Event: "failed", Reason: fmt.Sprintf("打洞超时: %v", err)})
-		return fmt.Errorf("打洞未在 %.1fs 内就绪", *timeout)
+		emit(event{Event: "failed", Reason: fmt.Sprintf("建链超时: %v", err)})
+		return fmt.Errorf("隧道未在 %.1fs 内就绪", *timeout)
 
 	case st := <-ready:
-		<-rttCh // 首次探测含打洞耗时，对比延迟没有意义，丢弃
+		<-rttCh // 首次探测含建链耗时，对比延迟没有意义，丢弃
 		e := event{
 			Event:     "ready",
 			Port:      port,

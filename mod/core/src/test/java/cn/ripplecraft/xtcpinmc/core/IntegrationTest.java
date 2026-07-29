@@ -29,7 +29,7 @@ public final class IntegrationTest {
             System.exit(2);
         }
 
-        Credentials cred = new Credentials(args[0], Integer.parseInt(args[1]), args[2],
+        Credentials cred = Credentials.frpXtcp(args[0], Integer.parseInt(args[1]), args[2],
                 args[3], args[4], args[5], 0);
         System.out.println("凭证: " + cred);
 

@@ -77,8 +77,10 @@ join 专有:
   -no-beacon  只建隧道，不广播（自行连 127.0.0.1:端口）
 
 tunnel 专有:
-  -timeout   打洞超时秒数，默认 8，超时返回非零码
-  -log-file  frp 日志路径（stdout 留给逐行 JSON 状态）
+  -backend   隧道方案，默认 frp-xtcp
+  -O key=value  传给 backend 的参数，可重复；frp-xtcp 也可直接用上面的公共选项
+  -timeout   建链超时秒数，默认 15，超时返回非零码
+  -log-file  backend 日志路径（stdout 留给逐行 JSON 状态）
 
 未指定的选项使用构建时注入的默认值。
 `)
@@ -99,11 +101,8 @@ func endpointFlags(fs *flag.FlagSet) (*tunnel.Endpoint, *config.Room, *bool) {
 }
 
 func validate(ep *tunnel.Endpoint, room *config.Room) error {
-	if ep.ServerAddr == "" {
-		return fmt.Errorf("未指定 frps 地址：用 -server 指定，或在构建时注入")
-	}
-	if ep.Token == "" {
-		return fmt.Errorf("未指定 frps 令牌：用 -token 指定，或在构建时注入")
+	if err := ep.Validate(); err != nil {
+		return err
 	}
 	return room.Validate()
 }
@@ -118,29 +117,6 @@ func logLevelOf(verbose bool) string {
 // consoleLog 是 serve/join 这类前台命令的日志配置。
 func consoleLog(verbose bool) tunnel.LogOptions {
 	return tunnel.LogOptions{Level: logLevelOf(verbose), To: "console"}
-}
-
-// resolveSTUN 把 -stun 的值（可以是逗号分隔的多个）解析成一个当场验证过的地址。
-//
-// frp 只接受单个 STUN 地址，那台一旦抖动打洞就失败。实测中
-// stun.miwifi.com 会间歇性超时，这种偶发故障对玩家表现为「时好时坏」，
-// 所以宁可先花不到一秒并行探一遍，也不要把整条链路押在一台上。
-func resolveSTUN(spec string, report func(string, ...any)) (string, error) {
-	candidates := stunpick.Parse(spec)
-	if len(candidates) <= 1 {
-		if len(candidates) == 1 {
-			return candidates[0], nil
-		}
-		candidates = stunpick.Defaults
-	}
-	picked, err := stunpick.Pick(candidates, 8*time.Second)
-	if err != nil {
-		return "", err
-	}
-	if report != nil {
-		report("STUN: 从 %d 个候选中选用 %s", len(candidates), picked)
-	}
-	return picked, nil
 }
 
 // signalContext 返回一个在收到 SIGINT/SIGTERM 时取消的 context。
@@ -163,7 +139,7 @@ func cmdServe(args []string) error {
 	defer stop()
 
 	fmt.Printf("发布本地端口 %d 为房间 %q（P2P + 中转兜底）\n", *localPort, room.Name)
-	picked, err := resolveSTUN(ep.STUNServer, func(f string, a ...any) {
+	picked, err := stunpick.Resolve(ep.STUNServer, func(f string, a ...any) {
 		fmt.Printf(f+"\n", a...)
 	})
 	if err != nil {

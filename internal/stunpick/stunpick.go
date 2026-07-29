@@ -35,6 +35,29 @@ func Parse(s string) []string {
 	return out
 }
 
+// Resolve 把配置值（可以是逗号分隔的多个候选）解析成一个当场验证过的地址；
+// 空值时使用内置候选。report 用于把选择结果告知用户，可为 nil。
+//
+// 只有一个候选时不做探测直接返回：省一次往返，让 frp 自己去连、
+// 自己报错，错误信息还更准确。
+func Resolve(spec string, report func(format string, args ...any)) (string, error) {
+	candidates := Parse(spec)
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	if len(candidates) == 0 {
+		candidates = Defaults
+	}
+	picked, err := Pick(candidates, 8*time.Second)
+	if err != nil {
+		return "", err
+	}
+	if report != nil {
+		report("STUN: 从 %d 个候选中选用 %s", len(candidates), picked)
+	}
+	return picked, nil
+}
+
 type result struct {
 	server string
 	err    error

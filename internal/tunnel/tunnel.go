@@ -24,6 +24,17 @@ type Endpoint struct {
 	STUNServer string
 }
 
+// Validate 检查必填字段。默认值经构建期注入，这里为空说明既没注入也没传参。
+func (ep Endpoint) Validate() error {
+	if ep.ServerAddr == "" {
+		return fmt.Errorf("未指定 frps 地址：用 -server 指定，或在构建时注入")
+	}
+	if ep.Token == "" {
+		return fmt.Errorf("未指定 frps 令牌：用 -token 指定，或在构建时注入")
+	}
+	return nil
+}
+
 // LogOptions 控制 frp 自身日志的去向。
 //
 // 被 mod 作为子进程调用时，stdout 要留给结构化状态输出，

@@ -9,6 +9,7 @@ import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -114,12 +115,13 @@ public final class AgentProcess implements Closeable {
         List<String> cmd = new ArrayList<String>();
         cmd.add(exe.toAbsolutePath().toString());
         cmd.add("tunnel");
-        cmd.add("-server");         cmd.add(cred.serverAddr());
-        cmd.add("-server-port");    cmd.add(Integer.toString(cred.serverPort()));
-        cmd.add("-token");          cmd.add(cred.token());
-        cmd.add("-stun");           cmd.add(cred.stunServer());
-        cmd.add("-room");           cmd.add(cred.roomName());
-        cmd.add("-secret");         cmd.add(cred.secretKey());
+        // backend 与参数原样转交，这里不解释含义——新增隧道方案时不用动这段
+        cmd.add("-backend");
+        cmd.add(cred.backendId());
+        for (Map.Entry<String, String> e : cred.params().entrySet()) {
+            cmd.add("-O");
+            cmd.add(e.getKey() + "=" + e.getValue());
+        }
         cmd.add("-timeout");        cmd.add(seconds(punchMs));
         cmd.add("-probe-interval"); cmd.add(seconds(t.probeIntervalMs()));
         cmd.add("-probe-timeout");  cmd.add(seconds(t.probeTimeoutMs()));

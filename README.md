@@ -1,6 +1,6 @@
 # xtcpinmc — GTNH 服务器 P2P 直连
 
-让玩家绕过中转节点，通过 frp xtcp 直连 GTNH 服务器；理想情况下玩家打开游戏就能在"局域网游戏"里看到服务器，不用手动填地址。
+让玩家绕过中转节点，通过 frp xtcp 打洞直连 GTNH 服务器。两种接入方式：独立 agent（打开游戏就能在"局域网游戏"里看到服务器，不用手动填地址），以及 Minecraft mod（进服后后台打洞，成功了自动切换连接，见 `mod/`）。隧道方案经 `internal/backend` 抽象，frp xtcp 是当前实现。
 
 ## 实测结论（2026-07-29，真机端到端验证）
 
@@ -70,10 +70,13 @@ frp 默认的 `stun.easyvoip.com:3478` 在服务器所在网络**实测超时**�
 | `stun.chat.bilibili.com:3478` | ❌ 只返回 1 个地址，frp 要求至少 2 个 |
 
 **两端都必须显式配 `natHoleStunServer`。** 只配一端，另一端会静默失败。
+（此坑只影响手工 frpc 配置——agent 会自动注入选好的 STUN。）
 
-长期看这是个**单点风险**：`natHoleStunServer` 只能填一个值，不支持备选列表，而 `stun.miwifi.com` 是小米的公共服务。它一旦限流或改行为，打洞会静默失败，表现为玩家"进不去服"，很难定位。
-
-自建 coturn 的坑（见下节）比想象中大，但正式发给玩家之前应该解决。
+frp 的 `natHoleStunServer` 只接受单个值，不支持备选列表，押在一台上就是单点。
+agent 已在 `internal/stunpick` 里解决：默认自带多个候选，启动前并行探测、
+按「至少返回 2 个映射地址」筛选，注入一台当场验证过的。残余风险是候选全部为
+第三方公共服务（且实测 `stun.miwifi.com` 会间歇性超时），自建 STUN 加入候选池
+是可选的加固手段（坑见下节）。
 
 ### 自建 coturn 的硬约束：需要两个公网 IP
 
@@ -120,9 +123,14 @@ GTNH 宿主机                      frps (203.0.113.10:7000)         玩家机�
 
 ```
 cmd/xtcpinmc/       CLI 入口；daemon_{unix,windows}.go 处理平台差异
+internal/backend/   隧道方案的统一接口与注册表；frp xtcp 是首个实现
 internal/tunnel/    以库的方式嵌入 frpc，无独立进程、无 toml
+internal/mcping/    Minecraft Server List Ping，用游戏握手判定隧道就绪
+internal/stunpick/  启动前并行探测候选，挑一个当场验证过的 STUN
 internal/lanbeacon/ 组播广播，含多网卡枚举
 internal/config/    房间标识与构建期注入的默认值
+mod/                Minecraft mod 侧：Java core 驱动 agent 的 tunnel 子命令，
+                    打洞成功后游戏内自动切换连接（详见 mod/README.md）
 ```
 
 选择把 frpc 当**库**嵌入而不是调用二进制，是为了单文件分发、零配置文件，以及 Windows 上不弹黑窗。
@@ -178,7 +186,7 @@ xtcpinmc join
 - [ ] Windows 首次运行的防火墙弹窗——需要签名安装器预写规则，否则"无感"会破功
 - [ ] 真机验证 1.7.10 客户端能看到并连上局域网条目（协议层已验证，缺真实客户端）
 - [ ] frps 加 `allowPorts` 白名单收口（见下）
-- [ ] 可选：自建 RFC5780 STUN 替代 stun.miwifi.com（当前依赖第三方，见上）
+- [ ] 可选：自建 RFC5780 STUN 加入 `stunpick` 候选池（当前候选全是第三方公共服务，见上）
 
 ## 关于 token 分发的风险
 

@@ -29,7 +29,7 @@ public final class UpgradeController {
     private final AtomicReference<State> state = new AtomicReference<State>(State.IDLE);
 
     private volatile AgentProcess agent;
-    private volatile String activeRoom;
+    private volatile String activeKey;
 
     public UpgradeController(ClientBridge bridge, Timings timings) {
         this.bridge = bridge;
@@ -53,10 +53,10 @@ public final class UpgradeController {
             return false;
         }
 
-        if (cred.roomName().equals(activeRoom)) {
+        if (cred.dedupKey().equals(activeKey)) {
             State s = state.get();
             if (s == State.UPGRADED || s == State.PUNCHING) {
-                bridge.info("已在处理房间 " + cred.roomName() + " 的直连，忽略重复凭证");
+                bridge.info("已在处理房间 " + cred.room() + " 的直连，忽略重复凭证");
                 return false;
             }
             if (s == State.GAVE_UP) {
@@ -68,7 +68,7 @@ public final class UpgradeController {
         if (!state.compareAndSet(State.IDLE, State.PUNCHING)) {
             return false;
         }
-        activeRoom = cred.roomName();
+        activeKey = cred.dedupKey();
 
         Thread worker = new Thread(new Runnable() {
             @Override
@@ -85,7 +85,8 @@ public final class UpgradeController {
         AgentProcess proc = null;
         try {
             Platform platform = Platform.detect();
-            bridge.info("准备直连：平台 " + platform + "，房间 " + cred.roomName());
+            bridge.info("准备直连：平台 " + platform + "，房间 " + cred.room()
+                    + "（" + cred.backendId() + "）");
 
             Path exe = new BinaryStore(bridge.cacheDirectory(), platform).ensureExtracted();
             proc = AgentProcess.start(exe, cred, timings, bridge.cacheDirectory(), null);
@@ -161,7 +162,7 @@ public final class UpgradeController {
     public void shutdown() {
         AgentProcess proc = agent;
         agent = null;
-        activeRoom = null;
+        activeKey = null;
         state.set(State.IDLE);
         if (proc != null) {
             proc.close();
