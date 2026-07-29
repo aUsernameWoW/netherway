@@ -1,0 +1,45 @@
+> 客户端：玩家机器上运行。这是"手工验证版"，确认能连通后再包进你的一键工具。
+> 用法：frpc -c frpc-visitor.toml，然后 MC 里直连 127.0.0.1:25565
+> 注意：本文件是 TOML，上面这几行注释请删掉（保留会解析失败）
+
+serverAddr = "203.0.113.10"
+serverPort = 7000
+auth.method = "token"
+auth.token = "在这里填入你的 frps auth.token"
+
+# 必须和服务端一致，默认值在国内很多网络下不通
+natHoleStunServer = "stun.miwifi.com:3478"
+
+log.to = "./frpc.log"
+log.level = "info"
+
+# ---- P2P 主通道 ----
+[[visitors]]
+name = "gtnh-visitor"
+type = "xtcp"
+serverName = "gtnh-p2p"
+secretKey = "换成你自己的强随机串"
+
+# bindAddr 说明见 README：若要做局域网广播注入，这里必须是 0.0.0.0，
+# 因为 MC 用的是广播包的源 IP（网卡地址），不是 127.0.0.1。
+bindAddr = "127.0.0.1"
+bindPort = 25565
+
+# 提前打洞，避免玩家点进服务器时才开始打洞导致首次连接超时
+keepTunnelOpen = true
+maxRetriesAnHour = 8
+minRetryInterval = 90
+
+# 打洞 500ms 内没成功就先走中转，同时后台继续打洞，
+# 成功后下一条连接自动升级为 P2P
+fallbackTo = "gtnh-relay-visitor"
+fallbackTimeoutMs = 500
+
+# ---- 兜底中转 ----
+[[visitors]]
+name = "gtnh-relay-visitor"
+type = "stcp"
+serverName = "gtnh-relay"
+secretKey = "换成你自己的强随机串"
+bindAddr = "127.0.0.1"
+bindPort = 0

@@ -1,0 +1,7 @@
+# 构建产物含有注入的 frps 令牌与房间密钥，绝不能提交
+/bin/
+
+# Java 编译输出；testres 下放着同样内嵌令牌的 agent 二进制
+/mod/build/
+
+*.log

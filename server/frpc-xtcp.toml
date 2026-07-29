@@ -1,0 +1,40 @@
+> 服务端：在 GTNH 宿主机上运行，把 25565 注册为 xtcp（P2P）+ stcp（兜底中转）
+> 建议按现有习惯，在 MCSManager 里新建实例：
+>   工作目录 /srv/mc/frp/xtcp
+>   启动命令 ./frpc -c ./frpc.toml
+> 注意：本文件是 TOML，上面这几行注释请删掉（保留会解析失败）
+
+serverAddr = "203.0.113.10"
+serverPort = 7000
+auth.method = "token"
+auth.token = "在这里填入你的 frps auth.token"
+
+# 关键：默认的 stun.easyvoip.com 在这台机器上不通（实测超时）。
+# stun.miwifi.com 实测可用且能返回 2 个地址（frp 打洞的最低要求）。
+# 客户端侧必须配置同一个值。
+natHoleStunServer = "stun.miwifi.com:3478"
+
+transport.protocol = "tcp"
+transport.tcpMux = true
+dnsServer = "114.114.114.114"
+
+log.to = "./frpc.log"
+log.level = "info"
+log.maxDays = 7
+
+# ---- P2P 主通道 ----
+[[proxies]]
+name = "gtnh-p2p"
+type = "xtcp"
+secretKey = "换成你自己的强随机串"
+localIP = "127.0.0.1"
+localPort = 25565
+
+# ---- 打洞失败时的兜底（走你自己的阿里云 frps 中转）----
+# 注意这会占用 203.0.113.10 的出站带宽，GTNH 人多时留意流量。
+[[proxies]]
+name = "gtnh-relay"
+type = "stcp"
+secretKey = "换成你自己的强随机串"
+localIP = "127.0.0.1"
+localPort = 25565
