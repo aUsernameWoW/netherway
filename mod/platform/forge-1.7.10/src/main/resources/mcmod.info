@@ -1,0 +1,13 @@
+[{
+  "modid": "xtcpinmc",
+  "name": "xtcpinmc",
+  "description": "frp xtcp P2P 直连：登录后后台打洞，成功则切换到直连，失败留在原线路。",
+  "version": "${version}",
+  "mcversion": "${mcversion}",
+  "url": "",
+  "authorList": ["ripplecraft"],
+  "credits": "",
+  "logoFile": "",
+  "screenshots": [],
+  "dependencies": []
+}]

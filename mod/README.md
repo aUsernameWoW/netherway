@@ -89,8 +89,9 @@ $JAVA8/bin/java -cp build/classes cn.ripplecraft.xtcpinmc.core.SelfTest
 
 ## 待办
 
-- [ ] Forge 1.7.10 适配层：自定义频道注册、登录事件、重连触发
-- [ ] 服务端凭证下发（可先做成 Forge mod，日后按需加 Sponge/Paper 实现）
-- [ ] mod 配置文件，把 `Timings` 暴露给服主
-- [ ] 构建脚本：把各平台 agent 二进制打进 jar 的 `natives/`
+- [x] Forge 1.7.10 适配层：自定义频道注册、登录事件、重连触发（`platform/forge-1.7.10`）
+- [x] 服务端凭证下发（做在同一个 Forge mod 里，日后按需加 Sponge/Paper 实现）
+- [x] mod 配置文件，把 `Timings` 暴露给服主（`ModConfig`，server/client 两个类目）
+- [x] 构建脚本：把各平台 agent 二进制打进 jar 的 `natives/`（`build-natives.sh`，
+      刻意不注入 TOKEN/SECRET——jar 要分发给玩家）
 - [ ] 跨网络端到端验证

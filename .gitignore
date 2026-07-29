@@ -4,4 +4,11 @@
 # Java 编译输出；testres 下放着同样内嵌令牌的 agent 二进制
 /mod/build/
 
+# Forge 适配层的 Gradle 产物与本地缓存
+/mod/platform/*/build/
+/mod/platform/*/.gradle/
+/mod/platform/*/run/
+
 *.log
+
+.DS_Store

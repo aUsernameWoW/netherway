@@ -1,0 +1,54 @@
+// Forge 1.7.10 适配层。
+//
+// 1.7.10 的构建绕不开反混淆/重混淆工作区，唯一还活着的工具链是
+// GTNH 的 RetroFuturaGradle（老 ForgeGradle 1.2 依赖的下载源早已失效）。
+// 目标服务器正是 GTNH，与其生态保持一致。
+//
+// Gradle 本身需要 Java 17+ 运行；编译产物经 toolchain 固定为 Java 8 字节码。
+plugins {
+    id 'com.gtnewhorizons.retrofuturagradle' version '1.4.9'
+}
+
+group = 'cn.ripplecraft.xtcpinmc'
+version = project.modVersion
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(8)
+    }
+}
+
+minecraft {
+    mcVersion = '1.7.10'
+    // 版本号经生成的 Tags 类注入 @Mod 注解，避免在源码里写死
+    injectedTags.put('VERSION', project.version)
+}
+
+tasks.injectTags.configure {
+    outputClassName = 'cn.ripplecraft.xtcpinmc.forge.Tags'
+}
+
+// core 直接以源码形式编入：它零依赖、纯 Java 8，单独发布产物反而多一层要同步的东西
+sourceSets.main.java.srcDir '../../core/src/main/java'
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+// agent 二进制由 ../../build-natives.sh 产出。那个脚本刻意不注入 TOKEN/SECRET：
+// mod jar 会分发给所有玩家，里面绝不能有任何密钥——凭证由服务端登录后下发。
+def nativesDir = file('../../build/natives')
+
+processResources {
+    filesMatching('mcmod.info') {
+        expand version: project.version, mcversion: minecraft.mcVersion.get()
+    }
+    if (nativesDir.isDirectory()) {
+        from(nativesDir) { into 'natives' }
+    } else {
+        doFirst {
+            logger.warn('警告: {} 不存在，jar 将不含 agent 二进制（先运行 mod/build-natives.sh）',
+                    nativesDir)
+        }
+    }
+}

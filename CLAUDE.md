@@ -54,6 +54,21 @@ java -cp mod/build/classes:mod/build/testres \
   cn.ripplecraft.xtcpinmc.core.IntegrationTest <frps地址> <端口> <令牌> <stun> <房间> <密钥>
 ```
 
+### Forge 1.7.10 mod（`mod/platform/forge-1.7.10`）
+
+1.7.10 需要反混淆/重混淆工作区，用 GTNH 的 RetroFuturaGradle（老 ForgeGradle 1.2
+的下载源已失效）。Gradle 进程需要 Java 21+，编译产物仍是 Java 8 字节码：
+
+```bash
+./mod/build-natives.sh   # 打进 jar 的 agent 二进制；刻意不注入 TOKEN/SECRET
+cd mod/platform/forge-1.7.10
+JAVA_HOME=/Library/Java/JavaVirtualMachines/zulu-21.jdk/Contents/Home ./gradlew build
+```
+
+产物在 `build/libs/`，不带分类器的 jar 是重混淆后的发布版。国内网络下 Gradle
+下载大文件常被掐断且不会断点续传：先用 `curl -L -C -` 把大件补进 `~/.m2`
+对应路径（`settings.gradle` 里 `mavenLocal()` 排最前就是为这个）。
+
 ## 架构
 
 ### 两侧之间的契约
@@ -110,6 +125,9 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 `mod/core` 里**没有任何 Minecraft 类型**。碰游戏 API 的只剩三件事——收发自定义
 消息、玩家登录事件、触发重连——全部收敛在 `ClientBridge` 接口里。换 Minecraft
 版本或 mod 加载器时只需重写那一层（约一两百行），core 原样复用。
+当前唯一的适配层是 `mod/platform/forge-1.7.10`（服务端下发 + 客户端切换在
+同一个 jar 里），要点见其 README：主线程派发走 tick 队列；断开事件必须区分
+「升级引发的重连」与「真退出」，真退出用 `shutdown()` 而非 `onDisconnected()`。
 
 `UpgradeController` 是整个流程的状态机：`IDLE → PUNCHING → UPGRADED / GAVE_UP`。
 

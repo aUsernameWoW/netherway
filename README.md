@@ -165,7 +165,7 @@ xtcpinmc join
 
 ### 接入 PrismLauncher / MultiMC
 
-1.7.10 写 Forge mod 很痛苦，而 GTNH 玩家基本都用 Prism/MultiMC，它支持实例级自定义命令。在实例设置 → Custom Commands 里填：
+不用（或不想装）mod 的玩家可以走启动器：GTNH 玩家基本都用 Prism/MultiMC，它支持实例级自定义命令。在实例设置 → Custom Commands 里填：
 
 - **Pre-launch command**: `path/to/xtcpinmc start`
 - **Post-exit command**: `path/to/xtcpinmc stop`
