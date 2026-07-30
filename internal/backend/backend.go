@@ -12,6 +12,7 @@ package backend
 
 import (
 	"context"
+	"io"
 	"sort"
 
 	"github.com/ripplecraft/xtcpinmc/internal/config"
@@ -29,6 +30,22 @@ type Options struct {
 	// stdout 留给逐行 JSON 状态契约，backend 日志必须写文件。
 	LogLevel string
 	LogTo    string
+	// Logf 接收 backend 的诊断日志：生效的参数、被忽略的键、STUN 选择
+	// 这类「为什么走到这一步」的信息，与 LogTo 指向的 frp 内部日志互补。
+	// tunnel 模式把它指向 stderr，由 mod 收集写进游戏日志；nil 表示丢弃。
+	// 契约：绝不能经它输出 token、密钥等参数值本身。
+	Logf func(format string, args ...any)
+	// LogEcho 非 nil 时，backend 内部组件（如 frp）info 及以上级别的日志
+	// 额外回显一份到这里，LogTo 的文件仍保留完整内容。tunnel 模式指向
+	// stderr，让「隧道方案自己报的错」也能进游戏日志。
+	LogEcho io.Writer
+}
+
+// Diagf 经 Logf 输出诊断日志，Logf 为 nil 时安静地丢弃。
+func (o Options) Diagf(format string, args ...any) {
+	if o.Logf != nil {
+		o.Logf(format, args...)
+	}
 }
 
 // Backend 是一种隧道方案的实现。

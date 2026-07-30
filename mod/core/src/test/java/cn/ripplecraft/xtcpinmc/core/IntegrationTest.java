@@ -55,6 +55,11 @@ public final class IntegrationTest {
             }
 
             @Override
+            public void sendToServer(byte[] payload) {
+                System.out.println("  [结果回执] " + payload.length + " 字节");
+            }
+
+            @Override
             public Path cacheDirectory() {
                 return cache;
             }
@@ -71,6 +76,11 @@ public final class IntegrationTest {
             public void warn(String message, Throwable error) {
                 System.out.println("  [警告] " + message
                         + (error == null ? "" : " / " + error));
+            }
+
+            @Override
+            public void debug(String message) {
+                System.out.println("  [详细] " + message);
             }
         };
 

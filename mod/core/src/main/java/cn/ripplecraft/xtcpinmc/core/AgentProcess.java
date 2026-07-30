@@ -27,6 +27,12 @@ public final class AgentProcess implements Closeable {
     /** 事件回调，用于把进度反映到游戏界面。实现必须能容忍在任意线程被调用。 */
     public interface Listener {
         void onEvent(AgentEvent event);
+
+        /**
+         * agent 在 stderr 上输出了一行诊断信息（参数键清单、STUN 选择结果等）。
+         * 转进游戏日志后，玩家不用翻临时目录就能看到打洞失败在哪一步。
+         */
+        void onStderrLine(String line);
     }
 
     private static final Charset UTF8 = Charset.forName("UTF-8");
@@ -59,7 +65,7 @@ public final class AgentProcess implements Closeable {
         this.stderrPump = new Thread(new Runnable() {
             @Override
             public void run() {
-                drainKeepingTail(process.getErrorStream());
+                drainKeepingTail(process.getErrorStream(), listener);
             }
         }, "xtcpinmc-agent-stderr");
         this.stderrPump.setDaemon(true);
@@ -89,11 +95,12 @@ public final class AgentProcess implements Closeable {
      * @param cred     服务端下发的凭证
      * @param timings  客户端配置的时间参数
      * @param workDir  工作目录，可为 null
+     * @param logFile  agent 详细日志的落盘位置，null 时由 agent 自选临时目录
      * @param listener 状态回调，可为 null
      */
     public static AgentProcess start(Path exe, Credentials cred, Timings timings,
-                                     Path workDir, Listener listener) throws IOException {
-        List<String> cmd = buildCommand(exe, cred, timings);
+                                     Path workDir, Path logFile, Listener listener) throws IOException {
+        List<String> cmd = buildCommand(exe, cred, timings, logFile);
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         if (workDir != null) {
@@ -105,7 +112,7 @@ public final class AgentProcess implements Closeable {
         return new AgentProcess(pb.start(), listener);
     }
 
-    static List<String> buildCommand(Path exe, Credentials cred, Timings timings) {
+    static List<String> buildCommand(Path exe, Credentials cred, Timings timings, Path logFile) {
         Timings t = timings == null ? Timings.defaults() : timings.normalized();
 
         // 服务端下发的超时优先：它更清楚自己这端的网络状况；
@@ -125,7 +132,37 @@ public final class AgentProcess implements Closeable {
         cmd.add("-timeout");        cmd.add(seconds(punchMs));
         cmd.add("-probe-interval"); cmd.add(seconds(t.probeIntervalMs()));
         cmd.add("-probe-timeout");  cmd.add(seconds(t.probeTimeoutMs()));
+        // 固定开 debug：这些日志只进文件不进游戏日志，没有噪音代价，
+        // 而打洞失败后这份文件是唯一能还原过程的材料
+        cmd.add("-v");
+        if (logFile != null) {
+            cmd.add("-log-file");
+            cmd.add(logFile.toAbsolutePath().toString());
+        }
         return cmd;
+    }
+
+    /**
+     * 供日志输出的命令行描述：{@code -O} 携带的参数值一律抹掉。
+     * token 与密钥都在其中，而 core 不解释参数含义、分不清哪个敏感，
+     * 只能全部只留键名——与 {@link Credentials#toString()} 同一条纪律。
+     */
+    static String describeCommand(List<String> cmd) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < cmd.size(); i++) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            String arg = cmd.get(i);
+            if ("-O".equals(arg) && i + 1 < cmd.size()) {
+                String kv = cmd.get(++i);
+                int eq = kv.indexOf('=');
+                sb.append("-O ").append(eq < 0 ? kv : kv.substring(0, eq + 1) + "***");
+                continue;
+            }
+            sb.append(arg);
+        }
+        return sb.toString();
     }
 
     /** agent 的时间参数以秒为单位，且要避免本地化小数点（德语环境会写成 "1,5"）。 */
@@ -195,7 +232,7 @@ public final class AgentProcess implements Closeable {
         }
     }
 
-    private void drainKeepingTail(InputStream in) {
+    private void drainKeepingTail(InputStream in, Listener listener) {
         BufferedReader r = new BufferedReader(new InputStreamReader(in, UTF8));
         try {
             String line;
@@ -210,6 +247,13 @@ public final class AgentProcess implements Closeable {
                     // 全存下来没意义，出错时也只有最后几行说明问题。
                     while (stderrTail.size() > STDERR_TAIL_LINES) {
                         stderrTail.remove(0);
+                    }
+                }
+                if (listener != null) {
+                    try {
+                        listener.onStderrLine(t);
+                    } catch (RuntimeException ignored) {
+                        // 回调里的异常不能拖垮读取线程
                     }
                 }
             }

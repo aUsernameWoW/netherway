@@ -2,8 +2,10 @@
 package tunnel
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/fatedier/frp/client"
@@ -11,6 +13,7 @@ import (
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/config/v1/validation"
 	frplog "github.com/fatedier/frp/pkg/util/log"
+	golog "github.com/fatedier/golib/log"
 	"github.com/samber/lo"
 
 	"github.com/ripplecraft/xtcpinmc/internal/config"
@@ -42,6 +45,11 @@ func (ep Endpoint) Validate() error {
 type LogOptions struct {
 	Level string // trace/debug/info/warn/error
 	To    string // "console" 或文件路径
+	// Echo 非 nil 时额外收到一份 info 及以上级别的日志副本（仅文件模式生效）。
+	// tunnel 模式把它指向 stderr：frp 报的错（比如「xtcp server 不存在」，
+	// 说明宿主机的 serve 没在运行）就能被 mod 转进游戏日志，玩家不用去翻
+	// 日志文件。debug 不回显——隧道存活期间会持续刷屏，详情留在文件里。
+	Echo io.Writer
 }
 
 func (l LogOptions) orDefault() LogOptions {
@@ -54,13 +62,61 @@ func (l LogOptions) orDefault() LogOptions {
 	return l
 }
 
+// initFrpLogger 初始化 frp 的全局日志器。
+//
+// 必须显式初始化：client.NewService 不会读 Log 配置去建日志器，
+// 不调这一步 frp 会一直往 stdout 打日志，
+// 而 tunnel 子命令的 stdout 是留给 mod 解析 JSON 的。
+//
+// 文件模式不走 frplog.InitLogger（它只支持单一去向），自行组装 writer
+// 以便同时回显到 Echo。轮转参数与 InitLogger 保持一致（按天、留 7 天）。
+func initFrpLogger(log LogOptions) {
+	if log.To == "console" {
+		frplog.InitLogger(log.To, log.Level, 7, true)
+		return
+	}
+	file := golog.NewRotateFileWriter(golog.RotateFileConfig{
+		FileName: log.To,
+		Mode:     golog.RotateFileModeDaily,
+		MaxDays:  7,
+	})
+	file.Init()
+	var out io.Writer = file
+	if log.Echo != nil {
+		out = teeWriter{file: file, echo: log.Echo}
+	}
+	level, err := golog.ParseLevel(log.Level)
+	if err != nil {
+		level = golog.InfoLevel
+	}
+	frplog.Logger = frplog.Logger.WithOptions(golog.WithOutput(out), golog.WithLevel(level))
+}
+
+// teeWriter 把日志写进文件，并把 info 及以上的行回显给 Echo。
+// golib/log 每条日志恰好一次 Write，整行到达，可以按行判级别。
+type teeWriter struct {
+	file io.Writer
+	echo io.Writer
+}
+
+func (t teeWriter) Write(p []byte) (int, error) {
+	n, err := t.file.Write(p)
+	// 行首是定长时间戳（不含方括号），第一个 [X] 就是级别标记
+	if i := bytes.IndexByte(p, '['); i >= 0 && i+1 < len(p) {
+		switch p[i+1] {
+		case 'T', 'D':
+			return n, err
+		}
+	}
+	// 回显失败不能影响文件日志，错误直接丢弃
+	_, _ = t.echo.Write(p)
+	return n, err
+}
+
 func commonConfig(ep Endpoint, logOpts LogOptions) (*v1.ClientCommonConfig, error) {
 	log := logOpts.orDefault()
 
-	// 必须显式初始化：client.NewService 不会读 Log 配置去建日志器，
-	// 不调这一步 frp 会一直往 stdout 打日志，
-	// 而 tunnel 子命令的 stdout 是留给 mod 解析 JSON 的。
-	frplog.InitLogger(log.To, log.Level, 7, true)
+	initFrpLogger(log)
 
 	c := &v1.ClientCommonConfig{
 		ServerAddr:        ep.ServerAddr,

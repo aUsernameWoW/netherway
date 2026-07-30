@@ -33,10 +33,24 @@ public interface ClientBridge {
     /** 给玩家的提示，例如「已切换到直连」。实现可选择聊天栏或 HUD。 */
     void notifyPlayer(String message);
 
+    /**
+     * 把一小块数据经凭证同一条自定义频道回传服务端（升级结果回执用）。
+     *
+     * <p>可能在任意线程被调用；当前没有连接时安静地丢弃即可——回执是
+     * 尽力而为的诊断信息，绝不能因为它影响升级流程本身。
+     */
+    void sendToServer(byte[] payload);
+
     /** 存放 agent 二进制的目录，通常是游戏目录下的某个子目录。 */
     Path cacheDirectory();
 
     void info(String message);
 
     void warn(String message, Throwable error);
+
+    /**
+     * 细粒度的过程日志：agent 的每个事件、stderr 内容、启动命令行等。
+     * 量大但排查问题时全靠它们；平台实现按自己的配置决定落到哪个级别。
+     */
+    void debug(String message);
 }

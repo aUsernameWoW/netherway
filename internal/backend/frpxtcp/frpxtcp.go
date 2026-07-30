@@ -4,7 +4,9 @@ package frpxtcp
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/ripplecraft/xtcpinmc/internal/backend"
 	"github.com/ripplecraft/xtcpinmc/internal/config"
@@ -34,8 +36,14 @@ func New() backend.Backend { return impl{} }
 func (impl) Name() string { return Name }
 
 func (impl) Run(ctx context.Context, params map[string]string, opts backend.Options) error {
-	// 缺省参数用构建期注入的默认值补齐，保持「零配置可用」；
-	// 无法识别的键按接口契约直接忽略。
+	// 无法识别的键按接口契约必须忽略，但要说出来：服务端配置里键名拼错时
+	// （比如把 secret 写成 key），这是唯一能暴露「值被静默丢弃」的地方。
+	if unknown := unknownKeys(params); len(unknown) > 0 {
+		opts.Diagf("忽略未知参数键 %v（frp-xtcp 认识的键: %s）",
+			unknown, strings.Join(knownKeys(), ", "))
+	}
+
+	// 缺省参数用构建期注入的默认值补齐，保持「零配置可用」。
 	ep := tunnel.Endpoint{
 		ServerAddr: paramOr(params, ParamServer, config.DefaultServerAddr),
 		ServerPort: config.ServerPortDefault(),
@@ -53,16 +61,22 @@ func (impl) Run(ctx context.Context, params map[string]string, opts backend.Opti
 		Name:      paramOr(params, ParamRoom, config.DefaultRoom),
 		SecretKey: paramOr(params, ParamSecret, config.DefaultSecretKey),
 	}
+	// 生效值的快照。token 与密钥只报有无和长度，值本身绝不能出现在
+	// 诊断输出里——这些行最终会进玩家的游戏日志。
+	opts.Diagf("生效参数: %s=%s %s=%d %s=%s %s=%s %s=%s %s=%s",
+		ParamServer, ep.ServerAddr, ParamServerPort, ep.ServerPort,
+		ParamSTUN, ep.STUNServer, ParamRoom, room.Name,
+		ParamToken, presence(ep.Token), ParamSecret, presence(room.SecretKey))
 	if err := ep.Validate(); err != nil {
-		return err
+		return withParamKeys(err, params)
 	}
 	if err := room.Validate(); err != nil {
-		return err
+		return withParamKeys(err, params)
 	}
 
 	// 先当场验证一个可用的 STUN 再启动 frp：frp 只认单个地址，
 	// 押在一台上会因它的偶发抖动而白白失去一次升级机会。
-	picked, err := stunpick.Resolve(ep.STUNServer, nil)
+	picked, err := stunpick.Resolve(ep.STUNServer, opts.Logf)
 	if err != nil {
 		return err
 	}
@@ -74,7 +88,7 @@ func (impl) Run(ctx context.Context, params map[string]string, opts backend.Opti
 		// 接口契约：backend 不得自带兜底，否则就绪探测分不清打没打通
 		NoFallback: true,
 		Timings:    opts.Timings,
-	}, tunnel.LogOptions{Level: opts.LogLevel, To: opts.LogTo})
+	}, tunnel.LogOptions{Level: opts.LogLevel, To: opts.LogTo, Echo: opts.LogEcho})
 }
 
 func paramOr(params map[string]string, key, fallback string) string {
@@ -82,4 +96,46 @@ func paramOr(params map[string]string, key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func knownKeys() []string {
+	return []string{ParamServer, ParamServerPort, ParamToken,
+		ParamSTUN, ParamRoom, ParamSecret}
+}
+
+func unknownKeys(params map[string]string) []string {
+	known := map[string]bool{}
+	for _, k := range knownKeys() {
+		known[k] = true
+	}
+	var out []string
+	for k := range params {
+		if !known[k] {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// presence 描述敏感参数的有无与长度，绝不输出值本身。
+func presence(v string) string {
+	if v == "" {
+		return "空"
+	}
+	return fmt.Sprintf("已设置(%d字节)", len(v))
+}
+
+// withParamKeys 把收到的参数键附在校验错误后面。配置侧键名写错时值会被
+// 静默忽略，光看「密钥为空」猜不到原因；键名清单能让人当场对出差异。
+func withParamKeys(err error, params map[string]string) error {
+	if len(params) == 0 {
+		return fmt.Errorf("%w（本次未收到任何参数，全部使用构建期默认值）", err)
+	}
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return fmt.Errorf("%w（收到的参数键: %s）", err, strings.Join(keys, ", "))
 }

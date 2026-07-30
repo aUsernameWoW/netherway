@@ -13,7 +13,7 @@ public final class ClientProxy extends CommonProxy {
             // 玩家可彻底关掉：不注册任何监听，连凭证都不收
             return;
         }
-        ForgeClientBridge bridge = new ForgeClientBridge();
+        ForgeClientBridge bridge = new ForgeClientBridge(channel, config.verboseLogging());
         UpgradeController controller = new UpgradeController(bridge, config.clientTimings());
         ClientEvents events = new ClientEvents(controller, bridge);
 

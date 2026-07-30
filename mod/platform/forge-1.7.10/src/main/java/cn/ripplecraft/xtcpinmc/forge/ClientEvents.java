@@ -40,6 +40,7 @@ public final class ClientEvents {
         ByteBuf buf = event.packet.payload();
         byte[] data = new byte[buf.readableBytes()];
         buf.readBytes(data);
+        bridge.debug("收到服务端凭证包，" + data.length + " 字节");
         try {
             controller.onCredentials(Credentials.decode(data));
         } catch (IOException e) {
@@ -60,6 +61,7 @@ public final class ClientEvents {
     public void onConnected(FMLNetworkEvent.ClientConnectedToServerEvent event) {
         if (bridge.redirectLanded(event.manager)) {
             // 我们发起的切换成功落地，隧道由 agent 继续承载，什么都不用做
+            bridge.debug("直连切换完成，agent 继续承载新连接");
             return;
         }
         // 与升级无关的新连接（换服、重进）：上一局若有残留的 agent，清掉
@@ -70,12 +72,14 @@ public final class ClientEvents {
     public void onDisconnected(FMLNetworkEvent.ClientDisconnectionFromServerEvent event) {
         if (bridge.redirectInFlight()) {
             // 升级引发的断开：马上要连的就是这条隧道，不能停 agent
+            bridge.debug("断开由直连切换引发，保留 agent 等待新连接落地");
             controller.onDisconnected();
             return;
         }
         // 真退出：无论升级到哪一步都彻底停掉并复位。
         // UPGRADED 下 onDisconnected() 会误以为断开是升级造成的而放过 agent，
         // 所以这里必须用 shutdown()。
+        bridge.debug("玩家离开服务器，停止 agent 并复位");
         controller.shutdown();
     }
 }

@@ -43,7 +43,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.xtcpi
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 87 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 124 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -86,6 +86,13 @@ Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者�
 参数键名：Go 侧实现包的常量（如 `internal/backend/frpxtcp`）↔ Java 侧
 `Credentials` 的对应工厂方法（如 `Credentials.frpXtcp`）。
 
+agent 的 stderr 是诊断通道：backend 的参数快照、被忽略的未知键、frp 自身
+info 及以上的日志都会回显到这里，mod 逐行转进游戏日志（`bridge.debug`）。
+
+Minecraft 自定义频道（`xtcpinmc`）上还有一条 Java↔Java 的契约：服务端下发
+`Credentials`，客户端在升级结束后回传 `UpgradeReport`（失败立即发、成功等
+切换落地后发），服务端记进日志。两者都是裸字节编解码、版本化、向前兼容。
+
 ### backend 抽象
 
 具体隧道方案经 `internal/backend` 的接口抽象：一个 backend 只承诺「在本机
@@ -105,7 +112,7 @@ core 与平台适配层不解释参数，无需改动。约束：**backend 实�
 
 | 子命令 | 用途 | 关键差异 |
 |---|---|---|
-| `serve` | 服务器宿主机 | 注册 xtcp + stcp 两个代理 |
+| `serve` | 服务器宿主机 | 注册 xtcp + stcp 两个代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand` |
 | `join` | 独立运行的玩家侧 | 带 stcp 兜底，并做局域网广播 |
 | `tunnel` | 供 mod 调用 | **经 backend 抽象、无兜底**，超时即退出，stdout 输出 JSON |
 
@@ -156,9 +163,11 @@ mod 加载器的序列化机制。Forge 在 1.13 之后把网络 API 整个重�
 **frp 的 `Secretkey` 是小写 k**（`XTCPProxyConfig`），而 visitor 侧
 `VisitorBaseConfig.SecretKey` 是大写 K。frp 自身命名不一致。
 
-**必须手动调用 `frplog.InitLogger`**，`client.NewService` 不会读 Log 配置去建
-日志器。不调这一步 frp 会一直往 stdout 打日志，而 `tunnel` 子命令的 stdout 是
-留给 JSON 契约的。
+**必须手动初始化 frp 日志器**，`client.NewService` 不会读 Log 配置去建
+日志器。不初始化 frp 会一直往 stdout 打日志，而 `tunnel` 子命令的 stdout 是
+留给 JSON 契约的。文件模式不走 `frplog.InitLogger`（它只支持单一去向），
+`internal/tunnel` 的 `initFrpLogger` 自行组装 writer：全量进文件，
+info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏日志）。
 
 **frp v0.70 的 `ServiceOptions` 不接收配置切片**，改为通过
 `source.NewConfigSource()` + `ReplaceAll` + `NewAggregator` 注入。
@@ -168,7 +177,7 @@ mod 加载器的序列化机制。Forge 在 1.13 之后把网络 API 整个重�
 
 **必须消费 agent 的 stderr 且不能丢弃内容。** 管道缓冲区填满后子进程写日志会
 永久阻塞；而丢掉内容的话，启动失败时排查就只剩「进程退出了」。`AgentProcess`
-保留最近 8 行并附在失败原因里。
+保留最近 8 行并附在失败原因里，同时经 Listener 逐行转发，由 mod 写进游戏日志。
 
 **必须识别重复下发的凭证。** 切换连接后玩家会重新登录，服务端会再下发一次凭证，
 不去重就会陷入「升级→重连→再升级」的死循环。

@@ -30,6 +30,10 @@ public final class UpgradeController {
 
     private volatile AgentProcess agent;
     private volatile String activeKey;
+    /** 成功时的 READY 事件，供切换落地后的结果回执取 rtt/耗时。 */
+    private volatile AgentEvent lastReady;
+    /** 成功回执只发一次（服务端每次重连都会重发凭证）。 */
+    private volatile boolean upgradeReported;
 
     public UpgradeController(ClientBridge bridge, Timings timings) {
         this.bridge = bridge;
@@ -57,15 +61,22 @@ public final class UpgradeController {
             State s = state.get();
             if (s == State.UPGRADED || s == State.PUNCHING) {
                 bridge.info("已在处理房间 " + cred.room() + " 的直连，忽略重复凭证");
+                if (s == State.UPGRADED) {
+                    // 重复凭证经新连接送达，说明切换已真正落地且频道可用，
+                    // 这是回传成功回执最可靠的时机。
+                    reportUpgradedOnce(cred.room());
+                }
                 return false;
             }
             if (s == State.GAVE_UP) {
                 // 本次会话已判定此房间打洞不通，别反复折腾玩家的网络
+                bridge.debug("本次会话已放弃房间 " + cred.room() + " 的直连，忽略重复凭证");
                 return false;
             }
         }
 
         if (!state.compareAndSet(State.IDLE, State.PUNCHING)) {
+            bridge.debug("当前状态为 " + state.get() + "，忽略本次凭证");
             return false;
         }
         activeKey = cred.dedupKey();
@@ -87,20 +98,41 @@ public final class UpgradeController {
             Platform platform = Platform.detect();
             bridge.info("准备直连：平台 " + platform + "，房间 " + cred.room()
                     + "（" + cred.backendId() + "）");
+            // toString 只列参数键名不含值，可以放心进日志
+            bridge.debug("收到的凭证: " + cred);
 
-            Path exe = new BinaryStore(bridge.cacheDirectory(), platform).ensureExtracted();
-            proc = AgentProcess.start(exe, cred, timings, bridge.cacheDirectory(), null);
+            Path cacheDir = bridge.cacheDirectory();
+            Path exe = new BinaryStore(cacheDir, platform).ensureExtracted();
+            Path agentLog = cacheDir.resolve("tunnel.log");
+            bridge.debug("agent 二进制: " + exe);
+            bridge.debug("启动 agent: " + AgentProcess.describeCommand(
+                    AgentProcess.buildCommand(exe, cred, timings, agentLog)));
+
+            proc = AgentProcess.start(exe, cred, timings, cacheDir, agentLog,
+                    new AgentProcess.Listener() {
+                        @Override
+                        public void onEvent(AgentEvent event) {
+                            bridge.debug("agent 事件: " + event);
+                        }
+
+                        @Override
+                        public void onStderrLine(String line) {
+                            bridge.debug("agent: " + line);
+                        }
+                    });
             agent = proc;
 
+            bridge.debug("等待打洞结果，最多 " + timings.outcomeWaitMs()
+                    + "ms（agent 详细日志: " + agentLog + "）");
             AgentEvent outcome = proc.awaitOutcome(timings.outcomeWaitMs());
 
             if (outcome == null) {
-                giveUp(proc, "等待直连结果超时");
+                giveUp(proc, cred, "等待直连结果超时");
                 return;
             }
             if (outcome.type() != AgentEvent.Type.READY) {
                 String why = outcome.reason() == null ? "打洞未成功" : outcome.reason();
-                giveUp(proc, why);
+                giveUp(proc, cred, why);
                 return;
             }
 
@@ -110,6 +142,7 @@ public final class UpgradeController {
             bridge.info("直连就绪，端口 " + port + "，延迟 " + rtt + "ms，用时 "
                     + outcome.elapsedMs() + "ms");
 
+            lastReady = outcome;
             state.set(State.UPGRADED);
             final String msg = rtt > 0
                     ? "已建立直连（延迟 " + rtt + "ms），正在切换…"
@@ -124,17 +157,17 @@ public final class UpgradeController {
 
         } catch (Platform.UnsupportedPlatformException e) {
             // 没有对应平台的二进制，重试也没意义
-            giveUp(proc, "当前系统不支持直连: " + e.getMessage());
+            giveUp(proc, cred, "当前系统不支持直连: " + e.getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            giveUp(proc, "升级过程被中断");
+            giveUp(proc, cred, "升级过程被中断");
         } catch (Exception e) {
             bridge.warn("建立直连失败", e);
-            giveUp(proc, e.getMessage());
+            giveUp(proc, cred, e.getMessage());
         }
     }
 
-    private void giveUp(AgentProcess proc, String reason) {
+    private void giveUp(AgentProcess proc, Credentials cred, String reason) {
         state.set(State.GAVE_UP);
         if (proc != null) {
             proc.close();
@@ -143,6 +176,31 @@ public final class UpgradeController {
         // 升级失败对玩家无感：他仍在原有的中转连接上正常游戏，
         // 所以只记日志，不去打扰他。
         bridge.info("放弃直连，继续使用当前线路（" + reason + "）");
+        // 此刻中转连接还活着，回执能稳稳送出去；服主在服务端日志里
+        // 就能看到失败原因，不用挨个找玩家要客户端日志。
+        sendReport(UpgradeReport.gaveUp(cred.room(), reason));
+    }
+
+    /** 成功回执。切换会断开旧连接，发早了可能没送出去就断了，所以放到落地之后。 */
+    private void reportUpgradedOnce(String room) {
+        if (upgradeReported) {
+            return;
+        }
+        upgradeReported = true;
+        AgentEvent ready = lastReady;
+        sendReport(UpgradeReport.upgraded(room,
+                ready == null ? 0 : ready.rttMs(),
+                ready == null ? 0 : ready.elapsedMs()));
+    }
+
+    private void sendReport(UpgradeReport report) {
+        try {
+            bridge.sendToServer(report.encode());
+            bridge.debug("已回传直连结果: " + report);
+        } catch (RuntimeException e) {
+            // 回执是尽力而为的诊断信息，失败绝不能影响升级流程
+            bridge.debug("回传直连结果失败: " + e);
+        }
     }
 
     /**
@@ -163,6 +221,8 @@ public final class UpgradeController {
         AgentProcess proc = agent;
         agent = null;
         activeKey = null;
+        lastReady = null;
+        upgradeReported = false;
         state.set(State.IDLE);
         if (proc != null) {
             proc.close();

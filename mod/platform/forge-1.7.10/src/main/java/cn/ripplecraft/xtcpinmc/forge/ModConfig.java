@@ -26,12 +26,16 @@ public final class ModConfig {
 
     // ---- server ----
     private final boolean serverEnabled;
+    private final boolean serverRunAgent;
+    private final int serverLocalPort;
     private final String backendId;
-    private final String[] serverParams;
+    /** 构造时解析完的参数表；解析与拼写检查只做一次，避免每次登录重复告警。 */
+    private final Map<String, String> serverParams;
     private final int serverPunchTimeoutSeconds;
 
     // ---- client ----
     private final boolean clientEnabled;
+    private final boolean verboseLogging;
     private final int clientPunchTimeoutSeconds;
     private final int probeIntervalMs;
     private final int probeTimeoutMs;
@@ -60,10 +64,15 @@ public final class ModConfig {
                 + "注意: 此文件含密钥，权限只给服务端进程；客户端永远不需要填这些。");
         serverEnabled = cfg.getBoolean("enabled", "server", false,
                 "是否在玩家登录后下发直连凭证（仅服务端有意义）");
+        serverRunAgent = cfg.getBoolean("runAgent", "server", true,
+                "随服务端启动内置 serve，用 params 里的参数把本地端口注册为房间代理。\n"
+                + "已在宿主机单独运行 xtcpinmc serve、或托管环境禁止启动子进程时设为 false");
+        serverLocalPort = cfg.getInt("localPort", "server", 0, 0, 65535,
+                "内置 serve 发布的 Minecraft 本地端口，0 表示使用服务器实际监听的端口");
         backendId = cfg.getString("backend", "server", Credentials.BACKEND_FRP_XTCP,
                 "隧道方案标识，与 agent 的 -backend 一致");
-        serverParams = cfg.getStringList("params", "server", new String[0],
-                "backend 参数，每行一个 key=value");
+        serverParams = parseParams(cfg.getStringList("params", "server", new String[0],
+                "backend 参数，每行一个 key=value"), backendId);
         serverPunchTimeoutSeconds = cfg.getInt("punchTimeoutSeconds", "server", 0, 0, 3600,
                 "建议客户端使用的打洞超时秒数，0 表示由客户端自己配置");
 
@@ -71,6 +80,9 @@ public final class ModConfig {
                 "客户端专用：时间参数默认值来自实测，顺利时建链约 2-5 秒。");
         clientEnabled = cfg.getBoolean("enabled", "client", true,
                 "是否响应服务端下发的凭证并尝试直连");
+        verboseLogging = cfg.getBoolean("verboseLogging", "client", true,
+                "把直连过程的详细日志（agent 事件、参数键、诊断输出）以 INFO 级别写进游戏日志；\n"
+                + "关闭后这些内容降为 DEBUG 级别（默认日志配置下不可见）");
         clientPunchTimeoutSeconds = cfg.getInt("punchTimeoutSeconds", "client", 15, 1, 3600,
                 "打洞超时秒数（服务端下发了建议值时以服务端为准）");
         probeIntervalMs = cfg.getInt("probeIntervalMs", "client", 250, 50, 10_000,
@@ -92,15 +104,26 @@ public final class ModConfig {
         return serverEnabled;
     }
 
-    /**
-     * 由配置组装凭证；配置不完整返回 null。
-     *
-     * <p>校验交给 {@link Credentials} 的构造器（比如 room 必填、键不含等号），
-     * 它的报错信息只含键名不含值，可以放心进日志。
-     */
-    public Credentials serverCredentials() {
+    public boolean serverRunAgent() {
+        return serverRunAgent;
+    }
+
+    public int serverLocalPort() {
+        return serverLocalPort;
+    }
+
+    public String serverBackendId() {
+        return backendId;
+    }
+
+    /** 解析完的 backend 参数表（与下发凭证同源），内置 serve 的命令行由它组装。 */
+    public Map<String, String> serverParams() {
+        return serverParams;
+    }
+
+    private static Map<String, String> parseParams(String[] lines, String backendId) {
         Map<String, String> params = new LinkedHashMap<String, String>();
-        for (String line : serverParams) {
+        for (String line : lines) {
             String trimmed = line.trim();
             if (trimmed.isEmpty() || trimmed.startsWith("#")) {
                 continue;
@@ -112,8 +135,29 @@ public final class ModConfig {
             }
             params.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
         }
+        // agent 对未知键的契约是静默忽略（服务端可能比 agent 新），
+        // 所以拼写错误不会在任何一端报错——只能在这里主动指出来。
+        if (Credentials.BACKEND_FRP_XTCP.equals(backendId)) {
+            for (String key : params.keySet()) {
+                if (!Credentials.frpXtcpParamKeys().contains(key)) {
+                    LOG.warn("server.params 里的键 \"{}\" 不在 frp-xtcp 的契约里"
+                            + "（认识的键: {}），agent 会忽略它；若是拼写错误请改正",
+                            key, Credentials.frpXtcpParamKeys());
+                }
+            }
+        }
+        return params;
+    }
+
+    /**
+     * 由配置组装凭证；配置不完整返回 null。
+     *
+     * <p>校验交给 {@link Credentials} 的构造器（比如 room 必填、键不含等号），
+     * 它的报错信息只含键名不含值，可以放心进日志。
+     */
+    public Credentials serverCredentials() {
         try {
-            return new Credentials(backendId, params, serverPunchTimeoutSeconds * 1000);
+            return new Credentials(backendId, serverParams, serverPunchTimeoutSeconds * 1000);
         } catch (IllegalArgumentException e) {
             LOG.warn("凭证配置不完整: {}", e.getMessage());
             return null;
@@ -124,6 +168,10 @@ public final class ModConfig {
 
     public boolean clientEnabled() {
         return clientEnabled;
+    }
+
+    public boolean verboseLogging() {
+        return verboseLogging;
     }
 
     public Timings clientTimings() {

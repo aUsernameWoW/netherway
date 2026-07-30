@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -88,6 +89,15 @@ func (p paramFlags) Set(s string) error {
 	return nil
 }
 
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // mergedParams 组装传给 backend 的参数表。
 //
 // frp 的老旗标（-server/-token/…）作为糖保留：手工调试和旧调用方都还能用。
@@ -159,6 +169,16 @@ func cmdTunnel(args []string) error {
 		*logPath = filepath.Join(os.TempDir(), "xtcpinmc-tunnel.log")
 	}
 
+	// 诊断信息走 stderr：stdout 是 JSON 契约的专用通道，
+	// 而 mod 会消费 stderr 并把内容转进游戏日志，这里多说无害。
+	diagf := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format+"\n", args...)
+	}
+	diagf("backend %s，本地端口 %d，收到参数键: %s",
+		b.Name(), port, strings.Join(sortedKeys(merged), ", "))
+	diagf("打洞超时 %.1fs，就绪探测间隔 %.2fs、单次超时 %.1fs；frp 日志: %s（级别 %s）",
+		*timeout, *probeInterval, *probeTimeout, *logPath, logLevelOf(*verbose))
+
 	ctx, stop := signalContext()
 	defer stop()
 
@@ -182,6 +202,10 @@ func cmdTunnel(args []string) error {
 			Timings:  timings,
 			LogLevel: logLevelOf(*verbose),
 			LogTo:    *logPath,
+			Logf:     diagf,
+			// frp info 及以上的日志回显到 stderr，经 mod 进游戏日志——
+			// 「xtcp server 不存在」这类只有 frp 知道的失败原因不再只躺在文件里
+			LogEcho: os.Stderr,
 		})
 	}()
 

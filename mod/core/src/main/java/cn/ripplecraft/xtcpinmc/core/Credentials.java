@@ -89,6 +89,21 @@ public final class Credentials {
         return new Credentials(BACKEND_FRP_XTCP, p, punchTimeoutMs);
     }
 
+    /** 从工厂产物提取键集，保证与上面的键名字面量永远一致、不会改岔。 */
+    private static final java.util.Set<String> FRP_XTCP_PARAM_KEYS =
+            frpXtcp("_", 1, "_", "_", "_", "_", 0).params().keySet();
+
+    /**
+     * frp-xtcp 契约的全部参数键。
+     *
+     * <p>服务端直接构造参数表（不经上面的工厂）时可据此校验拼写：agent
+     * 按契约忽略未知键，键名写错不会报错，只会静默落回构建期默认值——
+     * 比如把 secret 写成 key，表现就是「密钥为空」而看不出为什么。
+     */
+    public static java.util.Set<String> frpXtcpParamKeys() {
+        return FRP_XTCP_PARAM_KEYS;
+    }
+
     private static String require(String v, String name) {
         if (v == null || v.isEmpty()) {
             throw new IllegalArgumentException("凭证字段 " + name + " 不能为空");

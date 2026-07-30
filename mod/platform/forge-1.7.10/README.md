@@ -50,6 +50,12 @@ server {
     B:enabled=true
     S:backend=frp-xtcp
 
+    # 随服务端启动内置 serve，用下面的 params 把本地端口注册为房间代理。
+    # 已在宿主机单独运行 xtcpinmc serve、或托管环境禁止子进程时设为 false。
+    B:runAgent=true
+    # 内置 serve 发布的本地端口，0 表示用服务器实际监听的端口
+    I:localPort=0
+
     # backend 参数，每行一个 key=value；# 开头的行会被忽略
     S:params <
         server=frps.example.com
@@ -75,6 +81,31 @@ backend 实现（如 `internal/backend/frpxtcp`）保持一致。
 
 **客户端零配置即用**，什么都不用填。如需关掉功能或调时间参数，
 同一路径的 cfg 里写 `client` 类目（键见 `ModConfig`），也是启动前手写即可。
+
+## 排查
+
+直连没生效时看日志，两侧都有料：
+
+- **客户端游戏日志**（搜 `xtcpinmc`）：默认 `client.verboseLogging=true`，
+  打洞全过程——收到的凭证键名、agent 启动命令（参数值已脱敏）、agent 的
+  每个事件与诊断输出、以及 frp 自身 info 及以上的日志（比如
+  `xtcp server for [xxx-p2p] doesn't exist`，意思是宿主机的 serve 没在
+  运行）——都以 INFO 级别写进游戏日志。嫌吵可在 cfg 里关掉，
+  这些内容会降为 DEBUG 级别。
+- **agent 详细日志**：`.minecraft/xtcpinmc/tunnel.log`，frp 的 debug 级
+  输出，打洞握手的每一步都在里面，玩家报告问题时让他带上这个文件。
+  （debug 级刻意不进游戏日志：隧道存活期间会持续刷屏。）
+- **服务端日志**：启动时会打印生效的凭证配置（只列键名）；`server.params`
+  里键名拼错（agent 按契约会静默忽略未知键）会有 WARN 指出来。
+  每个玩家的直连结果也会回传记录在这里——成功一条 INFO（含延迟），
+  失败一条 WARN（含原因），不用挨个找玩家要客户端日志。
+- **常见失败**：`xtcp server for [房间-p2p] doesn't exist` 意思是 frps 上
+  没有这个代理。默认 `server.runAgent=true` 时代理由 mod 内置的 serve
+  注册（参数与凭证同源，日志里带 `[serve]` 前缀，出问题先看它们）；
+  关掉 runAgent 的话代理注册靠宿主机上独立运行的 `xtcpinmc serve`，
+  检查它是否在跑、`-room` 与 `-server` 是否与 `server.params` 一致
+  （serve 不带 `-room` 时用的是构建期默认房间名）。两种方式**只能开一个**：
+  同名代理在 frps 上会注册冲突。
 
 ## 实现要点
 

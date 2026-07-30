@@ -36,7 +36,13 @@ public final class SelfTest {
         testCredentialsValidation();
         testCredentialsHidesSecrets();
         testCredentialsDedupKey();
+        testFrpXtcpParamKeys();
+        testUpgradeReportRoundTrip();
+        testUpgradeReportSanitizes();
+        testUpgradeReportForwardCompat();
         testBuildCommand();
+        testDescribeCommandMasksValues();
+        testServeCommand();
         testTimingsNormalization();
         testUpgradeGivesUpWithoutBinary();
         testUpgradeIgnoresDuplicateCredentials();
@@ -311,7 +317,8 @@ public final class SelfTest {
         Credentials cred = Credentials.frpXtcp("1.2.3.4", 7000, "tok",
                 "stun.miwifi.com:3478", "gtnh", "sec", 0);
         List<String> cmd = AgentProcess.buildCommand(
-                Paths.get("/tmp/xtcpinmc"), cred, Timings.defaults());
+                Paths.get("/tmp/xtcpinmc"), cred, Timings.defaults(),
+                Paths.get("/tmp/tunnel.log"));
 
         check("首个参数是可执行文件", cmd.get(0).endsWith("xtcpinmc"));
         check("子命令是 tunnel", "tunnel".equals(cmd.get(1)));
@@ -321,13 +328,121 @@ public final class SelfTest {
         check("room 经 -O 传递", cmd.contains("room=gtnh"));
         check("secret 经 -O 传递", cmd.contains("secret=sec"));
         check("默认超时 15s", cmd.contains("15.000"));
+        check("固定开启 agent 详细日志", cmd.contains("-v"));
+        int lf = cmd.indexOf("-log-file");
+        check("传递日志文件路径", lf >= 0 && cmd.get(lf + 1).endsWith("tunnel.log"));
 
         // 服务端下发的超时应当覆盖客户端默认值
         Credentials override = Credentials.frpXtcp("1.2.3.4", 7000, "tok",
                 "stun:1", "gtnh", "sec", 3000);
         List<String> cmd2 = AgentProcess.buildCommand(
-                Paths.get("/tmp/xtcpinmc"), override, Timings.defaults());
+                Paths.get("/tmp/xtcpinmc"), override, Timings.defaults(), null);
         check("服务端超时优先", cmd2.contains("3.000") && !cmd2.contains("15.000"));
+        check("未指定日志文件则不传 -log-file", !cmd2.contains("-log-file"));
+    }
+
+    private static void testDescribeCommandMasksValues() {
+        Credentials cred = Credentials.frpXtcp("203.0.113.7", 7000, "SUPER_TOKEN",
+                "stun:1", "gtnh", "SUPER_SECRET", 0);
+        String desc = AgentProcess.describeCommand(AgentProcess.buildCommand(
+                Paths.get("/tmp/xtcpinmc"), cred, Timings.defaults(),
+                Paths.get("/tmp/tunnel.log")));
+
+        check("命令行描述不含 token 值", !desc.contains("SUPER_TOKEN"));
+        check("命令行描述不含密钥值", !desc.contains("SUPER_SECRET"));
+        check("命令行描述不含服务器地址值", !desc.contains("203.0.113.7"));
+        check("命令行描述保留参数键名",
+                desc.contains("token=") && desc.contains("secret="));
+        check("命令行描述保留非敏感旗标",
+                desc.contains("-backend") && desc.contains("-timeout"));
+    }
+
+    private static void testFrpXtcpParamKeys() {
+        Credentials c = Credentials.frpXtcp("h", 1, "t", "s:1", "r", "k", 0);
+        check("契约键集与工厂产出一致",
+                Credentials.frpXtcpParamKeys().equals(c.params().keySet()));
+        check("契约键集含 secret", Credentials.frpXtcpParamKeys().contains("secret"));
+        check("契约键集不含 key", !Credentials.frpXtcpParamKeys().contains("key"));
+    }
+
+    // ---------- UpgradeReport ----------
+
+    private static void testUpgradeReportRoundTrip() throws Exception {
+        UpgradeReport ok = UpgradeReport.decode(
+                UpgradeReport.upgraded("gtnh", 31, 1792).encode());
+        check("成功回执往返", ok.isUpgraded());
+        check("成功回执房间", "gtnh".equals(ok.room()));
+        check("成功回执延迟", ok.rttMs() == 31);
+        check("成功回执耗时", ok.elapsedMs() == 1792);
+        check("成功回执无原因", ok.reason().isEmpty());
+
+        UpgradeReport bad = UpgradeReport.decode(
+                UpgradeReport.gaveUp("gtnh", "打洞超时").encode());
+        check("失败回执往返", !bad.isUpgraded());
+        check("失败回执原因", "打洞超时".equals(bad.reason()));
+    }
+
+    private static void testUpgradeReportSanitizes() throws Exception {
+        // 控制字符换成空格：防止恶意客户端往服务端日志里注入伪造行
+        UpgradeReport r = UpgradeReport.decode(
+                UpgradeReport.gaveUp("room", "第一行\n[INFO] 伪造的日志行").encode());
+        check("原因中的换行被清洗", !r.reason().contains("\n"));
+
+        StringBuilder longReason = new StringBuilder();
+        for (int i = 0; i < 1000; i++) {
+            longReason.append('x');
+        }
+        UpgradeReport t = UpgradeReport.decode(
+                UpgradeReport.gaveUp("room", longReason.toString()).encode());
+        check("超长原因被截断", t.reason().length() <= 301);
+    }
+
+    private static void testUpgradeReportForwardCompat() throws Exception {
+        // 未来版本在尾部追加字段，老服务端读已知前缀仍能解出
+        byte[] v1 = UpgradeReport.upgraded("gtnh", 31, 1792).encode();
+        byte[] extended = new byte[v1.length + 4];
+        System.arraycopy(v1, 0, extended, 0, v1.length);
+        extended[0] = 9; // 假装是版本 9，尾部多 4 字节新字段
+        UpgradeReport r = UpgradeReport.decode(extended);
+        check("高版本回执读已知前缀", r.isUpgraded() && "gtnh".equals(r.room()));
+
+        boolean threw = false;
+        try {
+            UpgradeReport.decode(new byte[]{0});
+        } catch (Exception e) {
+            threw = true;
+        }
+        check("过旧版本回执应拒绝", threw);
+    }
+
+    private static void testServeCommand() {
+        java.util.Map<String, String> params = new java.util.LinkedHashMap<String, String>();
+        params.put("server", "frps.example.com");
+        params.put("serverPort", "7000");
+        params.put("token", "SUPER_TOKEN");
+        params.put("room", "test");
+        params.put("secret", "SUPER_SECRET");
+        params.put("futureKey", "whatever"); // 未知键应被忽略
+
+        List<String> cmd = ServeCommand.build(Paths.get("/srv/xtcpinmc"), params, 25570);
+        check("serve 子命令", "serve".equals(cmd.get(1)));
+        int server = cmd.indexOf("-server");
+        check("server 映射为 -server",
+                server >= 0 && "frps.example.com".equals(cmd.get(server + 1)));
+        int sp = cmd.indexOf("-server-port");
+        check("serverPort 映射为 -server-port", sp >= 0 && "7000".equals(cmd.get(sp + 1)));
+        int room = cmd.indexOf("-room");
+        check("room 映射为 -room", room >= 0 && "test".equals(cmd.get(room + 1)));
+        int port = cmd.indexOf("-port");
+        check("本地端口经 -port 传递", port >= 0 && "25570".equals(cmd.get(port + 1)));
+        check("未知键被忽略", !cmd.contains("futureKey") && !cmd.contains("whatever"));
+        check("缺失的键不传旗标", !cmd.contains("-stun"));
+
+        String desc = ServeCommand.describe(cmd);
+        check("serve 描述不含 token 值", !desc.contains("SUPER_TOKEN"));
+        check("serve 描述不含密钥值", !desc.contains("SUPER_SECRET"));
+        check("serve 描述保留 frps 地址", desc.contains("frps.example.com"));
+        check("serve 描述保留房间名", desc.contains("-room test"));
     }
 
     private static void testTimingsNormalization() {
@@ -348,6 +463,7 @@ public final class SelfTest {
     private static final class FakeBridge implements ClientBridge {
         final List<String> logs = new ArrayList<String>();
         final List<String> connects = new ArrayList<String>();
+        final List<byte[]> reports = new ArrayList<byte[]>();
         final CountDownLatch settled = new CountDownLatch(1);
         private final Path dir;
 
@@ -373,6 +489,13 @@ public final class SelfTest {
         }
 
         @Override
+        public void sendToServer(byte[] payload) {
+            synchronized (reports) {
+                reports.add(payload);
+            }
+        }
+
+        @Override
         public Path cacheDirectory() {
             return dir;
         }
@@ -393,6 +516,13 @@ public final class SelfTest {
                 logs.add("WARN " + message);
             }
         }
+
+        @Override
+        public void debug(String message) {
+            synchronized (logs) {
+                logs.add("DEBUG " + message);
+            }
+        }
     }
 
     private static void testUpgradeGivesUpWithoutBinary() throws Exception {
@@ -408,6 +538,19 @@ public final class SelfTest {
         check("在超时前就放弃", bridge.settled.await(10, TimeUnit.SECONDS));
         check("终态是 GAVE_UP", c.state() == UpgradeController.State.GAVE_UP);
         check("没有触发连接切换", bridge.connects.isEmpty());
+
+        // 失败时应当把结果回执发给服务端，让服主在自己的日志里看到原因
+        byte[] payload;
+        synchronized (bridge.reports) {
+            check("失败后回传了结果", bridge.reports.size() == 1);
+            payload = bridge.reports.isEmpty() ? null : bridge.reports.get(0);
+        }
+        if (payload != null) {
+            UpgradeReport report = UpgradeReport.decode(payload);
+            check("回执标记为失败", !report.isUpgraded());
+            check("回执带房间名", "room-a".equals(report.room()));
+            check("回执带失败原因", !report.reason().isEmpty());
+        }
         c.shutdown();
     }
 
