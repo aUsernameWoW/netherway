@@ -18,6 +18,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 三条流水线都不需要写权限，checkout/缓存/artifact 用的都是运行时令牌
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
