@@ -43,7 +43,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.xtcpi
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 124 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 158 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -138,6 +138,24 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 
 `UpgradeController` 是整个流程的状态机：`IDLE → PUNCHING → UPGRADED / GAVE_UP`。
 
+### 预热与凭证缓存
+
+每次下发的凭证都会写进本地缓存（`CredentialCache`，`.minecraft/xtcpinmc/credentials/`）；
+下次启动时 `WarmupController` 在 FML 加载期就用缓存凭证后台打洞，并经
+`DirectServerEntry` 在服务器列表里维护一个直连条目（agent 的 STARTING 事件
+一报出端口就更新地址）。玩家可三种方式进服，互为兜底：
+
+- **直连条目**：进服后平台层按「回环地址 + 预热端口」识别（`ClientEvents.warmupMatch`），
+  调 `adoptDirectConnection` 把状态机置为 UPGRADED——随后服务端照常下发的凭证
+  命中重复分支并回执成功，零新协议。
+- **中转进服**：既有升级流程，但 `runUpgrade` 先查预热隧道，就绪则直接复用
+  （`reuseWarmTunnel`），不再对同一房间起第二个 agent。
+- **预热失败/无缓存**：一切如旧。凭证轮换后缓存自动经「打洞失败→中转→
+  新凭证覆盖」闭环恢复，玩家与服主都无需操作。
+
+预热隧道生命周期是整个游戏进程（断开、回主菜单都不停，它承载着直连条目），
+退出由 `AgentProcess` 的 shutdown hook 兜底。
+
 ## 关键约束
 
 **core 必须零第三方依赖，且不得引用 Minecraft 类型。** 连 JSON 解析都是手写的
@@ -182,6 +200,13 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 **必须识别重复下发的凭证。** 切换连接后玩家会重新登录，服务端会再下发一次凭证，
 不去重就会陷入「升级→重连→再升级」的死循环。
 
+**预热失败绝不能进 `GAVE_UP`。** 那个状态的语义是「本会话不再重试」，会把玩家
+进服后的正常升级一并锁死——预热因此是独立的 `WarmupController`，失败当无事发生。
+同理，平台层采认直连条目的连接前必须先 `controller.shutdown()` 复位到 IDLE。
+
+**预热与升级的 agent 各写各的日志文件**（`tunnel-warmup.log` / `tunnel.log`）。
+预热未出结果时玩家就经中转进服的话，两个 agent 会同时在跑，共用文件会互相踩踏。
+
 **组播必须显式设置 `IP_MULTICAST_IF`。** 玩家机器上常有 VPN、VMware、WSL 等
 虚拟网卡，不指定接口时包会走默认路由（往往是隧道接口），Minecraft 一个包都收不到。
 `lanbeacon` 因此向所有候选网卡都发一遍。
@@ -205,3 +230,13 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 mod 方案的核心安全价值在于：**凭证由服务端在玩家登录后下发**，而非随客户端分发。
 能拿到密钥的必然是通过了服务器既有正版验证/白名单的玩家，因此不需要另建鉴权系统。
 `Credentials.toString()` 刻意不输出任何参数值（token 与密钥都在其中），只列键名。
+
+客户端的凭证缓存（预热用）**刻意明文落盘、不加密**：解密密钥必须与密文同机，
+加密对玩家本人只是混淆；凭证本就完整出现在其内存与 agent 命令行里，落盘未增加
+暴露面。真正的止损是服务端轮换——`secret=auto` 让房间密钥随服务端每次重启更换，
+旧缓存自然失效，玩家走一次中转即自动拿到新密钥。
+
+frp token 目前是全局静态密钥，轮换靠手动改 frps 与服务端配置并重启
+（客户端侧经同一闭环自愈，无需操作）；若将来需要按玩家签发/吊销，控制点在
+frps 的 HTTP server plugin（Login op），凭证 v2 的参数表已为加 `user`/
+每玩家 token 留好扩展空间。

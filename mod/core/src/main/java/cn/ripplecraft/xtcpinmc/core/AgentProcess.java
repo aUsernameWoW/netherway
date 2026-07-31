@@ -100,7 +100,20 @@ public final class AgentProcess implements Closeable {
      */
     public static AgentProcess start(Path exe, Credentials cred, Timings timings,
                                      Path workDir, Path logFile, Listener listener) throws IOException {
-        List<String> cmd = buildCommand(exe, cred, timings, logFile);
+        return start(exe, cred, timings, workDir, logFile, 0, listener);
+    }
+
+    /**
+     * 同上，另指定隧道要绑定的本地端口。
+     *
+     * @param bindPort 期望的本地端口，0 表示由 agent 自动分配。被占用时
+     *                 agent 会自动回落到空闲端口，实际端口以 STARTING/READY
+     *                 事件里的为准——调用方永远不要假设请求的端口就是结果。
+     */
+    public static AgentProcess start(Path exe, Credentials cred, Timings timings,
+                                     Path workDir, Path logFile, int bindPort,
+                                     Listener listener) throws IOException {
+        List<String> cmd = buildCommand(exe, cred, timings, logFile, bindPort);
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         if (workDir != null) {
@@ -113,6 +126,11 @@ public final class AgentProcess implements Closeable {
     }
 
     static List<String> buildCommand(Path exe, Credentials cred, Timings timings, Path logFile) {
+        return buildCommand(exe, cred, timings, logFile, 0);
+    }
+
+    static List<String> buildCommand(Path exe, Credentials cred, Timings timings,
+                                     Path logFile, int bindPort) {
         Timings t = timings == null ? Timings.defaults() : timings.normalized();
 
         // 服务端下发的超时优先：它更清楚自己这端的网络状况；
@@ -128,6 +146,11 @@ public final class AgentProcess implements Closeable {
         for (Map.Entry<String, String> e : cred.params().entrySet()) {
             cmd.add("-O");
             cmd.add(e.getKey() + "=" + e.getValue());
+        }
+        if (bindPort > 0) {
+            // 预热隧道用：条目地址尽量稳定。agent 在端口被占用时自动回落
+            cmd.add("-port");
+            cmd.add(Integer.toString(bindPort));
         }
         cmd.add("-timeout");        cmd.add(seconds(punchMs));
         cmd.add("-probe-interval"); cmd.add(seconds(t.probeIntervalMs()));

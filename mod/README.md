@@ -3,8 +3,15 @@
 让玩家零配置享受 P2P：先通过既有的中转隧道正常连上服务器，服务端在登录后
 下发 P2P 凭证，客户端在后台打洞，成功了才切过去，失败就安静地留在原线路上。
 
+从第二次启动起体验更进一步：下发过的凭证会缓存在本地，游戏加载期间
+`WarmupController` 就提前打洞，并在服务器列表里维护一个直连条目——玩家可以
+直接选它进服，全程不经过中转。凭证轮换后缓存自动失效并经「预热失败→中转→
+新凭证覆盖」闭环恢复，玩家与服主都无需操作。
+
 凭证不随客户端分发，而是玩家通过服务器既有的正版验证 / 白名单之后才拿到。
-**能拿到密钥的必然是有权进服的人，于是不需要另建一套鉴权。**
+**能拿到密钥的必然是有权进服的人，于是不需要另建一套鉴权。**（缓存落盘
+刻意不加密：密钥与密文必然同机，加密对玩家本人只是混淆；止损靠服务端轮换，
+见 forge README 的 `secret=auto`。）
 
 ## 为什么分成 core 和适配层
 
@@ -45,7 +52,9 @@ core 与适配层同样零改动。
 | `AgentProcess` | 启动 agent 子进程，读状态、管生命周期 |
 | `AgentEvent` / `Json` | 解析 agent 的逐行 JSON 状态输出 |
 | `Credentials` | 凭证（backend 标识 + 参数表）与跨版本安全的编解码 |
-| `UpgradeController` | 状态机：何时升级、何时放弃 |
+| `CredentialCache` | 凭证的本地缓存，供下次启动预热（明文落盘、仅属主可读写） |
+| `WarmupController` | 启动期预热：用缓存凭证提前打洞，与升级状态机刻意分离 |
+| `UpgradeController` | 状态机：何时升级、何时放弃；复用/采认预热隧道 |
 | `ClientBridge` | 唯一的平台适配接口 |
 | `Timings` | 可调时间参数，默认值来自实测 |
 
@@ -66,8 +75,9 @@ core 与适配层同样零改动。
 
 ## 验证状态
 
-`SelfTest` 共 87 项，覆盖平台识别、JSON 转义、事件解析容错、凭证往返（含中文与
-任意 backend）、v1 兼容与前向兼容、命令行构造、时间参数回填、状态机去重。
+`SelfTest` 共 158 项，覆盖平台识别、JSON 转义、事件解析容错、凭证往返（含中文与
+任意 backend）、v1 兼容与前向兼容、命令行构造、时间参数回填、状态机去重、
+凭证缓存（往返/最近优先/损坏清理/上限）、预热隧道的复用与采认。
 刻意不依赖 JUnit，一条 javac + java 就能跑：
 
 ```bash
@@ -76,8 +86,9 @@ $JAVA8/bin/javac -encoding UTF-8 -d build/classes $(find core/src -name "*.java"
 $JAVA8/bin/java -cp build/classes cn.ripplecraft.xtcpinmc.core.SelfTest
 ```
 
-**兼容性已实测**：用 Java 8 编译的字节码在 **Java 8 / 17 / 21 / 25**
-上均 87 项全过。这正是 GTNH 用 lwjgl3ify 让 1.7.10 跑在现代 JVM 上的场景。
+**兼容性已实测**：用 Java 8 编译的字节码曾在 **Java 8 / 17 / 21 / 25**
+上全部通过（早期 87 项）；当前 158 项在 Java 8 与 21 上验证全过。
+这正是 GTNH 用 lwjgl3ify 让 1.7.10 跑在现代 JVM 上的场景。
 代码只用 `ProcessBuilder`、`java.nio.file`、`java.net` 这类公共稳定 API，
 不碰 `sun.misc.*` 和 JDK 内部反射（Java 16+ 的强封装会直接拒绝）。
 
@@ -94,4 +105,7 @@ $JAVA8/bin/java -cp build/classes cn.ripplecraft.xtcpinmc.core.SelfTest
 - [x] mod 配置文件，把 `Timings` 暴露给服主（`ModConfig`，server/client 两个类目）
 - [x] 构建脚本：把各平台 agent 二进制打进 jar 的 `natives/`（`build-natives.sh`，
       刻意不注入 TOKEN/SECRET——jar 要分发给玩家）
+- [x] 凭证缓存 + 启动期预热 + 服务器列表直连条目（`CredentialCache` /
+      `WarmupController` / forge 侧 `DirectServerEntry`），配套 `secret=auto`
+      随重启轮换密钥
 - [ ] 跨网络端到端验证

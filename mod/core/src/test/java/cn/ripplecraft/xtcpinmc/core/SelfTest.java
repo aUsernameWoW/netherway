@@ -46,6 +46,13 @@ public final class SelfTest {
         testTimingsNormalization();
         testUpgradeGivesUpWithoutBinary();
         testUpgradeIgnoresDuplicateCredentials();
+        testCredentialCacheRoundTrip();
+        testCredentialCacheKeepsMostRecent();
+        testCredentialCacheSkipsCorrupt();
+        testCredentialCachePrunes();
+        testBuildCommandBindPort();
+        testAdoptDirectConnection();
+        testUpgradeReusesWarmTunnel();
 
         System.out.println();
         System.out.println("通过 " + passed + "，失败 " + failed);
@@ -569,6 +576,175 @@ public final class SelfTest {
         check("放弃后忽略同房间重复凭证", !c.onCredentials(cred));
         c.shutdown();
         check("shutdown 后回到 IDLE", c.state() == UpgradeController.State.IDLE);
+    }
+
+    // ---------- CredentialCache ----------
+
+    private static Credentials sampleCred(String room, String secret) {
+        return Credentials.frpXtcp("1.2.3.4", 7000, "tok", "stun:1", room, secret, 15000);
+    }
+
+    private static java.util.List<Path> listCredFiles(Path dir) throws Exception {
+        java.util.List<Path> out = new ArrayList<Path>();
+        if (!Files.isDirectory(dir)) {
+            return out;
+        }
+        java.nio.file.DirectoryStream<Path> ds = Files.newDirectoryStream(dir, "*.cred");
+        try {
+            for (Path p : ds) {
+                out.add(p);
+            }
+        } finally {
+            ds.close();
+        }
+        return out;
+    }
+
+    /** 把指定房间的缓存文件改成指定 mtime——mtime 分辨率可能只有秒级，测试里显式拉开。 */
+    private static void touch(Path dir, String room, long mtimeMs) throws Exception {
+        for (Path f : listCredFiles(dir)) {
+            if (room.equals(Credentials.decode(Files.readAllBytes(f)).room())) {
+                Files.setLastModifiedTime(f,
+                        java.nio.file.attribute.FileTime.fromMillis(mtimeMs));
+            }
+        }
+    }
+
+    private static void testCredentialCacheRoundTrip() throws Exception {
+        Path dir = Files.createTempDirectory("xtcpinmc-cache").resolve("credentials");
+        CredentialCache cache = new CredentialCache(dir);
+        check("空缓存返回 null", cache.loadMostRecent() == null);
+
+        cache.store(sampleCred("gtnh", "s1"));
+        Credentials back = cache.loadMostRecent();
+        check("缓存往返房间名", back != null && back.room().equals("gtnh"));
+        check("缓存往返密钥", back != null && "s1".equals(back.param("secret")));
+
+        // 同一房间重复缓存应覆盖同一个文件，而不是越攒越多
+        cache.store(sampleCred("gtnh", "s2"));
+        check("同房间覆盖后取到新值", "s2".equals(cache.loadMostRecent().param("secret")));
+        check("同房间只留一个文件", listCredFiles(dir).size() == 1);
+    }
+
+    private static void testCredentialCacheKeepsMostRecent() throws Exception {
+        Path dir = Files.createTempDirectory("xtcpinmc-cache2");
+        CredentialCache cache = new CredentialCache(dir);
+        cache.store(sampleCred("room-old", "k"));
+        cache.store(sampleCred("room-new", "k"));
+        touch(dir, "room-old", 1000L);
+        touch(dir, "room-new", 2000L);
+        check("取最近使用的房间", cache.loadMostRecent().room().equals("room-new"));
+        touch(dir, "room-old", 3000L);
+        check("旧房间刷新后重新领先", cache.loadMostRecent().room().equals("room-old"));
+    }
+
+    private static void testCredentialCacheSkipsCorrupt() throws Exception {
+        Path dir = Files.createTempDirectory("xtcpinmc-cache3");
+        CredentialCache cache = new CredentialCache(dir);
+        cache.store(sampleCred("good", "k"));
+        touch(dir, "good", 1000L);
+        // 版本号对但内容残缺：解码会在半截处 EOF
+        Path bad = dir.resolve("deadbeef00000000.cred");
+        Files.write(bad, new byte[]{2, 0, 1});
+        Files.setLastModifiedTime(bad, java.nio.file.attribute.FileTime.fromMillis(2000L));
+        check("坏文件被跳过，取到完好的缓存", cache.loadMostRecent().room().equals("good"));
+        check("坏文件已被清除", !Files.exists(bad));
+    }
+
+    private static void testCredentialCachePrunes() throws Exception {
+        Path dir = Files.createTempDirectory("xtcpinmc-cache4");
+        CredentialCache cache = new CredentialCache(dir);
+        for (int i = 0; i < 6; i++) {
+            cache.store(sampleCred("room-" + i, "k"));
+            touch(dir, "room-" + i, 1000L * (i + 1));
+        }
+        check("超出上限的旧缓存被清理", listCredFiles(dir).size() <= 4);
+        check("最新的房间仍在", cache.loadMostRecent().room().equals("room-5"));
+    }
+
+    // ---------- 预热与采认 ----------
+
+    private static void testBuildCommandBindPort() {
+        Credentials cred = sampleCred("gtnh", "sec");
+        List<String> cmd = AgentProcess.buildCommand(
+                Paths.get("/tmp/xtcpinmc"), cred, Timings.defaults(), null, 25595);
+        int at = cmd.indexOf("-port");
+        check("指定预热端口经 -port 传递", at >= 0 && "25595".equals(cmd.get(at + 1)));
+
+        List<String> auto = AgentProcess.buildCommand(
+                Paths.get("/tmp/xtcpinmc"), cred, Timings.defaults(), null);
+        check("未指定端口则不传 -port", !auto.contains("-port"));
+    }
+
+    private static void testAdoptDirectConnection() throws Exception {
+        Path tmp = Files.createTempDirectory("xtcpinmc-adopt");
+        FakeBridge bridge = new FakeBridge(tmp);
+        UpgradeController c = new UpgradeController(bridge, Timings.defaults());
+
+        Credentials cred = sampleCred("room-adopt", "k");
+        AgentEvent ready = AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31,\"elapsedMs\":1792}");
+        check("空参不采认", !c.adoptDirectConnection(null, ready));
+        check("IDLE 下采认成功", c.adoptDirectConnection(cred, ready));
+        check("采认后状态为 UPGRADED", c.state() == UpgradeController.State.UPGRADED);
+        check("采认后不能重复采认", !c.adoptDirectConnection(cred, ready));
+
+        // 进服后服务端照常下发凭证：应命中重复分支、不再启动升级，并回执成功
+        check("采认后重复凭证被忽略", !c.onCredentials(cred));
+        byte[] payload;
+        synchronized (bridge.reports) {
+            check("采认后回执了升级结果", bridge.reports.size() == 1);
+            payload = bridge.reports.isEmpty() ? null : bridge.reports.get(0);
+        }
+        if (payload != null) {
+            UpgradeReport report = UpgradeReport.decode(payload);
+            check("回执标记为成功", report.isUpgraded());
+            check("回执带预热隧道的延迟", report.rttMs() == 31);
+        }
+        check("再次下发仍被忽略", !c.onCredentials(cred));
+        synchronized (bridge.reports) {
+            check("成功回执只发一次", bridge.reports.size() == 1);
+        }
+        c.shutdown();
+        check("shutdown 后回到 IDLE", c.state() == UpgradeController.State.IDLE);
+    }
+
+    private static void testUpgradeReusesWarmTunnel() throws Exception {
+        Path tmp = Files.createTempDirectory("xtcpinmc-warm");
+        FakeBridge bridge = new FakeBridge(tmp);
+        WarmupController warmup = new WarmupController(bridge,
+                new CredentialCache(tmp.resolve("credentials")),
+                Timings.defaults(), null, 0);
+        Credentials cred = sampleCred("room-warm", "k");
+        AgentEvent ready = AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31,\"elapsedMs\":1792}");
+
+        check("未就绪时查询端口为 null", warmup.readyPort(cred.dedupKey()) == null);
+        warmup.injectReadyForTest(cred, ready);
+        check("就绪后按去重键查到端口",
+                Integer.valueOf(25595).equals(warmup.readyPort(cred.dedupKey())));
+        check("其他房间查不到", warmup.readyPort("frp-xtcp:other") == null);
+        check("按端口反查得到凭证", warmup.credentialsForPort(25595) == cred);
+        check("错误端口反查为 null", warmup.credentialsForPort(1) == null);
+
+        // 玩家经中转进服、服务端下发同房间凭证：应复用预热隧道直接切换，
+        // 而不是对同一房间再起一个 agent
+        UpgradeController c = new UpgradeController(bridge, Timings.defaults(), null, warmup);
+        check("收到凭证启动升级", c.onCredentials(cred));
+        long deadline = System.currentTimeMillis() + 5000L;
+        boolean connected = false;
+        while (System.currentTimeMillis() < deadline && !connected) {
+            synchronized (bridge.connects) {
+                connected = bridge.connects.contains("127.0.0.1:25595");
+            }
+            Thread.sleep(20L);
+        }
+        check("复用预热隧道直接切换", connected);
+        check("复用后状态为 UPGRADED", c.state() == UpgradeController.State.UPGRADED);
+        c.shutdown();
+        check("升级复位不影响预热隧道", warmup.readyPort(cred.dedupKey()) != null);
+        warmup.shutdown();
+        check("预热 shutdown 后查询为 null", warmup.readyPort(cred.dedupKey()) == null);
     }
 
     // ---------- 断言 ----------

@@ -36,6 +36,9 @@ public final class ModConfig {
     // ---- client ----
     private final boolean clientEnabled;
     private final boolean verboseLogging;
+    private final boolean clientPrewarm;
+    private final int prewarmPort;
+    private final String directEntryName;
     private final int clientPunchTimeoutSeconds;
     private final int probeIntervalMs;
     private final int probeTimeoutMs;
@@ -61,6 +64,8 @@ public final class ModConfig {
                 + "params 的键名契约由 backend 决定，frp-xtcp 需要:\n"
                 + "  server=<frps地址> serverPort=<frps端口> token=<frps令牌>\n"
                 + "  stun=<STUN候选,逗号分隔> room=<房间名> secret=<房间密钥>\n"
+                + "secret=auto 表示每次启动随机生成密钥（推荐，须 runAgent=true）：\n"
+                + "玩家缓存的旧凭证随服务端重启失效，走一次中转即自动拿到新密钥。\n"
                 + "注意: 此文件含密钥，权限只给服务端进程；客户端永远不需要填这些。");
         serverEnabled = cfg.getBoolean("enabled", "server", false,
                 "是否在玩家登录后下发直连凭证（仅服务端有意义）");
@@ -71,8 +76,23 @@ public final class ModConfig {
                 "内置 serve 发布的 Minecraft 本地端口，0 表示使用服务器实际监听的端口");
         backendId = cfg.getString("backend", "server", Credentials.BACKEND_FRP_XTCP,
                 "隧道方案标识，与 agent 的 -backend 一致");
-        serverParams = parseParams(cfg.getStringList("params", "server", new String[0],
-                "backend 参数，每行一个 key=value"), backendId);
+        Map<String, String> params = parseParams(cfg.getStringList("params", "server",
+                new String[0], "backend 参数，每行一个 key=value"), backendId);
+        // secret=auto：每次启动生成随机密钥，等于给玩家侧缓存的凭证上了
+        // 「服务端重启周期」的有效期。前提是 runAgent=true——serve 与下发
+        // 同源，独立运行的 serve 拿不到这里生成的值。
+        if ("auto".equals(params.get("secret"))) {
+            if (serverEnabled && !serverRunAgent) {
+                LOG.warn("secret=auto 需要 server.runAgent=true（内置 serve 与下发凭证同源）；"
+                        + "独立运行的 serve 无法得知本次生成的密钥，玩家会一直打洞失败");
+            }
+            params.put("secret", randomSecret());
+            if (serverEnabled) {
+                LOG.info("secret=auto：本次启动已生成随机房间密钥，服务端每次重启轮换，"
+                        + "玩家侧无需任何操作");
+            }
+        }
+        serverParams = params;
         serverPunchTimeoutSeconds = cfg.getInt("punchTimeoutSeconds", "server", 0, 0, 3600,
                 "建议客户端使用的打洞超时秒数，0 表示由客户端自己配置");
 
@@ -80,6 +100,16 @@ public final class ModConfig {
                 "客户端专用：时间参数默认值来自实测，顺利时建链约 2-5 秒。");
         clientEnabled = cfg.getBoolean("enabled", "client", true,
                 "是否响应服务端下发的凭证并尝试直连");
+        clientPrewarm = cfg.getBoolean("prewarm", "client", true,
+                "游戏启动时用上次缓存的凭证预热直连隧道，并在服务器列表里维护一个直连条目，\n"
+                + "打通后可直接选它进服。首次进服仍需先经中转拿到凭证；\n"
+                + "关闭后已添加的条目不会被自动删除，手动删即可");
+        prewarmPort = cfg.getInt("prewarmPort", "client", 25595, 0, 65535,
+                "预热隧道的本地端口，被占用时自动改用空闲端口（条目地址会跟着更新）；\n"
+                + "0 表示每次随机");
+        directEntryName = cfg.getString("directEntryName", "client", "[P2P直连]",
+                "服务器列表中直连条目的名字前缀，同时用于识别并更新该条目；\n"
+                + "改动后旧名字的条目不再被维护，需手动删除");
         verboseLogging = cfg.getBoolean("verboseLogging", "client", true,
                 "把直连过程的详细日志（agent 事件、参数键、诊断输出）以 INFO 级别写进游戏日志；\n"
                 + "关闭后这些内容降为 DEBUG 级别（默认日志配置下不可见）");
@@ -164,10 +194,33 @@ public final class ModConfig {
         }
     }
 
+    /** 32 位十六进制随机密钥，密码学强度随机源。 */
+    private static String randomSecret() {
+        byte[] raw = new byte[16];
+        new java.security.SecureRandom().nextBytes(raw);
+        StringBuilder sb = new StringBuilder(raw.length * 2);
+        for (byte b : raw) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+
     // ---- client ----
 
     public boolean clientEnabled() {
         return clientEnabled;
+    }
+
+    public boolean clientPrewarm() {
+        return clientPrewarm;
+    }
+
+    public int prewarmPort() {
+        return prewarmPort;
+    }
+
+    public String directEntryName() {
+        return directEntryName;
     }
 
     public boolean verboseLogging() {

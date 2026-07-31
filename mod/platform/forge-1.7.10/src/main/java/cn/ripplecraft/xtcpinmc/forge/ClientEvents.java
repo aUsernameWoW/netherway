@@ -2,11 +2,15 @@ package cn.ripplecraft.xtcpinmc.forge;
 
 import cn.ripplecraft.xtcpinmc.core.Credentials;
 import cn.ripplecraft.xtcpinmc.core.UpgradeController;
+import cn.ripplecraft.xtcpinmc.core.WarmupController;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 import cpw.mods.fml.common.network.FMLNetworkEvent;
 import io.netty.buffer.ByteBuf;
 import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import net.minecraft.network.NetworkManager;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -27,10 +31,13 @@ public final class ClientEvents {
     private static final Logger LOG = LogManager.getLogger(XtcpInMc.MODID);
 
     private final UpgradeController controller;
+    private final WarmupController warmup;
     private final ForgeClientBridge bridge;
 
-    public ClientEvents(UpgradeController controller, ForgeClientBridge bridge) {
+    public ClientEvents(UpgradeController controller, WarmupController warmup,
+                        ForgeClientBridge bridge) {
         this.controller = controller;
+        this.warmup = warmup;
         this.bridge = bridge;
     }
 
@@ -64,8 +71,29 @@ public final class ClientEvents {
             bridge.debug("直连切换完成，agent 继续承载新连接");
             return;
         }
-        // 与升级无关的新连接（换服、重进）：上一局若有残留的 agent，清掉
+        // 与升级无关的新连接（换服、重进）：上一局若有残留的 agent，清掉。
+        // 必须先复位再采认——采认要求状态机在 IDLE。
         controller.shutdown();
+        // 玩家经服务器列表的直连条目进服：连接目标正是预热隧道的回环端口。
+        // 采认后，服务端照常下发的凭证会命中「已在直连」分支并回执成功。
+        Credentials warm = warmupMatch(event.manager);
+        if (warm != null
+                && controller.adoptDirectConnection(warm, warmup.readyEvent(warm.dedupKey()))) {
+            bridge.debug("玩家经直连条目进服，已采认预热隧道");
+        }
+    }
+
+    /** 新连接的目标是就绪预热隧道的回环端口时返回其凭证，否则 null。 */
+    private Credentials warmupMatch(NetworkManager manager) {
+        SocketAddress remote = manager == null ? null : manager.getSocketAddress();
+        if (!(remote instanceof InetSocketAddress)) {
+            return null; // 单人游戏的本地通道等
+        }
+        InetSocketAddress addr = (InetSocketAddress) remote;
+        if (addr.getAddress() == null || !addr.getAddress().isLoopbackAddress()) {
+            return null;
+        }
+        return warmup.credentialsForPort(addr.getPort());
     }
 
     @SubscribeEvent

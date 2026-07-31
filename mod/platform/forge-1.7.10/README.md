@@ -6,7 +6,10 @@ core 的 Forge 1.7.10 接线。同一个 jar 同时装在服务端与客户端�
   经自定义频道 `xtcpinmc` 下发。走的是 Minecraft 原生 plugin channel，
   将来换 Bukkit/Sponge 插件下发也不用改客户端。
 - **客户端半边**（`ClientProxy` 接线）：收到凭证交给 core 的 `UpgradeController`，
-  打洞成功后经 `ForgeClientBridge` 切换连接。
+  打洞成功后经 `ForgeClientBridge` 切换连接。凭证同时落进本地缓存：下次启动时
+  FML 加载期就用它预热隧道（core 的 `WarmupController`），并在服务器列表里
+  维护一个直连条目（`DirectServerEntry`，默认名 `[P2P直连] <房间>`）——
+  玩家可直接选它进服；就算故意走中转，进服后也会复用预热隧道切回直连。
 
 没装 mod 的客户端照常进服（`acceptableRemoteVersions = "*"`），
 凭证包会被它们静默忽略——本 mod 是纯增强，不构成准入门槛。
@@ -63,7 +66,9 @@ server {
         token=换成frps的auth.token
         stun=stun.miwifi.com:3478,stun.easyvoip.com:3478,stun.qq.com:3478
         room=gtnh
-        secret=换成房间密钥与宿主机serve端一致
+        # 写具体值须与宿主机 serve 端一致；runAgent=true 时推荐写 auto——
+        # 每次启动随机生成，玩家缓存的旧凭证随重启失效，走一次中转自动更新
+        secret=auto
      >
 
     # 建议客户端使用的打洞超时秒数；0 表示由客户端自己配置
@@ -79,8 +84,11 @@ server {
 换隧道方案时这里跟着换键名即可，mod 代码零改动。键名契约与 Go 侧
 backend 实现（如 `internal/backend/frpxtcp`）保持一致。
 
-**客户端零配置即用**，什么都不用填。如需关掉功能或调时间参数，
-同一路径的 cfg 里写 `client` 类目（键见 `ModConfig`），也是启动前手写即可。
+**客户端零配置即用**，什么都不用填。默认 `client.prewarm=true`：游戏启动时用
+上次缓存的凭证预热隧道并维护服务器列表里的直连条目（首次进服仍需先经中转拿
+凭证）。要关掉预热/直连条目、改条目名（`directEntryName`）、固定预热端口
+（`prewarmPort`）或调时间参数，同一路径的 cfg 里写 `client` 类目
+（键见 `ModConfig`），也是启动前手写即可。
 
 ## 排查
 
@@ -92,8 +100,9 @@ backend 实现（如 `internal/backend/frpxtcp`）保持一致。
   `xtcp server for [xxx-p2p] doesn't exist`，意思是宿主机的 serve 没在
   运行）——都以 INFO 级别写进游戏日志。嫌吵可在 cfg 里关掉，
   这些内容会降为 DEBUG 级别。
-- **agent 详细日志**：`.minecraft/xtcpinmc/tunnel.log`，frp 的 debug 级
-  输出，打洞握手的每一步都在里面，玩家报告问题时让他带上这个文件。
+- **agent 详细日志**：`.minecraft/xtcpinmc/tunnel.log`（进服后的升级流程）与
+  `tunnel-warmup.log`（启动期预热），frp 的 debug 级输出，打洞握手的每一步
+  都在里面，玩家报告问题时让他带上对应文件。
   （debug 级刻意不进游戏日志：隧道存活期间会持续刷屏。）
 - **服务端日志**：启动时会打印生效的凭证配置（只列键名）；`server.params`
   里键名拼错（agent 按契约会静默忽略未知键）会有 WARN 指出来。
@@ -122,3 +131,9 @@ backend 实现（如 `internal/backend/frpxtcp`）保持一致。
 
 **真退出时用 `shutdown()` 而不是 `onDisconnected()`**：后者在 UPGRADED
 状态下会以为断开是升级自己造成的而放过 agent。
+
+**采认直连条目的连接要在 `shutdown()` 之后**（`ClientEvents.onConnected`）：
+采认要求状态机在 IDLE。识别只认「回环地址 + 预热隧道端口」，单人游戏的
+本地通道（非 `InetSocketAddress`）与玩家手动连的其他本地服都不会误判。
+预热隧道本身不归 `UpgradeController` 管：它活到游戏进程结束（承载着服务器
+列表里的直连条目），断开、换服都不停，退出由 shutdown hook 兜底。
