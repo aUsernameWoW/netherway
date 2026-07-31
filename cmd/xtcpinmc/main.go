@@ -42,6 +42,8 @@ func main() {
 		err = cmdStop()
 	case "tunnel":
 		err = cmdTunnel(os.Args[2:])
+	case "authplugin":
+		err = cmdAuthPlugin(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -65,6 +67,7 @@ func usage() {
   xtcpinmc start [选项]    后台运行 join（启动器 Pre-launch 用）
   xtcpinmc stop            停止后台实例（启动器 Post-exit 用）
   xtcpinmc tunnel [选项]   供 Minecraft mod 调用：纯 P2P，超时即放弃
+  xtcpinmc authplugin [选项]  在 frps 宿主机运行：每玩家令牌校验（frps httpPlugins）
 
 公共选项:
   -server  frps 地址        -port    端口
@@ -76,11 +79,19 @@ join 专有:
   -motd    局域网列表中显示的名字
   -no-beacon  只建隧道，不广播（自行连 127.0.0.1:端口）
 
+serve 专有:
+  -meta-token  向 frps 的 authplugin 表明身份的静态令牌（authplugin -static-token 同值）
+
 tunnel 专有:
   -backend   隧道方案，默认 frp-xtcp
   -O key=value  传给 backend 的参数，可重复；frp-xtcp 也可直接用上面的公共选项
   -timeout   建链超时秒数，默认 15，超时返回非零码
   -log-file  backend 日志路径（stdout 留给逐行 JSON 状态）
+
+authplugin 专有:
+  -listen    监听地址，默认 127.0.0.1:7200    -path  HTTP 路径，默认 /handler
+  -key       令牌签发密钥（或环境变量 XTCPINMC_AUTH_KEY）
+  -static-token  静态令牌白名单，可重复      -allow-legacy  迁移期放行无令牌登录
 
 未指定的选项使用构建时注入的默认值。
 `)
@@ -128,11 +139,16 @@ func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	ep, room, verbose := endpointFlags(fs)
 	localPort := fs.Int("port", 25565, "Minecraft 服务器监听的本地端口")
+	metaToken := fs.String("meta-token", "",
+		"向 frps 的 authplugin 表明身份的静态令牌；frps 未部署 authplugin 时不需要")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := validate(ep, room); err != nil {
 		return err
+	}
+	if *metaToken != "" {
+		ep.Metas = map[string]string{"token": *metaToken}
 	}
 
 	ctx, stop := signalContext()

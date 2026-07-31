@@ -37,6 +37,14 @@ public final class Credentials {
     /** 所有 backend 必填的参数：房间名，用于向玩家展示与重复凭证去重。 */
     public static final String PARAM_ROOM = "room";
 
+    /**
+     * 可选的每玩家身份参数，服务端启用令牌签发后按玩家附加
+     * （{@link #withExtraParams}）。键名与 Go 侧 frpxtcp 的
+     * {@code ParamUser}/{@code ParamUserToken} 一致；老 agent 按契约忽略。
+     */
+    public static final String PARAM_USER = "user";
+    public static final String PARAM_USER_TOKEN = "userToken";
+
     private final String backendId;
     /** 保序（下发顺序），使 encode 与命令行输出确定、可测。 */
     private final Map<String, String> params;
@@ -184,6 +192,17 @@ public final class Credentials {
         } catch (IllegalArgumentException e) {
             throw new IOException("凭证内容非法: " + e.getMessage());
         }
+    }
+
+    /**
+     * 返回附加了额外参数的新凭证（原对象不变），同名键被覆盖。
+     * 服务端按玩家追加 {@link #PARAM_USER}/{@link #PARAM_USER_TOKEN} 用——
+     * 配置里的公共参数只解析一次，身份参数每次登录都不同。
+     */
+    public Credentials withExtraParams(Map<String, String> extra) {
+        Map<String, String> merged = new LinkedHashMap<String, String>(params);
+        merged.putAll(extra);
+        return new Credentials(backendId, merged, punchTimeoutMs);
     }
 
     /** backend 标识，决定 agent 用哪种隧道方案。 */

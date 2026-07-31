@@ -32,6 +32,9 @@ public final class ModConfig {
     /** 构造时解析完的参数表；解析与拼写检查只做一次，避免每次登录重复告警。 */
     private final Map<String, String> serverParams;
     private final int serverPunchTimeoutSeconds;
+    private final String tokenSigningKey;
+    private final int tokenTtlDays;
+    private final String serveAuthToken;
 
     // ---- client ----
     private final boolean clientEnabled;
@@ -95,6 +98,15 @@ public final class ModConfig {
         serverParams = params;
         serverPunchTimeoutSeconds = cfg.getInt("punchTimeoutSeconds", "server", 0, 0, 3600,
                 "建议客户端使用的打洞超时秒数，0 表示由客户端自己配置");
+        tokenSigningKey = cfg.getString("tokenSigningKey", "server", "",
+                "每玩家令牌的签发密钥，非空即启用；须与 frps 侧 authplugin 的 -key 一致。\n"
+                + "启用后每次登录都为该玩家签发绑定其 UUID、带有效期的令牌（user/userToken 参数）");
+        tokenTtlDays = cfg.getInt("tokenTtlDays", "server", 30, 1, 3650,
+                "每玩家令牌的有效天数；每次登录自动续签，只需覆盖玩家两次游玩的间隔");
+        serveAuthToken = cfg.getString("serveAuthToken", "server", "",
+                "内置 serve 向 authplugin 表明身份的静态令牌（与 authplugin 的 -static-token 同值），\n"
+                + "刻意不放进 params——它只属于 serve，绝不能随凭证下发给玩家；\n"
+                + "frps 未部署 authplugin 时留空");
 
         cfg.setCategoryComment("client",
                 "客户端专用：时间参数默认值来自实测，顺利时建链约 2-5 秒。");
@@ -192,6 +204,18 @@ public final class ModConfig {
             LOG.warn("凭证配置不完整: {}", e.getMessage());
             return null;
         }
+    }
+
+    public String tokenSigningKey() {
+        return tokenSigningKey;
+    }
+
+    public int tokenTtlDays() {
+        return tokenTtlDays;
+    }
+
+    public String serveAuthToken() {
+        return serveAuthToken;
     }
 
     /** 32 位十六进制随机密钥，密码学强度随机源。 */

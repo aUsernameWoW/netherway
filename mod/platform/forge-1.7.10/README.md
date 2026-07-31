@@ -73,6 +73,14 @@ server {
 
     # 建议客户端使用的打洞超时秒数；0 表示由客户端自己配置
     I:punchTimeoutSeconds=0
+
+    # ---- 以下三项配合 frps 侧的 authplugin（可选，见下节）----
+    # 每玩家令牌的签发密钥，非空即启用；须与 authplugin 的 -key 一致
+    S:tokenSigningKey=
+    # 每玩家令牌的有效天数，每次登录自动续签
+    I:tokenTtlDays=30
+    # 内置 serve 向 authplugin 表明身份的静态令牌（-static-token 同值）
+    S:serveAuthToken=
 }
 ```
 
@@ -89,6 +97,37 @@ backend 实现（如 `internal/backend/frpxtcp`）保持一致。
 凭证）。要关掉预热/直连条目、改条目名（`directEntryName`）、固定预热端口
 （`prewarmPort`）或调时间参数，同一路径的 cfg 里写 `client` 类目
 （键见 `ModConfig`），也是启动前手写即可。
+
+## 每玩家令牌（可选，frps 侧 authplugin）
+
+不部署也一切照常（全局 token 分层的基础校验仍在）。部署后：泄露的全局 token
+连 frps 都登不上，注册代理只认 serve 的静态令牌，玩家令牌绑定 UUID、30 天
+过期、登录即续签。
+
+frps 宿主机上运行（密钥经环境变量传入，避免出现在进程列表）：
+
+```bash
+XTCPINMC_AUTH_KEY=<签发密钥> ./xtcpinmc authplugin -static-token <serve静态令牌> -allow-legacy
+```
+
+frps.toml 加上（然后重启 frps）：
+
+```toml
+[[httpPlugins]]
+name = "xtcpinmc-auth"
+addr = "127.0.0.1:7200"
+path = "/handler"
+ops = ["Login", "NewProxy"]
+```
+
+服务端 cfg 填 `tokenSigningKey`（与 `-key` 同值）、`serveAuthToken`
+（与 `-static-token` 同值）。两侧启动日志都会打印**签发密钥指纹**，
+一致才说明密钥没配岔。
+
+迁移节奏：先带 `-allow-legacy` 上线（老客户端、没配令牌的 serve 都照常）；
+等玩家基本都经新版服务端登录过一轮（拿到了每玩家令牌），去掉
+`-allow-legacy` 重启 authplugin 即完成收口。frps 调不到插件时会拒绝登录
+（fail-closed），生产环境交给 systemd 并设自动重启。
 
 ## 排查
 

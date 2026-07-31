@@ -25,6 +25,10 @@ type Endpoint struct {
 	ServerPort int
 	Token      string
 	STUNServer string
+	// Metas 随 Login 一起发给 frps，供 authplugin 做身份校验
+	// （玩家侧 user/token，serve 侧静态令牌）。身份刻意不用 frp 的 User
+	// 字段：它会给 visitor 的目标代理名加前缀，metas 对命名零影响。
+	Metas map[string]string
 }
 
 // Validate 检查必填字段。默认值经构建期注入，这里为空说明既没注入也没传参。
@@ -122,6 +126,7 @@ func commonConfig(ep Endpoint, logOpts LogOptions) (*v1.ClientCommonConfig, erro
 		ServerAddr:        ep.ServerAddr,
 		ServerPort:        ep.ServerPort,
 		NatHoleSTUNServer: ep.STUNServer,
+		Metadatas:         ep.Metas,
 		LoginFailExit:     lo.ToPtr(false), // 网络抖动时持续重试，而不是退出
 		Auth: v1.AuthClientConfig{
 			Method: v1.AuthMethodToken,

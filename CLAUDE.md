@@ -19,8 +19,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Go agent
 
 ```bash
-go build ./... && go vet ./...
+go build ./... && go vet ./... && go test ./...
 ```
+
+Go 测试目前只有 `internal/authplugin`（含与 Java 侧的跨语言已知答案向量）。
 
 跨平台构建（Windows/macOS/Linux 五个目标），密钥经 `-ldflags` 注入而不进源码：
 
@@ -43,7 +45,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.xtcpi
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 158 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 176 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -84,7 +86,9 @@ Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者�
 字段定义在 Go 侧 `cmd/xtcpinmc/modbridge.go` 的 `event` 结构与 Java 侧
 `AgentEvent` 中，**改动必须两边同步**。同样必须两边同步的还有各 backend 的
 参数键名：Go 侧实现包的常量（如 `internal/backend/frpxtcp`）↔ Java 侧
-`Credentials` 的对应工厂方法（如 `Credentials.frpXtcp`）。
+`Credentials` 的对应工厂方法（如 `Credentials.frpXtcp`）。以及每玩家令牌的
+格式：Go 侧 `internal/authplugin`（校验）↔ Java 侧 `TokenIssuer`（签发）
+必须逐字节一致——两侧各有一个用同一组常量的已知答案测试钉住这一点。
 
 agent 的 stderr 是诊断通道：backend 的参数快照、被忽略的未知键、frp 自身
 info 及以上的日志都会回显到这里，mod 逐行转进游戏日志（`bridge.debug`）。
@@ -112,9 +116,10 @@ core 与平台适配层不解释参数，无需改动。约束：**backend 实�
 
 | 子命令 | 用途 | 关键差异 |
 |---|---|---|
-| `serve` | 服务器宿主机 | 注册 xtcp + stcp 两个代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand` |
-| `join` | 独立运行的玩家侧 | 带 stcp 兜底，并做局域网广播 |
+| `serve` | 服务器宿主机 | 注册 xtcp + stcp 两个代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand`；`-meta-token` 向 authplugin 表明身份 |
+| `join` | 独立运行的玩家侧 | 带 stcp 兜底，并做局域网广播；无每玩家令牌（legacy 路径） |
 | `tunnel` | 供 mod 调用 | **经 backend 抽象、无兜底**，超时即退出，stdout 输出 JSON |
+| `authplugin` | frps 宿主机 | frps 的 HTTP server plugin：Login 校验每玩家令牌，NewProxy 只放行静态令牌（serve）；`-allow-legacy` 是迁移开关 |
 
 `tunnel` 刻意不带兜底：mod 场景下玩家此刻已通过既有中转隧道连着服务器，
 建链失败就该留在那条连接上。更重要的是，有了兜底通道后「隧道可用」的探测会
@@ -155,6 +160,27 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 
 预热隧道生命周期是整个游戏进程（断开、回主菜单都不停，它承载着直连条目），
 退出由 `AgentProcess` 的 shutdown hook 兜底。
+
+### 每玩家令牌（分层鉴权）
+
+frps 自身的 `auth.token` 保留作基础校验，`authplugin`（frps 的 httpPlugins）
+在其上叠加身份层。服务端 mod 配置 `tokenSigningKey` 后，每次登录都为该玩家
+签发绑定其 UUID、带有效期（默认 30 天，登录即续签）的令牌，作为凭证参数
+`user`/`userToken` 下发；agent 把它们放进 frp 的 `metadatas` 随登录发出，
+authplugin 无状态校验（HMAC-SHA256，过期时间明文在令牌里）。
+
+身份**刻意放 metas 而不用 frp 的 `User` 字段**：`User` 会给 visitor 的目标
+代理名加 `user.` 前缀（frp 的 `naming.BuildTargetServerProxyName`），一旦用了
+就要求两端同步改名；metas 对命名零影响。frps 侧插件在 token 校验**之前**执行
+（`server/service.go` 先 `pluginManager.Login` 再 `VerifyLogin`），两层都过
+才放行。`NewProxy` 只放行静态令牌（serve 经 `-meta-token` 携带）——玩家侧
+只有 visitor，任何注册代理的企图都不是正常流量。
+
+迁移路径：未带令牌的登录（老 mod agent、独立 join、未配 `serveAuthToken` 的
+serve）走 `-allow-legacy` 开关；老 agent 收到含 `user`/`userToken` 的凭证会
+按契约忽略未知键、以 legacy 身份登录，因此服务端可以先于客户端升级。
+吊销刻意无状态：全局作废 = 换签发密钥；按玩家即刻吊销不做（白名单已挡住
+MC 登录，隧道只通向 MC 端口）。
 
 ## 关键约束
 
@@ -236,7 +262,9 @@ mod 方案的核心安全价值在于：**凭证由服务端在玩家登录后�
 暴露面。真正的止损是服务端轮换——`secret=auto` 让房间密钥随服务端每次重启更换，
 旧缓存自然失效，玩家走一次中转即自动拿到新密钥。
 
-frp token 目前是全局静态密钥，轮换靠手动改 frps 与服务端配置并重启
-（客户端侧经同一闭环自愈，无需操作）；若将来需要按玩家签发/吊销，控制点在
-frps 的 HTTP server plugin（Login op），凭证 v2 的参数表已为加 `user`/
-每玩家 token 留好扩展空间。
+frp 的全局 token 泄露的滥用面由 authplugin 收敛（见「每玩家令牌」一节）：
+部署它并关掉 `-allow-legacy` 后，光有全局 token 连登录都过不了，注册代理更
+只认 serve 的静态令牌。全局 token 轮换仍靠手动改 frps 与服务端配置并重启
+（客户端侧经缓存自愈闭环恢复，无需操作）。签发密钥与静态令牌都不落盘到
+版本库，走服务端 cfg 与 authplugin 的旗标/环境变量；两侧启动日志打印
+**密钥指纹**（SHA-256 前 4 字节）供核对，绝不打印密钥本身。

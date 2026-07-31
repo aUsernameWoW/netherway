@@ -28,6 +28,15 @@ public final class ServeCommand {
      * @param localPort Minecraft 服务器监听的本地端口
      */
     public static List<String> build(Path exe, Map<String, String> params, int localPort) {
+        return build(exe, params, localPort, null);
+    }
+
+    /**
+     * 同上，另携带向 frps 侧 authplugin 表明身份的静态令牌
+     * （对应 serve 的 {@code -meta-token}）；null 或空表示不带。
+     */
+    public static List<String> build(Path exe, Map<String, String> params, int localPort,
+                                     String metaToken) {
         // 键名与 Go 侧 internal/backend/frpxtcp 的常量一致（见 frpXtcpParamKeys）
         Map<String, String> flagOf = new LinkedHashMap<String, String>();
         flagOf.put("server", "-server");
@@ -49,6 +58,10 @@ public final class ServeCommand {
         }
         cmd.add("-port");
         cmd.add(Integer.toString(localPort));
+        if (metaToken != null && !metaToken.isEmpty()) {
+            cmd.add("-meta-token");
+            cmd.add(metaToken);
+        }
         return cmd;
     }
 
@@ -65,7 +78,8 @@ public final class ServeCommand {
             }
             String arg = cmd.get(i);
             sb.append(arg);
-            if (("-token".equals(arg) || "-secret".equals(arg)) && i + 1 < cmd.size()) {
+            if (("-token".equals(arg) || "-secret".equals(arg) || "-meta-token".equals(arg))
+                    && i + 1 < cmd.size()) {
                 sb.append(" ***");
                 i++;
             }

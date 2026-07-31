@@ -1,11 +1,14 @@
 package cn.ripplecraft.xtcpinmc.forge;
 
 import cn.ripplecraft.xtcpinmc.core.Credentials;
+import cn.ripplecraft.xtcpinmc.core.TokenIssuer;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.PlayerEvent;
 import cpw.mods.fml.common.network.FMLEventChannel;
 import cpw.mods.fml.common.network.internal.FMLProxyPacket;
 import io.netty.buffer.Unpooled;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import net.minecraft.entity.player.EntityPlayerMP;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -55,9 +58,28 @@ public final class CredentialSender {
         }
 
         EntityPlayerMP player = (EntityPlayerMP) event.player;
+        cred = withPlayerToken(cred, player);
         channel.sendTo(new FMLProxyPacket(
                 Unpooled.wrappedBuffer(cred.encode()), XtcpInMc.CHANNEL), player);
         // Credentials.toString 刻意只列参数键名，不含 token 与密钥值
         LOG.info("已向 {} 下发直连凭证 {}", player.getCommandSenderName(), cred);
+    }
+
+    /**
+     * 启用令牌签发时，为该玩家附加绑定其 UUID、带有效期的身份参数。
+     * 每次登录都重新签发——客户端会覆盖缓存，等于自动续签。
+     */
+    private Credentials withPlayerToken(Credentials cred, EntityPlayerMP player) {
+        String key = config.tokenSigningKey();
+        if (key.isEmpty()) {
+            return cred;
+        }
+        String uuid = player.getUniqueID().toString();
+        long expiry = System.currentTimeMillis() / 1000L
+                + config.tokenTtlDays() * 86400L;
+        Map<String, String> extra = new LinkedHashMap<String, String>();
+        extra.put(Credentials.PARAM_USER, uuid);
+        extra.put(Credentials.PARAM_USER_TOKEN, TokenIssuer.issue(key, uuid, expiry));
+        return cred.withExtraParams(extra);
     }
 }

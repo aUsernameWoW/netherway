@@ -103,6 +103,13 @@ public final class XtcpInMc {
         }
         // toString 只列参数键名，不含 token 与密钥值
         LOG.info("服务端直连已启用，玩家登录后将下发 {}", cred);
+        if (!config.tokenSigningKey().isEmpty()) {
+            // 指纹与 frps 侧 authplugin 的启动日志核对，两侧一致才说明密钥没配岔
+            LOG.info("每玩家令牌签发已启用（有效期 {} 天），签发密钥指纹 {}",
+                    config.tokenTtlDays(),
+                    cn.ripplecraft.xtcpinmc.core.TokenIssuer.keyFingerprint(
+                            config.tokenSigningKey()));
+        }
         if (config.serverRunAgent()) {
             LOG.info("将随服务端启动内置 serve，把房间 \"{}\" 注册到 frps"
                     + "（若宿主机还单独跑着 xtcpinmc serve，请停掉其一，"

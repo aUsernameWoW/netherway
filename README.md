@@ -125,6 +125,7 @@ GTNH 宿主机                      frps (203.0.113.10:7000)         玩家机�
 cmd/xtcpinmc/       CLI 入口；daemon_{unix,windows}.go 处理平台差异
 internal/backend/   隧道方案的统一接口与注册表；frp xtcp 是首个实现
 internal/tunnel/    以库的方式嵌入 frpc，无独立进程、无 toml
+internal/authplugin/ frps 的 HTTP server plugin：每玩家令牌校验（authplugin 子命令）
 internal/mcping/    Minecraft Server List Ping，用游戏握手判定隧道就绪
 internal/stunpick/  启动前并行探测候选，挑一个当场验证过的 STUN
 internal/lanbeacon/ 组播广播，含多网卡枚举

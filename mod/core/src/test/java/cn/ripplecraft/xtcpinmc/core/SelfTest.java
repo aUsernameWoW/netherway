@@ -53,6 +53,9 @@ public final class SelfTest {
         testBuildCommandBindPort();
         testAdoptDirectConnection();
         testUpgradeReusesWarmTunnel();
+        testTokenIssuer();
+        testCredentialsWithExtraParams();
+        testServeCommandMetaToken();
 
         System.out.println();
         System.out.println("通过 " + passed + "，失败 " + failed);
@@ -745,6 +748,73 @@ public final class SelfTest {
         check("升级复位不影响预热隧道", warmup.readyPort(cred.dedupKey()) != null);
         warmup.shutdown();
         check("预热 shutdown 后查询为 null", warmup.readyPort(cred.dedupKey()) == null);
+    }
+
+    // ---------- 每玩家令牌 ----------
+
+    private static void testTokenIssuer() {
+        // 跨语言已知答案：与 Go 侧 internal/authplugin 的测试用同一组常量。
+        // 任何一侧改了算法都会先在这里撞车，而不是玩家连不上时才发现。
+        String user = "069a79f4-44e9-4726-a5be-fca90e38aaf5";
+        String want = "1893456000."
+                + "0b91c0bf30d621d5c890a011253ea4b83c918422d19689334a18508e9b6db088";
+        check("跨语言已知答案一致", TokenIssuer.issue("k3y", user, 1893456000L).equals(want));
+        check("密钥指纹与 Go 侧一致", TokenIssuer.keyFingerprint("k3y").equals("a49b1287"));
+
+        String token = TokenIssuer.issue("key-a", user, 1893456000L);
+        check("令牌以过期时间开头", token.startsWith("1893456000."));
+        check("签名为 64 位十六进制",
+                token.substring(token.indexOf('.') + 1).matches("[0-9a-f]{64}"));
+        check("不同 user 令牌不同",
+                !token.equals(TokenIssuer.issue("key-a", "other", 1893456000L)));
+        check("不同过期时间令牌不同",
+                !token.equals(TokenIssuer.issue("key-a", user, 1893456001L)));
+        check("不同密钥令牌不同",
+                !token.equals(TokenIssuer.issue("key-b", user, 1893456000L)));
+
+        boolean threw = false;
+        try {
+            TokenIssuer.issue("", user, 1L);
+        } catch (IllegalArgumentException e) {
+            threw = true;
+        }
+        check("空签发密钥应拒绝", threw);
+    }
+
+    private static void testCredentialsWithExtraParams() throws Exception {
+        Credentials base = sampleCred("gtnh", "sec");
+        java.util.Map<String, String> extra = new java.util.LinkedHashMap<String, String>();
+        extra.put(Credentials.PARAM_USER, "uuid-1");
+        extra.put(Credentials.PARAM_USER_TOKEN, "1893456000.abcd");
+        Credentials withId = base.withExtraParams(extra);
+
+        check("附加后含 user 参数", "uuid-1".equals(withId.param(Credentials.PARAM_USER)));
+        check("附加后原参数保留", "sec".equals(withId.param("secret")));
+        check("原凭证不受影响", base.param(Credentials.PARAM_USER) == null);
+        check("去重键不因身份参数改变", base.dedupKey().equals(withId.dedupKey()));
+
+        // 老客户端拿到带身份参数的凭证也能正常编解码并原样转交
+        Credentials back = Credentials.decode(withId.encode());
+        check("身份参数经编解码往返", "uuid-1".equals(back.param(Credentials.PARAM_USER)));
+        check("身份参数排在原参数之后", new ArrayList<String>(
+                back.params().keySet()).indexOf(Credentials.PARAM_USER) > 0);
+        check("toString 不含令牌值", !withId.toString().contains("1893456000.abcd"));
+    }
+
+    private static void testServeCommandMetaToken() {
+        java.util.Map<String, String> params = new java.util.LinkedHashMap<String, String>();
+        params.put("server", "frps.example.com");
+        params.put("room", "test");
+
+        List<String> plain = ServeCommand.build(Paths.get("/srv/xtcpinmc"), params, 25570);
+        check("未配置静态令牌则不传旗标", !plain.contains("-meta-token"));
+
+        List<String> cmd = ServeCommand.build(Paths.get("/srv/xtcpinmc"), params, 25570,
+                "SERVE_STATIC");
+        int at = cmd.indexOf("-meta-token");
+        check("静态令牌经 -meta-token 传递", at >= 0 && "SERVE_STATIC".equals(cmd.get(at + 1)));
+        check("serve 描述抹掉静态令牌值",
+                !ServeCommand.describe(cmd).contains("SERVE_STATIC"));
     }
 
     // ---------- 断言 ----------
