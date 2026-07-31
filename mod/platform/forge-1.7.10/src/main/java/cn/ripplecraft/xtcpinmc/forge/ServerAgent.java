@@ -54,7 +54,7 @@ public final class ServerAgent {
             Platform platform = Platform.detect();
             Path exe = new BinaryStore(cacheDir, platform).ensureExtracted();
             List<String> cmd = ServeCommand.build(exe, config.serverParams(), localPort,
-                    config.serveAuthToken());
+                    config.serveAuthToken(), config.serveProxyProtocol());
             LOG.info("启动内置 serve（平台 {}）: {}", platform, ServeCommand.describe(cmd));
 
             ProcessBuilder pb = new ProcessBuilder(cmd);

@@ -81,6 +81,7 @@ join 专有:
 
 serve 专有:
   -meta-token  向 frps 的 authplugin 表明身份的静态令牌（authplugin -static-token 同值）
+  -proxy-protocol  连本地 MC 端口前先发 PROXY protocol 头（v1/v2），MC 侧需能剥头
 
 tunnel 专有:
   -backend   隧道方案，默认 frp-xtcp
@@ -141,11 +142,19 @@ func cmdServe(args []string) error {
 	localPort := fs.Int("port", 25565, "Minecraft 服务器监听的本地端口")
 	metaToken := fs.String("meta-token", "",
 		"向 frps 的 authplugin 表明身份的静态令牌；frps 未部署 authplugin 时不需要")
+	proxyProtocol := fs.String("proxy-protocol", "",
+		"连本地 MC 端口前先发 PROXY protocol 头（v1 或 v2），MC 侧需能剥头；留空关闭")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := validate(ep, room); err != nil {
 		return err
+	}
+	// frp 的校验也会拦，但那条报错是英文且埋在配置校验里；这里先给句明白话。
+	switch *proxyProtocol {
+	case "", "v1", "v2":
+	default:
+		return fmt.Errorf("-proxy-protocol 只接受 v1 或 v2（收到 %q）", *proxyProtocol)
 	}
 	if *metaToken != "" {
 		ep.Metas = map[string]string{"token": *metaToken}
@@ -163,7 +172,12 @@ func cmdServe(args []string) error {
 	}
 	ep.STUNServer = picked
 	fmt.Printf("frps %s:%d\n", ep.ServerAddr, ep.ServerPort)
-	return tunnel.Serve(ctx, *ep, *room, *localPort, consoleLog(*verbose))
+	if *proxyProtocol != "" {
+		fmt.Printf("PROXY protocol %s 已启用：确保 MC 服务端装有剥头组件，"+
+			"否则玩家会连不上（当前 frp 版本仅 stcp 中转路径实际带头）\n", *proxyProtocol)
+	}
+	return tunnel.Serve(ctx, *ep, *room, *localPort,
+		tunnel.ServeOptions{ProxyProtocol: *proxyProtocol}, consoleLog(*verbose))
 }
 
 func cmdJoin(args []string) error {

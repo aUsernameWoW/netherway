@@ -176,9 +176,22 @@ func run(ctx context.Context, common *v1.ClientCommonConfig,
 	return svc.Run(ctx)
 }
 
+// ServeOptions 是宿主侧的可选参数。
+type ServeOptions struct {
+	// ProxyProtocol 非空（"v1"/"v2"）时，frpc 在连本地 MC 端口前先发一个
+	// PROXY protocol 头，把来访连接的源地址告诉 MC 服务端。
+	//
+	// 现状（frp v0.70.0）：只有 stcp 中转路径会真的带头（frps 把 visitor
+	// 连接的公网地址填进 StartWorkConn.SrcAddr）；xtcp 的 P2P 流没有
+	// SrcAddr，配了也静默不发——等上游支持（fatedier/frp#2748）后自动生效。
+	// 因此 MC 侧的解析必须是嗅探式的，绝不能要求头必须存在。
+	ProxyProtocol string
+}
+
 // Serve 在 Minecraft 宿主机运行：把本地端口注册为 xtcp（P2P）代理，
 // 并同时注册一个 stcp 代理供打洞失败时兜底。
-func Serve(ctx context.Context, ep Endpoint, room config.Room, localPort int, log LogOptions) error {
+func Serve(ctx context.Context, ep Endpoint, room config.Room, localPort int,
+	opts ServeOptions, log LogOptions) error {
 	common, err := commonConfig(ep, log)
 	if err != nil {
 		return err
@@ -188,6 +201,9 @@ func Serve(ctx context.Context, ep Endpoint, room config.Room, localPort int, lo
 		ProxyBaseConfig: v1.ProxyBaseConfig{
 			Name: room.ProxyName(),
 			Type: string(v1.ProxyTypeXTCP),
+			Transport: v1.ProxyTransport{
+				ProxyProtocolVersion: opts.ProxyProtocol,
+			},
 			ProxyBackend: v1.ProxyBackend{
 				LocalIP:   "127.0.0.1",
 				LocalPort: localPort,
@@ -203,6 +219,9 @@ func Serve(ctx context.Context, ep Endpoint, room config.Room, localPort int, lo
 		ProxyBaseConfig: v1.ProxyBaseConfig{
 			Name: room.RelayProxyName(),
 			Type: string(v1.ProxyTypeSTCP),
+			Transport: v1.ProxyTransport{
+				ProxyProtocolVersion: opts.ProxyProtocol,
+			},
 			ProxyBackend: v1.ProxyBackend{
 				LocalIP:   "127.0.0.1",
 				LocalPort: localPort,

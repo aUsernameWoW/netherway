@@ -61,10 +61,17 @@ public final class XtcpInMc {
         proxy.initClient(channel, config);
     }
 
-    /** 服务器就绪后启动内置 serve：此时监听端口已确定。 */
+    /** 服务器就绪后挂剥头组件、启动内置 serve：此时监听端点与端口都已确定。 */
     @Mod.EventHandler
     public void serverStarted(FMLServerStartedEvent event) {
-        if (!config.serverEnabled() || !config.serverRunAgent()) {
+        if (!config.serverEnabled()) {
+            return;
+        }
+        // 剥头与 runAgent 无关：独立运行的 serve 开着 -proxy-protocol 时同样需要
+        if (!config.serveProxyProtocol().isEmpty()) {
+            ProxyProtocolInjector.install(MinecraftServer.getServer());
+        }
+        if (!config.serverRunAgent()) {
             return;
         }
         MinecraftServer server = MinecraftServer.getServer();

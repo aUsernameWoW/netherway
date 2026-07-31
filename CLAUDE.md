@@ -240,6 +240,16 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 **开启局域网广播时 visitor 必须绑 `0.0.0.0`。** Minecraft 用广播包的**源 IP**
 （网卡地址，非 `127.0.0.1`）去连；绑回环会导致列表里出现但连不上。
 
+**PROXY protocol 头必须嗅探式解析，绝不能要求存在。** serve 的
+`-proxy-protocol`（服务端 cfg `server.proxyProtocol`）开启后，当前 frp
+（v0.70.0）只有 stcp 中转路径真的带头——frps 把 visitor 连接的公网地址填进
+`StartWorkConn.SrcAddr`；xtcp 的 P2P 流没有 SrcAddr，配了也静默无头，等
+上游支持（fatedier/frp#2748，PR #5122 已 stale 关闭且其 visitor 侧 meta 帧
+的线上格式不可依赖）。老 agent 与直连预热流量也永远无头。因此 MC 侧剥头
+（core `ProxyProtocol` + 平台层 `ProxyProtocolInjector`）按首字节分叉嗅探，
+且只信来自回环的连接（frp 从本机拨入；局域网邻居可伪造头）。这是纯 serve
+侧配置，不进凭证参数表，客户端 mod 无需同步改动。
+
 **STUN 服务器必须返回至少 2 个映射地址**，frp 靠两次探测比对判断 NAT 映射行为。
 `stun.chat.bilibili.com` 只返回 1 个，会让 frp 报 `need 2` 失败。`stunpick`
 在启动前并行探测候选并按此标准筛选——单台 STUN 会间歇性超时（`stun.miwifi.com`

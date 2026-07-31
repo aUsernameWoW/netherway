@@ -56,6 +56,11 @@ public final class SelfTest {
         testTokenIssuer();
         testCredentialsWithExtraParams();
         testServeCommandMetaToken();
+        testServeCommandProxyProtocol();
+        testProxyProtocolV1();
+        testProxyProtocolV2();
+        testProxyProtocolSniff();
+        testProxyProtocolInvalid();
 
         System.out.println();
         System.out.println("通过 " + passed + "，失败 " + failed);
@@ -815,6 +820,154 @@ public final class SelfTest {
         check("静态令牌经 -meta-token 传递", at >= 0 && "SERVE_STATIC".equals(cmd.get(at + 1)));
         check("serve 描述抹掉静态令牌值",
                 !ServeCommand.describe(cmd).contains("SERVE_STATIC"));
+    }
+
+    private static void testServeCommandProxyProtocol() {
+        java.util.Map<String, String> params = new java.util.LinkedHashMap<String, String>();
+        params.put("server", "frps.example.com");
+        params.put("room", "test");
+
+        List<String> plain = ServeCommand.build(Paths.get("/srv/xtcpinmc"), params, 25570,
+                null, null);
+        check("未配置 PROXY protocol 则不传旗标", !plain.contains("-proxy-protocol"));
+
+        List<String> cmd = ServeCommand.build(Paths.get("/srv/xtcpinmc"), params, 25570,
+                null, "v2");
+        int at = cmd.indexOf("-proxy-protocol");
+        check("PROXY protocol 版本经 -proxy-protocol 传递",
+                at >= 0 && "v2".equals(cmd.get(at + 1)));
+        check("旧的四参 build 不受影响",
+                !ServeCommand.build(Paths.get("/srv/xtcpinmc"), params, 25570, "T")
+                        .contains("-proxy-protocol"));
+    }
+
+    // ---------- ProxyProtocol ----------
+
+    private static byte[] ascii(String s) {
+        return s.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    }
+
+    /** v2 头：12 字节签名 + 版本/命令 + 地址族 + 长度 + 负载。 */
+    private static byte[] v2Header(int verCmd, int famProto, byte[] payload) {
+        byte[] out = new byte[16 + payload.length];
+        byte[] sig = {0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A};
+        System.arraycopy(sig, 0, out, 0, 12);
+        out[12] = (byte) verCmd;
+        out[13] = (byte) famProto;
+        out[14] = (byte) (payload.length >>> 8);
+        out[15] = (byte) payload.length;
+        System.arraycopy(payload, 0, out, 16, payload.length);
+        return out;
+    }
+
+    private static byte[] concat(byte[] a, byte[] b) {
+        byte[] out = new byte[a.length + b.length];
+        System.arraycopy(a, 0, out, 0, a.length);
+        System.arraycopy(b, 0, out, a.length, b.length);
+        return out;
+    }
+
+    private static void testProxyProtocolV1() {
+        byte[] header = ascii("PROXY TCP4 198.51.100.7 203.0.113.4 40000 25565\r\n");
+        byte[] stream = concat(header, new byte[]{0x10, 0x00}); // 头后跟着 MC 握手片段
+
+        ProxyProtocol.Result r = ProxyProtocol.parse(stream);
+        check("v1 TCP4 识别为 PRESENT", r.status == ProxyProtocol.Status.PRESENT);
+        check("v1 headerLength 恰为头部字节数", r.headerLength == header.length);
+        check("v1 来源地址正确", r.source != null
+                && "198.51.100.7".equals(r.source.getAddress().getHostAddress())
+                && r.source.getPort() == 40000);
+
+        // 半包：逐字节喂都不允许提前下错定论
+        boolean progressive = true;
+        for (int n = 1; n < header.length; n++) {
+            progressive &= ProxyProtocol.parse(header, n).status == ProxyProtocol.Status.NEED_MORE;
+        }
+        check("v1 半包始终 NEED_MORE", progressive);
+
+        ProxyProtocol.Result v6 = ProxyProtocol.parse(
+                ascii("PROXY TCP6 2001:db8::7 2001:db8::1 40000 25565\r\n"));
+        check("v1 TCP6 来源地址正确", v6.status == ProxyProtocol.Status.PRESENT
+                && v6.source != null
+                && "2001:db8:0:0:0:0:0:7".equals(v6.source.getAddress().getHostAddress()));
+
+        ProxyProtocol.Result unknown = ProxyProtocol.parse(
+                ascii("PROXY UNKNOWN whatever else\r\nrest"));
+        check("v1 UNKNOWN 剥头但无地址", unknown.status == ProxyProtocol.Status.PRESENT
+                && unknown.source == null
+                && unknown.headerLength == ascii("PROXY UNKNOWN whatever else\r\n").length);
+    }
+
+    private static void testProxyProtocolV2() {
+        byte[] addr4 = {
+            (byte) 198, (byte) 51, 100, 7,      // src
+            (byte) 203, 0, 113, 4,              // dst
+            (byte) (40000 >>> 8), (byte) 40000, // sport
+            0x63, (byte) 0xDD,                  // dport 25565
+        };
+        byte[] header = v2Header(0x21, 0x11, addr4); // PROXY 命令 + TCP over IPv4
+        byte[] stream = concat(header, new byte[]{0x10, 0x00});
+
+        ProxyProtocol.Result r = ProxyProtocol.parse(stream);
+        check("v2 IPv4 识别为 PRESENT", r.status == ProxyProtocol.Status.PRESENT);
+        check("v2 headerLength 恰为头部字节数", r.headerLength == header.length);
+        check("v2 来源地址正确", r.source != null
+                && "198.51.100.7".equals(r.source.getAddress().getHostAddress())
+                && r.source.getPort() == 40000);
+
+        boolean progressive = true;
+        for (int n = 1; n < header.length; n++) {
+            progressive &= ProxyProtocol.parse(header, n).status == ProxyProtocol.Status.NEED_MORE;
+        }
+        check("v2 半包始终 NEED_MORE", progressive);
+
+        // 地址块后带 TLV：整段跳过，不解释
+        byte[] withTlv = v2Header(0x21, 0x11, concat(addr4, new byte[]{0x04, 0x00, 0x01, 0x00}));
+        ProxyProtocol.Result tlv = ProxyProtocol.parse(withTlv);
+        check("v2 TLV 一并计入 headerLength", tlv.status == ProxyProtocol.Status.PRESENT
+                && tlv.headerLength == withTlv.length && tlv.source != null);
+
+        ProxyProtocol.Result local = ProxyProtocol.parse(v2Header(0x20, 0x00, new byte[0]));
+        check("v2 LOCAL 剥头但无地址", local.status == ProxyProtocol.Status.PRESENT
+                && local.source == null && local.headerLength == 16);
+    }
+
+    private static void testProxyProtocolSniff() {
+        // MC 现代握手：VarInt 长度 + 包 id 0x00。即便长度碰上 'P'(0x50) 或
+        // 0x0D，第 2 字节也必然与两种头分叉——这正是嗅探安全的依据。
+        check("MC 握手(0x50 开头)不误判", ProxyProtocol.parse(
+                new byte[]{0x50, 0x00, 0x2F}).status == ProxyProtocol.Status.NOT_PRESENT);
+        check("MC 握手(0x0D 开头)不误判", ProxyProtocol.parse(
+                new byte[]{0x0D, 0x00, 0x2F}).status == ProxyProtocol.Status.NOT_PRESENT);
+        check("legacy ping(0xFE)不误判", ProxyProtocol.parse(
+                new byte[]{(byte) 0xFE, 0x01}).status == ProxyProtocol.Status.NOT_PRESENT);
+        check("空输入 NEED_MORE", ProxyProtocol.parse(
+                new byte[0]).status == ProxyProtocol.Status.NEED_MORE);
+        check("单字节 'P' 尚无定论", ProxyProtocol.parse(
+                new byte[]{0x50}).status == ProxyProtocol.Status.NEED_MORE);
+    }
+
+    private static void testProxyProtocolInvalid() {
+        check("v1 端口越界为 INVALID", ProxyProtocol.parse(
+                ascii("PROXY TCP4 1.2.3.4 5.6.7.8 99999 25565\r\n"))
+                .status == ProxyProtocol.Status.INVALID);
+        check("v1 地址不是字面量为 INVALID", ProxyProtocol.parse(
+                ascii("PROXY TCP6 abcd efgh 1 2\r\n"))
+                .status == ProxyProtocol.Status.INVALID);
+        // 前缀匹配但 107 字节内没有 CRLF：不能无限等下去
+        byte[] runaway = new byte[120];
+        byte[] prefix = ascii("PROXY TCP4 ");
+        System.arraycopy(prefix, 0, runaway, 0, prefix.length);
+        for (int i = prefix.length; i < runaway.length; i++) {
+            runaway[i] = '1';
+        }
+        check("v1 超长无 CRLF 为 INVALID",
+                ProxyProtocol.parse(runaway).status == ProxyProtocol.Status.INVALID);
+        check("v2 版本号异常为 INVALID", ProxyProtocol.parse(
+                v2Header(0x31, 0x11, new byte[12])).status == ProxyProtocol.Status.INVALID);
+        check("v1 字段缺失为 INVALID", ProxyProtocol.parse(
+                ascii("PROXY TCP4 1.2.3.4 5.6.7.8 40000\r\n"))
+                .status == ProxyProtocol.Status.INVALID);
     }
 
     // ---------- 断言 ----------

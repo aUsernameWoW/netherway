@@ -81,6 +81,14 @@ server {
     I:tokenTtlDays=30
     # 内置 serve 向 authplugin 表明身份的静态令牌（-static-token 同值）
     S:serveAuthToken=
+
+    # ---- PROXY protocol（可选）----
+    # 让隧道进程连本地 MC 端口前先发 PROXY protocol 头（填 v1 或 v2，留空关闭）。
+    # 开启后 mod 自动给服务端接入链装剥头组件，登录日志与封禁看到的是玩家
+    # 真实来源地址而不是 127.0.0.1。当前 frp 只有 stcp 中转路径实际带头，
+    # xtcp 的 P2P 流等上游支持（fatedier/frp#2748）后自动生效。
+    # runAgent=false 时须给独立运行的 serve 手动加同值的 -proxy-protocol 旗标。
+    S:proxyProtocol=
 }
 ```
 
@@ -176,3 +184,11 @@ ops = ["Login", "NewProxy"]
 本地通道（非 `InetSocketAddress`）与玩家手动连的其他本地服都不会误判。
 预热隧道本身不归 `UpgradeController` 管：它活到游戏进程结束（承载着服务器
 列表里的直连条目），断开、换服都不停，退出由 shutdown hook 兜底。
+
+**PROXY protocol 剥头挂在 accept 链上**（`ProxyProtocolInjector`，仅服务端、
+仅 `server.proxyProtocol` 非空时）：在监听端点的 server channel pipeline 里
+拦截 accept 出来的连接，抢在 MC 的 ChannelInitializer 之前往新连接头部塞
+剥头 handler。解析是嗅探式的（core 的 `ProxyProtocol`）——无头流量原样放行，
+所以 xtcp（上游尚未支持发头）、老 agent、直连预热的流量都不受影响；
+只信来自回环的连接，防止 MC 端口同时暴露在局域网时被伪造头。剥完头把
+真实来源写回 `NetworkManager.socketAddress`（非 final，反射带 MCP/SRG 双名）。

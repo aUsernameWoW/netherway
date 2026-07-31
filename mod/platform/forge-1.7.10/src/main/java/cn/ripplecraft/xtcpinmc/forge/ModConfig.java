@@ -35,6 +35,7 @@ public final class ModConfig {
     private final String tokenSigningKey;
     private final int tokenTtlDays;
     private final String serveAuthToken;
+    private final String serveProxyProtocol;
 
     // ---- client ----
     private final boolean clientEnabled;
@@ -107,6 +108,19 @@ public final class ModConfig {
                 "内置 serve 向 authplugin 表明身份的静态令牌（与 authplugin 的 -static-token 同值），\n"
                 + "刻意不放进 params——它只属于 serve，绝不能随凭证下发给玩家；\n"
                 + "frps 未部署 authplugin 时留空");
+        String pp = cfg.getString("proxyProtocol", "server", "",
+                "让隧道进程连本地 MC 端口前先发 PROXY protocol 头（填 v1 或 v2，留空关闭）。\n"
+                + "开启后本 mod 会给服务端接入链装嗅探式剥头组件，登录日志与封禁\n"
+                + "看到的是玩家真实来源地址而不是 127.0.0.1。\n"
+                + "当前 frp 只有 stcp 中转路径实际带头，xtcp 的 P2P 流等上游支持后自动生效。\n"
+                + "runAgent=false 时须给独立运行的 serve 手动加同值的 -proxy-protocol 旗标");
+        if (!pp.isEmpty() && !"v1".equals(pp) && !"v2".equals(pp)) {
+            // 传给 serve 会让它启动即退（它也校验），但剥头组件却已挂上——
+            // 半开状态最迷惑人，不如当场按关闭处理并把话说明白
+            LOG.warn("server.proxyProtocol 只接受 v1 或 v2（当前值 \"{}\"），已按关闭处理", pp);
+            pp = "";
+        }
+        serveProxyProtocol = pp;
 
         cfg.setCategoryComment("client",
                 "客户端专用：时间参数默认值来自实测，顺利时建链约 2-5 秒。");
@@ -216,6 +230,11 @@ public final class ModConfig {
 
     public String serveAuthToken() {
         return serveAuthToken;
+    }
+
+    /** PROXY protocol 版本（"v1"/"v2"），空串表示关闭。 */
+    public String serveProxyProtocol() {
+        return serveProxyProtocol;
     }
 
     /** 32 位十六进制随机密钥，密码学强度随机源。 */

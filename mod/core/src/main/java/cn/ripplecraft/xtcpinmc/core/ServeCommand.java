@@ -37,6 +37,17 @@ public final class ServeCommand {
      */
     public static List<String> build(Path exe, Map<String, String> params, int localPort,
                                      String metaToken) {
+        return build(exe, params, localPort, metaToken, null);
+    }
+
+    /**
+     * 同上，另指定 PROXY protocol 版本（"v1"/"v2"，对应 serve 的
+     * {@code -proxy-protocol}）；null 或空表示不开。开了就意味着 MC 服务端
+     * 必须装着剥头组件（本 mod 的平台层负责），值与配置键
+     * {@code server.proxyProtocol} 同源。
+     */
+    public static List<String> build(Path exe, Map<String, String> params, int localPort,
+                                     String metaToken, String proxyProtocol) {
         // 键名与 Go 侧 internal/backend/frpxtcp 的常量一致（见 frpXtcpParamKeys）
         Map<String, String> flagOf = new LinkedHashMap<String, String>();
         flagOf.put("server", "-server");
@@ -61,6 +72,10 @@ public final class ServeCommand {
         if (metaToken != null && !metaToken.isEmpty()) {
             cmd.add("-meta-token");
             cmd.add(metaToken);
+        }
+        if (proxyProtocol != null && !proxyProtocol.isEmpty()) {
+            cmd.add("-proxy-protocol");
+            cmd.add(proxyProtocol);
         }
         return cmd;
     }
