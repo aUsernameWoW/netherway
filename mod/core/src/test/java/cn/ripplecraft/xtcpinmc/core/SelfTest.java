@@ -480,6 +480,7 @@ public final class SelfTest {
         final List<String> connects = new ArrayList<String>();
         final List<byte[]> reports = new ArrayList<byte[]>();
         final CountDownLatch settled = new CountDownLatch(1);
+        final CountDownLatch reportSent = new CountDownLatch(1);
         private final Path dir;
 
         FakeBridge(Path dir) {
@@ -508,6 +509,7 @@ public final class SelfTest {
             synchronized (reports) {
                 reports.add(payload);
             }
+            reportSent.countDown();
         }
 
         @Override
@@ -554,10 +556,13 @@ public final class SelfTest {
         check("终态是 GAVE_UP", c.state() == UpgradeController.State.GAVE_UP);
         check("没有触发连接切换", bridge.connects.isEmpty());
 
-        // 失败时应当把结果回执发给服务端，让服主在自己的日志里看到原因
+        // 失败时应当把结果回执发给服务端，让服主在自己的日志里看到原因。
+        // giveUp 先打「放弃直连」日志（唤醒上面的 settled）后发回执，
+        // 必须等回执自己的闩锁，否则会赶在 worker 发出前就断言。
         byte[] payload;
+        check("失败后回传了结果", bridge.reportSent.await(10, TimeUnit.SECONDS));
         synchronized (bridge.reports) {
-            check("失败后回传了结果", bridge.reports.size() == 1);
+            check("回执恰好一份", bridge.reports.size() == 1);
             payload = bridge.reports.isEmpty() ? null : bridge.reports.get(0);
         }
         if (payload != null) {
