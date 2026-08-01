@@ -13,12 +13,43 @@ mod 的核心层不含任何 Minecraft 类型，换游戏版本或加载器只�
 验证（经隧道传 20 MB，frps 侧只看到心跳包），完整的端到端验证记录与踩坑见
 [docs/field-notes.md](docs/field-notes.md)。
 
-## 接入方式
+## 快速开始
 
-玩家侧只需装 mod（`mod/`）：先经既有的中转隧道正常进服，服务端在登录后下发
-P2P 凭证，客户端后台打洞，成功了自动切换连接，失败就安静地留在原线路上。
-从第二次启动起，缓存的凭证会在游戏加载期间提前打洞，并在服务器列表里维护
-一个直连条目——配合预拉取凭证（见下），首次进服就能直连。
+前提：一台公网可达的机器上跑着 frp 服务端（frps），手里有它的地址与
+`auth.token`。然后构建 mod jar（需要 Go 工具链与 JDK，Gradle 要 Java 21+；
+jar 里打包的 agent 不含任何密钥）：
+
+```bash
+./mod/build-natives.sh
+cd mod/platform/forge-1.7.10 && ./gradlew build   # 产物在 build/libs/
+```
+
+部署就两步：
+
+1. **服务端**：jar 丢进 `mods/`，启动前存一份 `config/netherway.cfg`：
+
+   ```
+   server {
+       B:enabled=true
+       S:params <
+           server=frps.example.com
+           serverPort=7000
+           token=换成frps的auth.token
+           room=gtnh
+           secret=auto
+        >
+   }
+   ```
+
+   完整模板与逐项说明（每玩家令牌、PROXY protocol 等）见
+   [mod/platform/forge-1.7.10/README.md](mod/platform/forge-1.7.10/README.md)。
+
+2. **客户端**：同一个 jar 丢进 `mods/`，零配置。
+
+就这些。玩家先经既有的中转隧道正常进服，服务端在登录后下发 P2P 凭证，
+客户端后台打洞，成功了自动切换连接，失败就安静地留在原线路上；没装 mod
+的客户端照常进服，完全不受影响。从第二次启动起，缓存的凭证会在游戏加载
+期间提前打洞，并在服务器列表里维护一个直连条目。
 
 ## 工作原理
 
@@ -51,10 +82,15 @@ Minecraft 自己的握手（Server List Ping，`internal/mcping`）判断隧道�
 **新增一种隧道方案**只需一个 Go 实现包加一行注册（`cmd/netherway/backends.go`）；
 凭证是「backend 标识 + 参数表」，核心层不解释参数，原样转交 agent。
 
-## 构建
+## 可选组件
 
-密钥经 `-ldflags` 在构建时注入，不进源码仓库，而产出的二进制零配置可用。
-部署参数（frps 地址、房间名等）放 gitignore 的 `build.env`：
+以下都不是必需的——快速开始那两步就是完整部署。
+
+### 独立 agent 二进制（build.sh）
+
+只有两个场景用得到：托管环境禁止子进程时独立运行 serve（见下），以及
+预拉取凭证的玩家侧 prefetch（见下节）。密钥经 `-ldflags` 在构建时注入，
+不进源码仓库，产出的二进制零配置可用：
 
 ```bash
 cp build.env.example build.env   # 填入你的 frps 地址等部署参数
@@ -68,21 +104,18 @@ TOKEN=<frps的auth.token> SECRET=<房间密钥> ./build.sh
 只发 mod jar——它打包的 agent 由 `mod/build-natives.sh` 构建，刻意不注入
 任何密钥。
 
-## 服务端部署
+### 独立运行 serve
 
-服务端 mod 默认内置启动 serve（cfg 的 `server.runAgent=true`，参数与下发
-凭证同源）；托管环境禁止子进程时，改在宿主机上独立运行：
+默认不需要：服务端 mod 会内置启动 serve（cfg 的 `server.runAgent=true`，
+参数与下发凭证同源）。托管环境禁止子进程时，把 cfg 改为 `runAgent=false`，
+在宿主机上独立运行 `netherway serve`（普通前台进程，交给 systemd /
+MCSManager 等托管即可；参数构建时已注入，临时覆盖用 `-server` `-room` 等）。
+两种方式**只能开一个**——同名代理会在 frps 上注册冲突。
 
-```bash
-netherway serve
-```
+## 预拉取凭证（可选，尚未在生产部署）
 
-`serve` 是普通前台进程，交给 systemd / MCSManager 等任意进程管理器托管
-即可。参数构建时已注入，临时覆盖用 `-server` `-room` 等，`netherway help`
-有完整列表。两种方式**只能开一个**——同名代理会在 frps 上注册冲突，
-细节见 [mod/platform/forge-1.7.10/README.md](mod/platform/forge-1.7.10/README.md)。
-
-## 预拉取凭证（首次进服即直连）
+已实现、有端到端测试（stub 皮肤站走通全流程），但**尚未在任何生产环境
+部署过**——以下是设计与部署方式，供需要时取用。
 
 默认流程里，玩家首次进服要先走中转、登录后拿凭证、打洞、重连切换——会看到
 「进去几秒后自动退出重连」。预拉取把这个过程提前到启动器阶段：玩家点连接
