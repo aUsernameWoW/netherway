@@ -1,0 +1,29 @@
+# 依赖自动更新。配套 workflows/dependabot-automerge.yml：CI 全绿即自动合入。
+#
+# frp 也在自动合入范围内，不做特殊处理：frp 自 v0.69 起承诺 frpc↔frps
+# 前后各 8 个小版本的协议兼容窗口（见 v0.69.0 release notes），frps 只需
+# 保持在窗口内跟进（按 frp 发版节奏约一年升一次）。库 API 层的破坏表现
+# 为编译失败，由 CI 拦下——PR 不绿就不会合；「编译过但行为变」的主要
+# 风险面（frp 日志漏进 stdout 污染 JSON 契约）由 build.yml 的
+# tunnel stdout 契约冒烟兜底。
+#
+# Gradle（mod/platform/forge-1.7.10）刻意不纳入：RetroFuturaGradle 与
+# 1.7.10 生态版本钉死，自动 bump 只会添乱。
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # frp 与 fatedier/golib 必须一起动，拆开 bump 会出现编译不过的中间态
+      frp:
+        patterns:
+          - github.com/fatedier/*
+      golang-x:
+        patterns:
+          - golang.org/x/*
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

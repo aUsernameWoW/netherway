@@ -1,0 +1,50 @@
+# Dependabot PR 自动合入。唯一门槛是 main 的 required checks（build.yml
+# 三条流水线）全绿：gh pr merge --auto 只在必需检查通过后才真正合入。
+#
+# 两个仓库设置是这套机制的前提，缺一都会让 --auto 退化成「立即合入」，
+# 所以 gate 步骤会先确认两者都已就位，否则跳过合并、只留提示。
+# 免费计划下这两个设置仅公开仓库可用（私有仓库需 Pro），转公开后执行：
+#
+#   gh api -X PATCH repos/aUsernameWoW/xtcpinmc -F allow_auto_merge=true
+#   gh api -X PUT repos/aUsernameWoW/xtcpinmc/branches/main/protection \
+#     --input .github/branch-protection.json
+#
+# frp 的 bump 不做特殊拦截，理由见 ../dependabot.yml 头注。
+name: dependabot-automerge
+
+on: pull_request
+
+# Dependabot 触发的 workflow 默认拿只读令牌，这里显式声明合 PR 所需权限。
+# 来自 fork 的 pull_request 事件不会被授予写权限，无泄露面。
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.repository == 'aUsernameWoW/xtcpinmc'
+    steps:
+      # .protected 只说明 main 有分支保护，不细究是否配了 required checks——
+      # 保护规则由上面注释里的 branch-protection.json 统一施加，两者一致。
+      - name: 确认门槛就位（Allow auto-merge + main 分支保护）
+        id: gate
+        run: |
+          auto=$(gh api "repos/$GITHUB_REPOSITORY" --jq .allow_auto_merge)
+          prot=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .protected)
+          echo "allow_auto_merge=$auto protected=$prot"
+          if [ "$auto" = true ] && [ "$prot" = true ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::仓库设置未就位（见 workflow 头注），本次不自动合入"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 启用 auto-merge（squash）
+        if: steps.gate.outputs.ready == 'true'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -60,6 +60,32 @@ jobs:
               exit 1
             }
           done
+      # tunnel 的 stdout 是 mod 逐行解析的 JSON 契约，frp 的日志一旦漏到
+      # stdout（例如新版 frp 在 initFrpLogger 生效前打印）就会破坏它——
+      # 这类破坏编译与单测都抓不到。这里跑真实二进制指向不可达的 frps：
+      # 打洞注定失败，但 frp 的登录重试会在整个超时窗口内持续产生日志，
+      # 恰好压满「日志只进 stderr/文件」的契约。frp 依赖自动升级
+      # （dependabot auto-merge）后，这是行为级回归的主要防线。
+      # STUN 探测失败也没关系：starting 在 backend 启动前就已发出，
+      # failed 的原因不同但断言不变。
+      - name: tunnel stdout JSON 契约冒烟
+        run: |
+          if bin/xtcpinmc-linux-amd64 tunnel \
+               -server 127.0.0.1 -server-port 1 -token ci \
+               -room ci-smoke -secret ci-smoke -timeout 6 \
+               -log-file /tmp/tunnel-smoke.log \
+               >stdout.jsonl 2>stderr.log; then
+            echo "指向不可达 frps 却成功就绪？"
+            exit 1
+          fi
+          tail -20 stderr.log
+          jq -es 'length >= 2
+                  and (.[0].event == "starting")
+                  and (.[-1].event == "failed")' stdout.jsonl || {
+            echo "stdout 不是纯 JSON 事件流，或事件序列不对："
+            cat stdout.jsonl
+            exit 1
+          }
 
   core:
     name: Java core SelfTest (JDK ${{ matrix.java }})

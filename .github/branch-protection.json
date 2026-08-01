@@ -1,0 +1,16 @@
+{
+  "required_status_checks": {
+    "strict": false,
+    "contexts": [
+      "Go agent",
+      "Java core SelfTest (JDK 8)",
+      "Java core SelfTest (JDK 17)",
+      "Java core SelfTest (JDK 21)",
+      "Java core SelfTest (JDK 25)",
+      "Forge 1.7.10 mod"
+    ]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null
+}
