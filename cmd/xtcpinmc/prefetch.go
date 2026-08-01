@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ripplecraft/xtcpinmc/internal/config"
 	"github.com/ripplecraft/xtcpinmc/internal/credfile"
 )
 
@@ -27,8 +28,10 @@ import (
 //  4. 凭证写进缓存目录，格式与 Java 侧 CredentialCache 兼容
 func cmdPrefetch(args []string) error {
 	fs := flag.NewFlagSet("prefetch", flag.ExitOnError)
-	bridge := fs.String("bridge", "", "authbridge 地址，如 http://authbridge.example.com:7201")
-	authServer := fs.String("authserver", "", "皮肤站 API root，如 https://skin.example.com/api/yggdrasil")
+	bridge := fs.String("bridge", config.DefaultAuthBridge,
+		"authbridge 地址，如 https://authbridge.example.com（应经 TLS，凭证会在响应里回传）")
+	authServer := fs.String("authserver", config.DefaultAuthServer,
+		"皮肤站 API root，如 https://skin.example.com/api/yggdrasil")
 	token := fs.String("token", os.Getenv("XTCPINMC_ACCESS_TOKEN"),
 		"启动器登录后拿到的 accessToken；\n"+
 			"也可经环境变量 XTCPINMC_ACCESS_TOKEN 传入（避免出现在进程列表里）")
@@ -84,14 +87,21 @@ func doPrefetch(client *http.Client, bridge, username, uuid string) (string, err
 		return "", fmt.Errorf("请求 authbridge /prefetch: %w", err)
 	}
 	defer resp.Body.Close()
+	// 出错时 authbridge 以非 200 状态 + {"reason":...} 回复，原因要透传出来，
+	// 不能吞成一句「空 serverId」——prefetch 挂在启动器里，日志是唯一线索。
 	var out struct {
 		ServerID string `json:"serverId"`
+		Reason   string `json:"reason"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("解析 /prefetch 响应: %w", err)
+		return "", fmt.Errorf("解析 /prefetch 响应（HTTP %d）: %w", resp.StatusCode, err)
 	}
-	if out.ServerID == "" {
-		return "", errors.New("authbridge 返回空 serverId")
+	if resp.StatusCode != http.StatusOK || out.ServerID == "" {
+		reason := out.Reason
+		if reason == "" {
+			reason = fmt.Sprintf("HTTP %d，且无 serverId", resp.StatusCode)
+		}
+		return "", errors.New("authbridge /prefetch 拒绝: " + reason)
 	}
 	return out.ServerID, nil
 }

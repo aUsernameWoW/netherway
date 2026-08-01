@@ -31,7 +31,7 @@ func cmdAuthBridge(args []string) error {
 	key := fs.String("key", os.Getenv("XTCPINMC_AUTH_KEY"),
 		"令牌签发密钥，须与 authplugin -key、服务端 mod tokenSigningKey 一致；\n"+
 			"也可经环境变量 XTCPINMC_AUTH_KEY 传入（避免出现在进程列表里）")
-	authServer := fs.String("authserver", "",
+	authServer := fs.String("authserver", config.DefaultAuthServer,
 		"皮肤站 API root，如 https://skin.example.com/api/yggdrasil")
 	// 房间参数：与 serve 同源
 	serverAddr := fs.String("server", config.DefaultServerAddr, "frps 地址")
@@ -42,6 +42,8 @@ func cmdAuthBridge(args []string) error {
 	secret := fs.String("secret", config.DefaultSecretKey, "房间密钥")
 	punchTimeout := fs.Int("punch-timeout", 0,
 		"服务端建议的打洞超时秒数；0 表示由客户端配置决定")
+	tokenTTLDays := fs.Int("token-ttl-days", 30,
+		"签发令牌的有效期天数，与服务端 mod 的 tokenTtlDays 同语义")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -73,6 +75,7 @@ func cmdAuthBridge(args []string) error {
 		AuthServer:     *authServer,
 		RoomParams:     roomParams,
 		PunchTimeoutMs: *punchTimeout * 1000,
+		TokenTTL:       time.Duration(*tokenTTLDays) * 24 * time.Hour,
 		Logf:           logf,
 	})
 

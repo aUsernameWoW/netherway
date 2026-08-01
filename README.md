@@ -203,13 +203,24 @@ xtcpinmc authbridge \
   -token <frps全局token> -stun <STUN> -server-port <端口>
 ```
 
-房间参数必须与 `serve` 同源，否则打洞时密钥不匹配。authbridge 需对玩家机器可达（公网暴露或经反代）。
+房间参数必须与 `serve` 同源，否则打洞时密钥不匹配。authbridge 需对玩家机器可达，
+**必须经 TLS 反代暴露**：`/confirm` 的响应里带着完整凭证（房间密钥 + frps 全局
+token），明文 HTTP 等于把它们交给路径上的任何人；serverId 被截获还可能让凭证被
+抢领。令牌有效期用 `-token-ttl-days` 调（默认 30 天，与服务端 mod 的
+`tokenTtlDays` 同语义）。
+
+`secret=auto` 场景注意：authbridge 是独立进程，密钥取自启动旗标。服务端重启换
+密钥后要**随之重启 authbridge**，否则它下发的凭证一直打不通——玩家会退回中转
+进服后自愈，不致不可用，但预拉取就白做了。
+
+皮肤站与 authbridge 地址可经 `build.sh` 的 `AUTHSERVER`/`AUTHBRIDGE` 注入为
+内置默认值，玩家侧命令即可省去 `-authserver`/`-bridge`。
 
 **玩家端**（启动器 Pre-launch 调用，PrismLauncher 示例）：
 
 ```
 xtcpinmc prefetch \
-  -bridge http://authbridge.example.com:7201 \
+  -bridge https://authbridge.example.com \
   -authserver https://skin.example.com/api/yggdrasil \
   -token ${auth_access_token} \
   -uuid ${auth_uuid} \

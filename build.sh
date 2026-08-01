@@ -20,6 +20,9 @@ ROOM="${ROOM:-gtnh}"
 # 超时，agent 启动前会并行探测并选用当场验证过的一台。
 STUN="${STUN:-stun.miwifi.com:3478,stun.easyvoip.com:3478,stun.qq.com:3478}"
 MOTD="${MOTD:-涟漪GT:New Horizons}"
+# 预拉取凭证（prefetch/authbridge）用；AUTHBRIDGE 留空表示不内置，玩家侧需 -bridge
+AUTHSERVER="${AUTHSERVER:-https://skin.example.com/api/yggdrasil}"
+AUTHBRIDGE="${AUTHBRIDGE:-}"
 
 : "${TOKEN:?请设置 TOKEN（frps 的 auth.token）}"
 : "${SECRET:?请设置 SECRET（房间密钥，两端必须一致）}"
@@ -34,6 +37,8 @@ LDFLAGS+=" -X '${PKG}.DefaultSTUNServer=${STUN}'"
 LDFLAGS+=" -X '${PKG}.DefaultRoom=${ROOM}'"
 LDFLAGS+=" -X '${PKG}.DefaultSecretKey=${SECRET}'"
 LDFLAGS+=" -X '${PKG}.DefaultMOTD=${MOTD}'"
+LDFLAGS+=" -X '${PKG}.DefaultAuthServer=${AUTHSERVER}'"
+LDFLAGS+=" -X '${PKG}.DefaultAuthBridge=${AUTHBRIDGE}'"
 
 mkdir -p bin
 

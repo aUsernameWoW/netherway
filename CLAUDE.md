@@ -22,7 +22,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 go build ./... && go vet ./... && go test ./...
 ```
 
-Go 测试目前只有 `internal/authplugin`（含与 Java 侧的跨语言已知答案向量）。
+Go 测试目前有 `internal/authplugin`（含与 Java 侧的跨语言已知答案向量）、
+`internal/authbridge`（stub 皮肤站走通预认证全流程）与 `internal/credfile`
+（凭证字节布局黄金向量）。
 
 跨平台构建（Windows/macOS/Linux 五个目标），密钥经 `-ldflags` 注入而不进源码：
 
@@ -89,6 +91,9 @@ Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者�
 `Credentials` 的对应工厂方法（如 `Credentials.frpXtcp`）。以及每玩家令牌的
 格式：Go 侧 `internal/authplugin`（校验）↔ Java 侧 `TokenIssuer`（签发）
 必须逐字节一致——两侧各有一个用同一组常量的已知答案测试钉住这一点。
+凭证的字节布局与缓存文件名派生也是跨语言契约：Go 侧 `internal/credfile`
+（prefetch 落盘）↔ Java 侧 `Credentials.encode()` + `CredentialCache`
+（读取预热），改动必须两边同步。
 
 agent 的 stderr 是诊断通道：backend 的参数快照、被忽略的未知键、frp 自身
 info 及以上的日志都会回显到这里，mod 逐行转进游戏日志（`bridge.debug`）。
@@ -112,7 +117,7 @@ core 与平台适配层不解释参数，无需改动。约束：**backend 实�
 凭证 v2 起是「backendId + 参数表」，由服务端决定用哪个 backend；v1
 （frp 专用布局）仍可解码，会被翻译成等价的 frp-xtcp 参数表。
 
-### Go agent 的三种运行模式
+### Go agent 的运行模式
 
 | 子命令 | 用途 | 关键差异 |
 |---|---|---|
@@ -120,6 +125,8 @@ core 与平台适配层不解释参数，无需改动。约束：**backend 实�
 | `join` | 独立运行的玩家侧 | 带 stcp 兜底，并做局域网广播；无每玩家令牌（legacy 路径） |
 | `tunnel` | 供 mod 调用 | **经 backend 抽象、无兜底**，超时即退出，stdout 输出 JSON |
 | `authplugin` | frps 宿主机 | frps 的 HTTP server plugin：Login 校验每玩家令牌，NewProxy 只放行静态令牌（serve）；`-allow-legacy` 是迁移开关 |
+| `authbridge` | 服务端宿主机 | 预认证 HTTP 服务：hasJoined 撮合验证 accessToken 后提前签发令牌与凭证；须经 TLS 反代暴露；`secret=auto` 时要随服务端一起重启 |
+| `prefetch` | 玩家侧（启动器 Pre-launch） | 领 serverId → 皮肤站 join → authbridge confirm → 凭证写进 mod 缓存目录；失败不阻断游戏，退回既有升级流程 |
 
 `tunnel` 刻意不带兜底：mod 场景下玩家此刻已通过既有中转隧道连着服务器，
 建链失败就该留在那条连接上。更重要的是，有了兜底通道后「隧道可用」的探测会
@@ -266,6 +273,11 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 mod 方案的核心安全价值在于：**凭证由服务端在玩家登录后下发**，而非随客户端分发。
 能拿到密钥的必然是通过了服务器既有正版验证/白名单的玩家，因此不需要另建鉴权系统。
 `Credentials.toString()` 刻意不输出任何参数值（token 与密钥都在其中），只列键名。
+
+部署 `authbridge`（预拉取凭证）后这条边界有意放宽为「皮肤站上任何有效账号」：
+hasJoined 只证明账号真实，不证明是本服玩家。这是刻意取舍——谁能进服由 MC
+服务端自己的验证决定，不属于本 mod 的职责范围；凭证换来的隧道也只通向 MC
+端口。皮肤站换成公共站点前需重新评估这一点。
 
 客户端的凭证缓存（预热用）**刻意明文落盘、不加密**：解密密钥必须与密文同机，
 加密对玩家本人只是混淆；凭证本就完整出现在其内存与 agent 命令行里，落盘未增加

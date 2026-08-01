@@ -27,9 +27,9 @@ import (
 	"github.com/ripplecraft/xtcpinmc/internal/credfile"
 )
 
-// 令牌有效期：与服务端 mod 的默认 tokenTtlDays=30 一致。
+// 令牌有效期默认值：与服务端 mod 的默认 tokenTtlDays=30 一致。
 // 预认证签发的令牌会随凭证缓存，覆盖玩家两次游玩的间隔足够。
-const tokenTTL = 30 * 24 * time.Hour
+const defaultTokenTTL = 30 * 24 * time.Hour
 
 // Config 是预认证服务的全部策略。
 type Config struct {
@@ -42,12 +42,17 @@ type Config struct {
 	RoomParams map[string]string
 	// PunchTimeoutMs 服务端建议的打洞超时；0 表示由客户端配置决定。
 	PunchTimeoutMs int
+	// TokenTTL 签发令牌的有效期；非正值回退默认 30 天（与 mod 的 tokenTtlDays 同语义）。
+	TokenTTL time.Duration
 	// Logf 输出决策日志；nil 表示静默。
 	Logf func(format string, args ...any)
 }
 
 // NewHandler 构造 HTTP handler。
 func NewHandler(cfg Config) http.Handler {
+	if cfg.TokenTTL <= 0 {
+		cfg.TokenTTL = defaultTokenTTL
+	}
 	return &handler{cfg: cfg}
 }
 
@@ -143,7 +148,7 @@ func (h *handler) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 签发玩家令牌，user 用 prefetch 传入的 uuid（与 frpc metas.user 一致）。
-	expiry := time.Now().Add(tokenTTL).Unix()
+	expiry := time.Now().Add(h.cfg.TokenTTL).Unix()
 	userToken := authplugin.IssueToken(h.cfg.SigningKey, req.UUID, expiry)
 
 	cred := h.assembleCredential(req.UUID, userToken)

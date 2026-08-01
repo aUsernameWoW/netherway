@@ -81,6 +81,10 @@ var (
 	DefaultRoom       = "gtnh"
 	DefaultSecretKey  = ""
 	DefaultMOTD       = "Minecraft Server (P2P)"
+	// 皮肤站 API root 与 authbridge 地址：预拉取凭证（prefetch/authbridge）用。
+	// 注入后玩家侧 prefetch 无需 -authserver/-bridge。
+	DefaultAuthServer = ""
+	DefaultAuthBridge = ""
 )
 
 // ServerPortDefault 把构建期注入的字符串端口转成 int，非法值回退到 7000。

@@ -109,8 +109,7 @@ func WriteRaw(data []byte, backendID, room, cacheDir string) (string, error) {
 		return "", fmt.Errorf("写入凭证: %w", err)
 	}
 	tmp.Close()
-	// 0o600 与 Java 侧 restrictToOwner 同意图：仅属主可读写
-	_ = os.Chmod(tmpPath, 0o600)
+	// CreateTemp 建档即 0600（仅属主可读写），与 Java 侧 restrictToOwner 同意图
 	if err := os.Rename(tmpPath, target); err != nil {
 		// 某些文件系统不支持原子改名，退回直接写
 		if err := os.WriteFile(target, data, 0o600); err != nil {
