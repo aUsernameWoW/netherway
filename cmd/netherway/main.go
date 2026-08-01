@@ -89,10 +89,12 @@ authbridge 专有:
   -punch-timeout  建议的打洞超时秒数          其余 -server/-room 等同 serve
 
 prefetch 专有:
-  -bridge    authbridge 地址                  -authserver  皮肤站 API root
+  -bridge    authbridge 地址，可重复给多个候选（逐个 GET /info 探测取第一个应答者）
+  -authserver 皮肤站 API root；留空用 authbridge /prefetch 响应里告知的
   -token     accessToken（或环境变量 NETHERWAY_ACCESS_TOKEN）
   -uuid      玩家 UUID                        -username  玩家名
   -cache-dir 凭证缓存目录（mod 的 .minecraft/netherway/credentials）
+  -discover-timeout  单个候选的 /info 探测超时秒数，默认 5
 
 未指定的选项使用构建时注入的默认值。
 `)

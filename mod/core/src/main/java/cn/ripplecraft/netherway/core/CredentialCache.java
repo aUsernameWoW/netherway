@@ -42,6 +42,11 @@ public final class CredentialCache {
         this.dir = dir;
     }
 
+    /** 缓存目录本身：预取子进程（Go 侧 credfile）直接往这里写同格式文件。 */
+    public Path directory() {
+        return dir;
+    }
+
     /**
      * 写入（或覆盖）一份凭证。同一房间（{@link Credentials#dedupKey()}）
      * 始终落在同一个文件上，文件修改时间即「最近使用」的排序依据。

@@ -43,10 +43,15 @@ public final class ModConfig {
     private final boolean clientPrewarm;
     private final int prewarmPort;
     private final String directEntryName;
+    private final boolean clientPrefetch;
+    private final String prefetchBridge;
     private final int clientPunchTimeoutSeconds;
     private final int probeIntervalMs;
     private final int probeTimeoutMs;
     private final int startupGraceMs;
+    private final int warmupRetryInitialSeconds;
+    private final int warmupRetryMaxSeconds;
+    private final int prefetchTimeoutSeconds;
 
     public ModConfig(File file) {
         // 服主会按 README 手写这个文件（免得为生成骨架先空跑一次游戏），
@@ -123,19 +128,30 @@ public final class ModConfig {
         serveProxyProtocol = pp;
 
         cfg.setCategoryComment("client",
-                "客户端专用：时间参数默认值来自实测，顺利时建链约 2-5 秒。");
+                "客户端专用：时间参数默认值来自实测，顺利时建链约 2-5 秒。\n"
+                + "默认行为是全自动直连：启动时预取凭证（prefetch）、后台打洞（prewarm，\n"
+                + "打不通按退避一直重试），玩家只管点服务器列表里的直连条目。");
         clientEnabled = cfg.getBoolean("enabled", "client", true,
                 "是否响应服务端下发的凭证并尝试直连");
         clientPrewarm = cfg.getBoolean("prewarm", "client", true,
-                "游戏启动时用上次缓存的凭证预热直连隧道，并在服务器列表里维护一个直连条目，\n"
-                + "打通后可直接选它进服。首次进服仍需先经中转拿到凭证；\n"
+                "游戏启动时预热直连隧道（凭证来自预取或上次缓存），并在服务器列表里\n"
+                + "维护一个直连条目，打通后直接选它进服；打不通会按退避周期持续重试。\n"
                 + "关闭后已添加的条目不会被自动删除，手动删即可");
         prewarmPort = cfg.getInt("prewarmPort", "client", 25595, 0, 65535,
                 "预热隧道的本地端口，被占用时自动改用空闲端口（条目地址会跟着更新）；\n"
                 + "0 表示每次随机");
         directEntryName = cfg.getString("directEntryName", "client", "[P2P直连]",
                 "服务器列表中直连条目的名字前缀，同时用于识别并更新该条目；\n"
+                + "整合包可改成服务器名让条目看起来就是「那个服务器」。\n"
                 + "改动后旧名字的条目不再被维护，需手动删除");
+        clientPrefetch = cfg.getBoolean("prefetch", "client", true,
+                "启动时经 authbridge 预取凭证（用游戏会话走一遍正版验证），首次启动、\n"
+                + "密钥轮换后都无需先经中转进服。地址来自 prefetchBridge 或服务器列表推导；\n"
+                + "服务端未部署 authbridge 时本项静默不生效");
+        prefetchBridge = cfg.getString("prefetchBridge", "client", "",
+                "authbridge 地址，如 https://play.example.com/netherway；留空则扫描\n"
+                + "服务器列表（server.dat），对每个条目按约定 https://<主机>/netherway\n"
+                + "探测 /info 自动发现");
         verboseLogging = cfg.getBoolean("verboseLogging", "client", true,
                 "把直连过程的详细日志（agent 事件、参数键、诊断输出）以 INFO 级别写进游戏日志；\n"
                 + "关闭后这些内容降为 DEBUG 级别（默认日志配置下不可见）");
@@ -147,6 +163,12 @@ public final class ModConfig {
                 "单次就绪探测超时毫秒数");
         startupGraceMs = cfg.getInt("startupGraceMs", "client", 5_000, 0, 60_000,
                 "打洞超时之外留给进程启动、二进制释放的余量毫秒数");
+        warmupRetryInitialSeconds = cfg.getInt("warmupRetryInitialSeconds", "client",
+                10, 1, 3600, "预热打洞失败后的首次重试等待秒数（此后指数退避）");
+        warmupRetryMaxSeconds = cfg.getInt("warmupRetryMaxSeconds", "client",
+                120, 1, 86_400, "预热重试退避的上限秒数——打不通就按这个周期一直打");
+        prefetchTimeoutSeconds = cfg.getInt("prefetchTimeoutSeconds", "client",
+                60, 5, 600, "凭证预取子进程的总超时秒数（含候选探测与三次 HTTP 往返）");
 
         // 解析失败时绝不能回写：会用默认值覆盖服主手里只是语法有瑕疵的文件
         if (loadedOk && cfg.hasChanged()) {
@@ -270,8 +292,19 @@ public final class ModConfig {
         return verboseLogging;
     }
 
+    public boolean clientPrefetch() {
+        return clientPrefetch;
+    }
+
+    public String prefetchBridge() {
+        return prefetchBridge;
+    }
+
     public Timings clientTimings() {
         return new Timings(clientPunchTimeoutSeconds * 1000L,
-                probeIntervalMs, probeTimeoutMs, startupGraceMs);
+                probeIntervalMs, probeTimeoutMs, startupGraceMs)
+                .withWarmupRetry(warmupRetryInitialSeconds * 1000L,
+                        warmupRetryMaxSeconds * 1000L)
+                .withPrefetchTimeout(prefetchTimeoutSeconds * 1000L);
     }
 }

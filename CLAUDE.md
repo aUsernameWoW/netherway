@@ -134,8 +134,8 @@ core 与平台适配层不解释参数，无需改动。约束：**backend 实�
 | `serve` | 服务器宿主机 | 注册 xtcp 代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand`；`-meta-token` 向 authplugin 表明身份 |
 | `tunnel` | 供 mod 调用 | **经 backend 抽象、无兜底**，超时即退出，stdout 输出 JSON |
 | `authplugin` | frps 宿主机 | frps 的 HTTP server plugin：Login 校验每玩家令牌，NewProxy 只放行静态令牌（serve）；`-allow-legacy` 是迁移开关 |
-| `authbridge` | 服务端宿主机 | 预认证 HTTP 服务：hasJoined 撮合验证 accessToken 后提前签发令牌与凭证；须经 TLS 反代暴露；`secret=auto` 时要随服务端一起重启 |
-| `prefetch` | 玩家侧（启动器 Pre-launch） | 领 serverId → 皮肤站 join → authbridge confirm → 凭证写进 mod 缓存目录；失败不阻断游戏，退回既有升级流程 |
+| `authbridge` | 服务端宿主机 | 预认证 HTTP 服务：hasJoined 撮合验证 accessToken 后提前签发令牌与凭证；`GET /info` 是发现信标（`{"service":"netherway-authbridge"}`），`/prefetch` 响应顺带告知皮肤站地址；须经 TLS 反代暴露；`secret=auto` 时要随服务端一起重启 |
+| `prefetch` | 玩家侧（mod 在 FML 加载期内建调用；启动器 Pre-launch 亦可） | `-bridge` 可重复给多个候选，多候选时逐个 `GET /info` 探测取第一个应答者 → 领 serverId → 皮肤站 join → authbridge confirm → 凭证写进 mod 缓存目录；失败不阻断游戏，退回缓存/中转路径 |
 
 `tunnel` 刻意不带兜底：mod 场景下玩家此刻已通过既有中转隧道连着服务器，
 建链失败就该留在那条连接上。更重要的是，有了兜底通道后「隧道可用」的探测会
@@ -163,18 +163,30 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 
 ### 预热与凭证缓存
 
-每次下发的凭证都会写进本地缓存（`CredentialCache`，`.minecraft/netherway/credentials/`）；
-下次启动时 `WarmupController` 在 FML 加载期就用缓存凭证后台打洞，并经
-`DirectServerEntry` 在服务器列表里维护一个直连条目（agent 的 STARTING 事件
-一报出端口就更新地址）。玩家可三种方式进服，互为兜底：
+每次下发的凭证都会写进本地缓存（`CredentialCache`，`.minecraft/netherway/credentials/`）。
+`WarmupController` 在 FML 加载期启动**无限重试的预热循环**（打不通就一直打，
+指数退避见 `Timings.warmupRetryDelayMs`，就绪后守望 agent 进程、死了重打；
+刻意无任何中转兜底），并经 `DirectServerEntry` 在服务器列表里维护一个直连
+条目（agent 的 STARTING 事件一报出端口就更新地址，重试每轮都会再报）。
+
+凭证来源除缓存外还有 mod 内建预取（`Prefetcher`，每轮预热前跑一次 agent 的
+`prefetch` 子命令）：平台层把游戏会话（`SessionIdentity`，离线会话跳过）与
+authbridge 候选交给 core，候选由 `BridgeDiscovery` 推导——客户端 cfg 的
+`client.prefetchBridge` 优先，否则扫服务器列表（server.dat）按约定
+`https://<主机>/netherway` 生成、由 Go 侧逐个 `GET /info` 探测识别。
+accessToken 经环境变量 `NETHERWAY_ACCESS_TOKEN` 传给子进程（Java 侧
+`Prefetcher.TOKEN_ENV` ↔ Go 侧 prefetch 旗标默认值，跨语言契约），绝不进
+命令行。部署 authbridge 后首次启动即可直连；密钥轮换后下一轮预取自动取到
+新密钥，无需先经中转。玩家可三种方式进服，互为兜底：
 
 - **直连条目**：进服后平台层按「回环地址 + 预热端口」识别（`ClientEvents.warmupMatch`），
   调 `adoptDirectConnection` 把状态机置为 UPGRADED——随后服务端照常下发的凭证
   命中重复分支并回执成功，零新协议。
 - **中转进服**：既有升级流程，但 `runUpgrade` 先查预热隧道，就绪则直接复用
   （`reuseWarmTunnel`），不再对同一房间起第二个 agent。
-- **预热失败/无缓存**：一切如旧。凭证轮换后缓存自动经「打洞失败→中转→
-  新凭证覆盖」闭环恢复，玩家与服主都无需操作。
+- **预热失败/无缓存**：一切如旧。凭证轮换后优先由下一轮预取直接取回新
+  密钥；未部署 authbridge 时仍走「打洞失败→中转→新凭证覆盖」闭环恢复，
+  玩家与服主都无需操作。
 
 预热隧道生命周期是整个游戏进程（断开、回主菜单都不停，它承载着直连条目），
 退出由 `AgentProcess` 的 shutdown hook 兜底。

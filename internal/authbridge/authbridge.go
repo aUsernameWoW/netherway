@@ -102,7 +102,7 @@ type handler struct {
 	confirmSem chan struct{}
 }
 
-// 三个 JSON 结构对应前后端约定的协议。
+// 这些 JSON 结构对应前后端约定的协议。
 type prefetchRequest struct {
 	Username string `json:"username"`
 	UUID     string `json:"uuid"`
@@ -110,7 +110,24 @@ type prefetchRequest struct {
 
 type prefetchResponse struct {
 	ServerID string `json:"serverId"`
+	// AuthServer 把皮肤站 API root 告诉客户端：authbridge 本来就配置了它，
+	// 客户端因此只需知道 bridge 一个地址（mod 内建预取的前提）。
+	AuthServer string `json:"authServer,omitempty"`
 }
+
+// infoResponse 是 GET /info 的发现信标：mod 扫描 server.dat 推导候选地址后，
+// 靠这个响应识别「这个主机上确实挂着 netherway 的 authbridge」。
+// 无副作用、内容固定，被无关服务器 404/超时掉都是预期路径。
+type infoResponse struct {
+	Service  string `json:"service"`
+	Protocol int    `json:"protocol"`
+}
+
+// InfoService 是 /info 里 service 字段的固定值，prefetch 侧按它识别。
+const InfoService = "netherway-authbridge"
+
+// InfoProtocol 是发现协议版本，将来不兼容变更时递增。
+const InfoProtocol = 1
 
 type confirmRequest struct {
 	ServerID string `json:"serverId"`
@@ -127,14 +144,24 @@ type confirmResponse struct {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	ip := clientIP(r, h.cfg.TrustProxyHeader)
+	// /info 也在限流之内：它是给 mod 的发现探测用的，正常一次启动只有
+	// 每个候选主机一发，配额绰绰有余；不豁免则少一条可白嫖的路径。
 	if !h.limiter.allow(ip) {
 		h.logf("限流: %s 对 %s 请求过于频繁", ip, r.URL.Path)
 		writeJSON(w, http.StatusTooManyRequests, confirmResponse{OK: false, Reason: "请求过于频繁，稍后重试"})
+		return
+	}
+	if r.URL.Path == "/info" {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, http.StatusOK, infoResponse{Service: InfoService, Protocol: InfoProtocol})
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
@@ -181,7 +208,7 @@ func (h *handler) handlePrefetch(w http.ResponseWriter, r *http.Request, ip stri
 		return
 	}
 	h.logf("prefetch: 玩家 %s (%s) 从 %s 领取 serverId", req.Username, req.UUID, ip)
-	writeJSON(w, http.StatusOK, prefetchResponse{ServerID: serverID})
+	writeJSON(w, http.StatusOK, prefetchResponse{ServerID: serverID, AuthServer: h.cfg.AuthServer})
 }
 
 // handleConfirm 调皮肤站 hasJoined 查证，成功则签发令牌 + 组装凭证。

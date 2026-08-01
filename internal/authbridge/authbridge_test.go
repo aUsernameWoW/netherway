@@ -356,3 +356,62 @@ func decodeCredential(t *testing.T, data []byte) map[string]string {
 	}
 	return params
 }
+
+// TestInfoBeacon 钉住发现信标的契约：mod 扫描 server.dat 推导出候选地址后，
+// prefetch 靠 GET /info 的 service 字段识别 authbridge，字段名与值改了
+// 会让扫描发现整个失效。
+func TestInfoBeacon(t *testing.T) {
+	srv := newBridge(t, &stubSkin{})
+	resp, err := http.Get(srv.URL + "/info")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("状态码 %d，应为 200", resp.StatusCode)
+	}
+	var out struct {
+		Service  string `json:"service"`
+		Protocol int    `json:"protocol"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	// 用字面量钉住线上值：常量被改动时这里要先炸，而不是发现不了 authbridge
+	if out.Service != "netherway-authbridge" {
+		t.Fatalf("service=%q，应为 netherway-authbridge", out.Service)
+	}
+	if InfoService != "netherway-authbridge" {
+		t.Fatalf("InfoService 常量=%q，与线上契约不符", InfoService)
+	}
+	if out.Protocol != InfoProtocol {
+		t.Fatalf("protocol=%d，应为 %d", out.Protocol, InfoProtocol)
+	}
+
+	// POST /info 不是合法用法
+	postResp, err := http.Post(srv.URL+"/info", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	postResp.Body.Close()
+	if postResp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /info 状态码 %d，应为 405", postResp.StatusCode)
+	}
+}
+
+// TestPrefetchAnnouncesAuthServer 钉住 /prefetch 响应里的 authServer 字段：
+// mod 内建预取只知道 bridge 一个地址，皮肤站地址全靠这里告知。
+func TestPrefetchAnnouncesAuthServer(t *testing.T) {
+	srv := newBridge(t, &stubSkin{})
+	var out struct {
+		ServerID   string `json:"serverId"`
+		AuthServer string `json:"authServer"`
+	}
+	post(t, srv.URL+"/prefetch", map[string]string{"username": "Alice", "uuid": testUUID}, &out)
+	if out.ServerID == "" {
+		t.Fatal("serverId 为空")
+	}
+	if out.AuthServer == "" || !strings.HasPrefix(out.AuthServer, "http") {
+		t.Fatalf("authServer=%q，应为皮肤站地址", out.AuthServer)
+	}
+}

@@ -62,6 +62,12 @@ public final class SelfTest {
         testProxyProtocolV2();
         testProxyProtocolSniff();
         testProxyProtocolInvalid();
+        testSessionIdentityUsable();
+        testBridgeCandidatesDerivation();
+        testBridgeCandidatesConfigFirst();
+        testBridgeCandidatesCap();
+        testPrefetcherCommandKeepsTokenOut();
+        testWarmupRetryBackoff();
 
         System.out.println();
         System.out.println("通过 " + passed + "，失败 " + failed);
@@ -794,7 +800,7 @@ public final class SelfTest {
         FakeBridge bridge = new FakeBridge(tmp);
         WarmupController warmup = new WarmupController(bridge,
                 new CredentialCache(tmp.resolve("credentials")),
-                Timings.defaults(), null, 0);
+                Timings.defaults(), null, 0, null);
         Credentials cred = sampleCred("room-warm", "k");
         AgentEvent ready = AgentEvent.parse(
                 "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31,\"elapsedMs\":1792}");
@@ -1043,6 +1049,114 @@ public final class SelfTest {
     }
 
     // ---------- 断言 ----------
+
+    // ---------- 凭证预取（会话/候选推导/命令行） ----------
+
+    private static void testSessionIdentityUsable() {
+        check("正版会话可用", SessionIdentity.of("Alice",
+                "069a79f4-44e9-4726-a5be-fca90e38aaf5", "real-token").usable());
+        check("无连字符 uuid 也可用", SessionIdentity.of("Alice",
+                "069a79f444e94726a5befca90e38aaf5", "real-token").usable());
+        check("离线 token 0 不可用", !SessionIdentity.of("Alice",
+                "069a79f444e94726a5befca90e38aaf5", "0").usable());
+        check("离线 token - 不可用", !SessionIdentity.of("Alice",
+                "069a79f444e94726a5befca90e38aaf5", "-").usable());
+        check("1.7.10 缺名占位 NotValid 不可用", !SessionIdentity.of("Alice",
+                "NotValid", "NotValid").usable());
+        check("空 token 不可用", !SessionIdentity.of("Alice",
+                "069a79f444e94726a5befca90e38aaf5", "").usable());
+        check("uuid 不是 32 位 hex 不可用",
+                !SessionIdentity.of("Alice", "not-a-uuid", "real-token").usable());
+        check("空玩家名不可用", !SessionIdentity.of("",
+                "069a79f444e94726a5befca90e38aaf5", "real-token").usable());
+        check("toString 不含 accessToken", !SessionIdentity.of("Alice",
+                "069a79f444e94726a5befca90e38aaf5", "hush-secret").toString()
+                .contains("hush-secret"));
+    }
+
+    private static void testBridgeCandidatesDerivation() {
+        List<String> got = BridgeDiscovery.candidates("", java.util.Arrays.asList(
+                "Play.Example.COM:25565",   // 大小写归一、去端口
+                "play.example.com",         // 与上一条推出同一候选，去重
+                "127.0.0.1:25595",          // 回环（本 mod 的直连条目）跳过
+                "localhost",                // 回环别名跳过
+                "[2001:db8::1]:25565",      // 带方括号的 IPv6 跳过
+                "2001:db8::7",              // 裸 IPv6 跳过
+                "  ",                       // 空白跳过
+                "relay.example.net:20001"));
+        check("推导出两个候选", got.size() == 2);
+        check("候选按约定路径拼装",
+                got.contains("https://play.example.com" + BridgeDiscovery.WELL_KNOWN_PATH));
+        check("保持 server.dat 顺序", got.get(0).contains("play.example.com")
+                && got.get(1).contains("relay.example.net"));
+    }
+
+    private static void testBridgeCandidatesConfigFirst() {
+        List<String> got = BridgeDiscovery.candidates("https://bridge.example.com/nw/",
+                java.util.Arrays.asList("play.example.com:25565"));
+        check("配置的地址排第一且去掉尾斜杠",
+                got.get(0).equals("https://bridge.example.com/nw"));
+        check("server.dat 推导紧随其后", got.get(1).equals(
+                "https://play.example.com" + BridgeDiscovery.WELL_KNOWN_PATH));
+        check("无 scheme 的配置补 https",
+                BridgeDiscovery.candidates("bridge.example.com", null).get(0)
+                        .equals("https://bridge.example.com"));
+    }
+
+    private static void testBridgeCandidatesCap() {
+        List<String> many = new ArrayList<String>();
+        for (int i = 0; i < 20; i++) {
+            many.add("host" + i + ".example.com:25565");
+        }
+        List<String> got = BridgeDiscovery.candidates("", many);
+        check("候选数量有上限", got.size() == 8);
+        List<String> withCfg = BridgeDiscovery.candidates("https://cfg.example.com", many);
+        check("配置地址不占推导名额之外仍保留", withCfg.get(0).equals("https://cfg.example.com")
+                && withCfg.size() == 8);
+    }
+
+    private static void testPrefetcherCommandKeepsTokenOut() {
+        SessionIdentity id = SessionIdentity.of("Alice",
+                "069a79f4-44e9-4726-a5be-fca90e38aaf5", "hush-secret");
+        List<String> cmd = Prefetcher.command(Paths.get("agent"),
+                java.util.Arrays.asList("https://a.example.com", "https://b.example.com"),
+                id, Paths.get("credentials"));
+        check("子命令是 prefetch", cmd.get(1).equals("prefetch"));
+        int bridges = 0;
+        for (String c : cmd) {
+            if ("-bridge".equals(c)) {
+                bridges++;
+            }
+        }
+        check("每个候选一个 -bridge", bridges == 2);
+        check("带玩家名与 uuid", cmd.contains("Alice")
+                && cmd.contains("069a79f4-44e9-4726-a5be-fca90e38aaf5"));
+        // accessToken 走环境变量，绝不能出现在命令行（进程列表对同机用户可见）
+        boolean leaked = false;
+        for (String c : cmd) {
+            if (c.contains("hush-secret") || "-token".equals(c)) {
+                leaked = true;
+            }
+        }
+        check("accessToken 不进命令行", !leaked);
+        check("不传 -authserver（由 authbridge 告知）", !cmd.contains("-authserver"));
+    }
+
+    private static void testWarmupRetryBackoff() {
+        Timings t = Timings.defaults().withWarmupRetry(10_000L, 120_000L);
+        check("首轮退避为初始值", t.warmupRetryDelayMs(0) == 10_000L);
+        check("退避按倍数增长", t.warmupRetryDelayMs(1) == 20_000L
+                && t.warmupRetryDelayMs(2) == 40_000L);
+        check("退避封顶", t.warmupRetryDelayMs(4) == 120_000L
+                && t.warmupRetryDelayMs(1000) == 120_000L);
+        Timings zero = new Timings(0, 0, 0, 0).withWarmupRetry(0, 0)
+                .withPrefetchTimeout(0).normalized();
+        check("非正退避回填默认值", zero.warmupRetryDelayMs(0) == 10_000L
+                && zero.warmupRetryDelayMs(1000) == 120_000L);
+        check("非正预取超时回填默认值", zero.prefetchTimeoutMs() == 60_000L);
+        check("配置的预取超时生效",
+                Timings.defaults().withPrefetchTimeout(5_000L).prefetchTimeoutMs() == 5_000L);
+    }
 
     private static void check(String name, boolean ok) {
         if (ok) {

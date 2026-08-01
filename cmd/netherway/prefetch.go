@@ -15,25 +15,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aUsernameWoW/netherway/internal/authbridge"
 	"github.com/aUsernameWoW/netherway/internal/config"
 	"github.com/aUsernameWoW/netherway/internal/credfile"
 )
 
-// prefetch 子命令在玩家机器运行（通常由启动器 Pre-launch 调用）：
-// 经 authbridge 做预认证，提前拿到 frp 玩家令牌与房间凭证并落盘。
+// prefetch 子命令在玩家机器运行（mod 在 FML 加载期调用，启动器 Pre-launch
+// 也仍可用）：经 authbridge 做预认证，提前拿到 frp 玩家令牌与房间凭证并落盘。
 // 游戏启动后 WarmupController 读缓存凭证预热打洞，玩家第一次进服即直连。
 //
 // 流程：
-//  1. 向 authbridge 领取 serverId
+//  0. -bridge 给了多个候选时，逐个 GET /info 探测，取第一个自报
+//     netherway-authbridge 的（候选来自 mod 对 server.dat 的扫描推导）
+//  1. 向 authbridge 领取 serverId（响应顺带告知皮肤站地址）
 //  2. 拿 accessToken 去皮肤站 /join 报到（token 只在本机↔皮肤站）
 //  3. 让 authbridge 去 /hasJoined 查证，换回凭证
 //  4. 凭证写进缓存目录，格式与 Java 侧 CredentialCache 兼容
 func cmdPrefetch(args []string) error {
 	fs := flag.NewFlagSet("prefetch", flag.ExitOnError)
-	bridge := fs.String("bridge", config.DefaultAuthBridge,
-		"authbridge 地址，如 https://authbridge.example.com（应经 TLS，凭证会在响应里回传）")
+	var bridges multiFlag
+	fs.Var(&bridges, "bridge",
+		"authbridge 地址，如 https://authbridge.example.com（应经 TLS，凭证会在响应里回传）。\n"+
+			"可重复给出多个候选：逐个 GET /info 探测，用第一个应答者")
 	authServer := fs.String("authserver", config.DefaultAuthServer,
-		"皮肤站 API root，如 https://skin.example.com/api/yggdrasil")
+		"皮肤站 API root，如 https://skin.example.com/api/yggdrasil；\n"+
+			"留空时用 authbridge /prefetch 响应里告知的地址")
 	token := fs.String("token", os.Getenv("NETHERWAY_ACCESS_TOKEN"),
 		"启动器登录后拿到的 accessToken；\n"+
 			"也可经环境变量 NETHERWAY_ACCESS_TOKEN 传入（避免出现在进程列表里）")
@@ -41,39 +47,53 @@ func cmdPrefetch(args []string) error {
 	username := fs.String("username", "", "玩家名")
 	cacheDir := fs.String("cache-dir", "",
 		"凭证缓存目录，即 mod 的 .minecraft/netherway/credentials")
+	discoverTimeout := fs.Int("discover-timeout", 5,
+		"单个候选的 /info 探测超时秒数（候选多来自 server.dat 扫描，无关主机要能快速跳过）")
 	insecureHTTP := fs.Bool("insecure-http", false,
 		"允许对非回环地址走明文 http（仅调试用；凭证与 accessToken 会明文过网）")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *bridge == "" || *authServer == "" || *token == "" ||
-		*uuid == "" || *username == "" || *cacheDir == "" {
-		return errors.New("bridge/authserver/token/uuid/username/cache-dir 均不能为空")
+	if len(bridges) == 0 && config.DefaultAuthBridge != "" {
+		bridges = append(bridges, config.DefaultAuthBridge)
 	}
-	// 这两条链路上分别走着凭证（含房间密钥与 frps 令牌）与 accessToken，
-	// 明文 http 一次配置失误就是全泄露——强制 https，回环调试豁免
-	if err := requireTLS("bridge", *bridge, *insecureHTTP); err != nil {
-		return err
-	}
-	if err := requireTLS("authserver", *authServer, *insecureHTTP); err != nil {
-		return err
+	if len(bridges) == 0 || *token == "" || *uuid == "" || *username == "" || *cacheDir == "" {
+		return errors.New("bridge/token/uuid/username/cache-dir 均不能为空")
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
 
-	// 1. 领取 serverId
-	serverID, err := doPrefetch(client, *bridge, *username, *uuid)
+	// 0. 候选里选定 bridge。TLS 校验在探测之前：凭证与 accessToken 都会
+	// 过这条链路，明文 http 一次配置失误就是全泄露——强制 https，回环调试豁免。
+	bridge, err := pickBridge(bridges, time.Duration(*discoverTimeout)*time.Second, *insecureHTTP)
 	if err != nil {
 		return err
 	}
 
+	// 1. 领取 serverId（响应顺带告知皮肤站地址）
+	serverID, bridgeAuthServer, err := doPrefetch(client, bridge, *username, *uuid)
+	if err != nil {
+		return err
+	}
+	skinAPI := *authServer
+	if skinAPI == "" {
+		skinAPI = bridgeAuthServer
+	}
+	if skinAPI == "" {
+		return errors.New("皮肤站地址为空：用 -authserver 指定，或升级 authbridge" +
+			"（新版会在 /prefetch 响应里告知）")
+	}
+	if err := requireTLS("authserver", skinAPI, *insecureHTTP); err != nil {
+		return err
+	}
+
 	// 2. 拿 accessToken 去皮肤站 join —— token 只在本机↔皮肤站，不经过 authbridge
-	if err := doJoin(client, *authServer, *token, *uuid, serverID); err != nil {
+	if err := doJoin(client, skinAPI, *token, *uuid, serverID); err != nil {
 		return err
 	}
 
 	// 3. authbridge 去 hasJoined 查证，换回凭证
-	cred, room, backendID, err := doConfirm(client, *bridge, serverID, *username, *uuid)
+	cred, room, backendID, err := doConfirm(client, bridge, serverID, *username, *uuid)
 	if err != nil {
 		return err
 	}
@@ -87,35 +107,101 @@ func cmdPrefetch(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("预拉取成功：房间 %q，凭证已写入 %s\n", room, target)
+	fmt.Printf("预拉取成功：房间 %q（经 %s），凭证已写入 %s\n", room, bridge, target)
 	return nil
 }
 
-// doPrefetch 向 authbridge 领取 serverId。
-func doPrefetch(client *http.Client, bridge, username, uuid string) (string, error) {
+// multiFlag 让 -bridge 可以重复给出。
+type multiFlag []string
+
+func (m *multiFlag) String() string { return strings.Join(*m, ",") }
+
+func (m *multiFlag) Set(v string) error {
+	*m = append(*m, v)
+	return nil
+}
+
+// pickBridge 从候选里选定要用的 authbridge。
+//
+// 单个候选直接采用（兼容未提供 /info 的旧版 authbridge，也少一次往返）；
+// 多个候选时逐个 GET /info，认下第一个自报 netherway-authbridge 的。
+// 候选多来自 mod 对 server.dat 的扫描推导，大部分主机上根本没有这个服务，
+// 探测失败是预期路径，只在全军覆没时才报错。
+func pickBridge(bridges []string, timeout time.Duration, insecure bool) (string, error) {
+	if len(bridges) == 1 {
+		if err := requireTLS("bridge", bridges[0], insecure); err != nil {
+			return "", err
+		}
+		return bridges[0], nil
+	}
+	probe := &http.Client{Timeout: timeout}
+	var tried []string
+	for _, b := range bridges {
+		if err := requireTLS("bridge", b, insecure); err != nil {
+			fmt.Fprintf(os.Stderr, "跳过候选 %s: %v\n", b, err)
+			continue
+		}
+		if err := probeInfo(probe, b); err != nil {
+			tried = append(tried, fmt.Sprintf("%s（%v）", b, err))
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "发现 authbridge: %s\n", b)
+		return b, nil
+	}
+	return "", fmt.Errorf("所有候选都未应答 /info: %s", strings.Join(tried, "; "))
+}
+
+// probeInfo 探测一个候选的 GET /info，不是 netherway-authbridge 则报错。
+func probeInfo(client *http.Client, bridge string) error {
+	resp, err := client.Get(strings.TrimRight(bridge, "/") + "/info")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		Service string `json:"service"`
+	}
+	// 限读几 KB 就够了：/info 的合法响应只有几十字节，别让一个
+	// 恰好在该路径上返回大文件的无关站点撑爆内存
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&out); err != nil {
+		return fmt.Errorf("响应不是 JSON: %w", err)
+	}
+	if out.Service != authbridge.InfoService {
+		return fmt.Errorf("service 字段是 %q", out.Service)
+	}
+	return nil
+}
+
+// doPrefetch 向 authbridge 领取 serverId；新版 authbridge 会在响应里
+// 顺带告知皮肤站地址（authServer），旧版没有则返回空串。
+func doPrefetch(client *http.Client, bridge, username, uuid string) (string, string, error) {
 	body, _ := json.Marshal(map[string]string{"username": username, "uuid": uuid})
 	resp, err := client.Post(bridge+"/prefetch", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("请求 authbridge /prefetch: %w", err)
+		return "", "", fmt.Errorf("请求 authbridge /prefetch: %w", err)
 	}
 	defer resp.Body.Close()
 	// 出错时 authbridge 以非 200 状态 + {"reason":...} 回复，原因要透传出来，
-	// 不能吞成一句「空 serverId」——prefetch 挂在启动器里，日志是唯一线索。
+	// 不能吞成一句「空 serverId」——prefetch 的日志是排查时的唯一线索。
 	var out struct {
-		ServerID string `json:"serverId"`
-		Reason   string `json:"reason"`
+		ServerID   string `json:"serverId"`
+		AuthServer string `json:"authServer"`
+		Reason     string `json:"reason"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("解析 /prefetch 响应（HTTP %d）: %w", resp.StatusCode, err)
+		return "", "", fmt.Errorf("解析 /prefetch 响应（HTTP %d）: %w", resp.StatusCode, err)
 	}
 	if resp.StatusCode != http.StatusOK || out.ServerID == "" {
 		reason := out.Reason
 		if reason == "" {
 			reason = fmt.Sprintf("HTTP %d，且无 serverId", resp.StatusCode)
 		}
-		return "", errors.New("authbridge /prefetch 拒绝: " + reason)
+		return "", "", errors.New("authbridge /prefetch 拒绝: " + reason)
 	}
-	return out.ServerID, nil
+	return out.ServerID, out.AuthServer, nil
 }
 
 // doJoin 拿 accessToken 去皮肤站报到。这是唯一接触 token 的一步。
