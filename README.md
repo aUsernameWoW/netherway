@@ -126,6 +126,8 @@ cmd/xtcpinmc/       CLI 入口；daemon_{unix,windows}.go 处理平台差异
 internal/backend/   隧道方案的统一接口与注册表；frp xtcp 是首个实现
 internal/tunnel/    以库的方式嵌入 frpc，无独立进程、无 toml
 internal/authplugin/ frps 的 HTTP server plugin：每玩家令牌校验（authplugin 子命令）
+internal/authbridge/ 预认证服务：hasJoined 撮合验证 accessToken，提前签发令牌与凭证（authbridge 子命令）
+internal/credfile/   凭证缓存文件编解码，与 Java 侧 CredentialCache 兼容（prefetch 子命令用）
 internal/mcping/    Minecraft Server List Ping，用游戏握手判定隧道就绪
 internal/stunpick/  启动前并行探测候选，挑一个当场验证过的 STUN
 internal/lanbeacon/ 组播广播，含多网卡枚举
@@ -175,6 +177,50 @@ xtcpinmc join
 
 重复 `start` 会被 PID 文件拦下，不会起两个实例；PID 文件也会校验进程是否真的存活，崩溃或重启留下的陈旧记录不会阻塞下次启动。
 
+### 预拉取凭证（首次进服即直连）
+
+mod 方式下，玩家首次进服要先走中转、登录后拿凭证、后台打洞、成功后重连切换——玩家会看到"进去几秒后自动退出重连"。预拉取凭证把这个过程提前到启动器阶段：玩家点连接服务器前，直连隧道已就绪，第一次进服就是直连。
+
+**安全模型**：复现 MC 原生进服验证的 hasJoined 撮合。accessToken 全程只在「玩家本机 prefetch 程序 ↔ 皮肤站」之间，authbridge 碰不到 token——与 MC 同款安全模型。authbridge 无状态，serverId 是随机串，状态全在皮肤站。
+
+```
+① prefetch → authbridge /prefetch     领取随机 serverId（不带 token）
+② prefetch → 皮肤站 /join             带 accessToken + serverId 报到（token 只到这步）
+③ prefetch → authbridge /confirm      authbridge 调皮肤站 /hasJoined 查证
+   ↳ 通过 → 签发玩家令牌 + 组装凭证 → base64 返回
+④ prefetch 把凭证写进 .minecraft/xtcpinmc/credentials/
+   ↳ 游戏启动时 WarmupController 读缓存 → 预热打洞 → 首次进服即直连
+```
+
+**服务端部署**（与 authplugin 并列，手动跑一个进程）：
+
+```bash
+xtcpinmc authbridge \
+  -listen 127.0.0.1:7201 \
+  -key <签发密钥，与authplugin -key同值> \
+  -authserver https://skin.example.com/api/yggdrasil \
+  -server <frps地址> -room <房间名> -secret <房间密钥> \
+  -token <frps全局token> -stun <STUN> -server-port <端口>
+```
+
+房间参数必须与 `serve` 同源，否则打洞时密钥不匹配。authbridge 需对玩家机器可达（公网暴露或经反代）。
+
+**玩家端**（启动器 Pre-launch 调用，PrismLauncher 示例）：
+
+```
+xtcpinmc prefetch \
+  -bridge http://authbridge.example.com:7201 \
+  -authserver https://skin.example.com/api/yggdrasil \
+  -token ${auth_access_token} \
+  -uuid ${auth_uuid} \
+  -username ${auth_player_name} \
+  -cache-dir .minecraft/xtcpinmc/credentials
+```
+
+accessToken 也支持环境变量 `XTCPINMC_ACCESS_TOKEN` 传入（避免出现在进程列表里）。不同启动器的变量名需各自对照。
+
+prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家走原有中转进服流程，进服后 mod 照常下发凭证、后台打洞，体验退化为原状而非不可用。
+
 ### 部署到 MCSManager
 
 你现有的 6 个 frpc 都是以 MCSManager 实例管理的，新增的保持一致即可：工作目录放二进制，启动命令 `./xtcpinmc serve`。
@@ -184,6 +230,7 @@ xtcpinmc join
 - [x] Go client agent：内嵌 frpc + 组播广播，单文件可执行
 - [x] 多网卡枚举（见坑 2）
 - [x] 后台模式与启动器集成
+- [x] 预拉取凭证（authbridge + prefetch）：首次进服即直连，免重连
 - [ ] Windows 首次运行的防火墙弹窗——需要签名安装器预写规则，否则"无感"会破功
 - [ ] 真机验证 1.7.10 客户端能看到并连上局域网条目（协议层已验证，缺真实客户端）
 - [ ] frps 加 `allowPorts` 白名单收口（见下）

@@ -5,6 +5,8 @@
 //	xtcpinmc join     在玩家机器运行（前台）
 //	xtcpinmc start    后台启动 join，供启动器 Pre-launch 调用
 //	xtcpinmc stop     停止后台实例，供启动器 Post-exit 调用
+//	xtcpinmc authbridge  在服务端运行预认证服务（玩家进服前提前下发凭证）
+//	xtcpinmc prefetch     在玩家机器预拉取凭证（启动器 Pre-launch 调用）
 package main
 
 import (
@@ -44,6 +46,10 @@ func main() {
 		err = cmdTunnel(os.Args[2:])
 	case "authplugin":
 		err = cmdAuthPlugin(os.Args[2:])
+	case "authbridge":
+		err = cmdAuthBridge(os.Args[2:])
+	case "prefetch":
+		err = cmdPrefetch(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -68,6 +74,8 @@ func usage() {
   xtcpinmc stop            停止后台实例（启动器 Post-exit 用）
   xtcpinmc tunnel [选项]   供 Minecraft mod 调用：纯 P2P，超时即放弃
   xtcpinmc authplugin [选项]  在 frps 宿主机运行：每玩家令牌校验（frps httpPlugins）
+  xtcpinmc authbridge [选项]  在服务端运行：预认证服务（玩家进服前提前下发凭证）
+  xtcpinmc prefetch  [选项]  在玩家机器运行：预拉取凭证（启动器 Pre-launch 用）
 
 公共选项:
   -server  frps 地址        -port    端口
@@ -93,6 +101,17 @@ authplugin 专有:
   -listen    监听地址，默认 127.0.0.1:7200    -path  HTTP 路径，默认 /handler
   -key       令牌签发密钥（或环境变量 XTCPINMC_AUTH_KEY）
   -static-token  静态令牌白名单，可重复      -allow-legacy  迁移期放行无令牌登录
+
+authbridge 专有:
+  -listen    监听地址，默认 127.0.0.1:7201    -authserver  皮肤站 API root
+  -key       令牌签发密钥（或环境变量 XTCPINMC_AUTH_KEY）
+  -punch-timeout  建议的打洞超时秒数          其余 -server/-room 等同 serve
+
+prefetch 专有:
+  -bridge    authbridge 地址                  -authserver  皮肤站 API root
+  -token     accessToken（或环境变量 XTCPINMC_ACCESS_TOKEN）
+  -uuid      玩家 UUID                        -username  玩家名
+  -cache-dir 凭证缓存目录（mod 的 .minecraft/xtcpinmc/credentials）
 
 未指定的选项使用构建时注入的默认值。
 `)
