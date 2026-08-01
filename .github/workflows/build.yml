@@ -40,6 +40,26 @@ jobs:
       # 跨语言契约测试（authplugin/credfile 的已知答案向量）在这里守门：
       # 只 build 不 test 的话，契约被改坏要到 Java 侧 SelfTest 才炸，甚至漏网
       - run: go test ./...
+      # build.sh 的 -X symbol 名与 internal/config 的变量名是逐字契约，
+      # symbol 写错时 Go 会静默忽略、构建照样成功——真实打包时默认值就悄悄
+      # 丢了。这里用占位值（无任何真实密钥）构建单平台，断言每个注入值
+      # 确实落进了二进制。
+      - name: build.sh 注入冒烟（占位值）
+        run: |
+          ONLY=linux/amd64 \
+          SERVER_ADDR=203.0.113.99 SERVER_PORT=7391 ROOM=ci-smoke-room \
+          MOTD=ci-smoke-motd TOKEN=ci-dummy-token SECRET=ci-dummy-secret \
+          AUTHSERVER=https://ci-authserver.example.com \
+          AUTHBRIDGE=https://ci-authbridge.example.com \
+            ./build.sh
+          for v in 203.0.113.99 7391 ci-smoke-room ci-smoke-motd \
+                   ci-dummy-token ci-dummy-secret \
+                   ci-authserver.example.com ci-authbridge.example.com; do
+            grep -aq "$v" bin/xtcpinmc-linux-amd64 || {
+              echo "注入值 $v 未落进二进制：-X symbol 名与 internal/config 失配？"
+              exit 1
+            }
+          done
 
   core:
     name: Java core SelfTest (JDK ${{ matrix.java }})

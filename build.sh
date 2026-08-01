@@ -10,6 +10,8 @@
 # 真实部署参数（frps 地址、皮肤站等）放 build.env（已 gitignore，
 # 模板见 build.env.example），环境变量可临时覆盖其中任何一项。
 # 版本库里不出现任何真实地址——这是转公开仓库的前提之一。
+#
+# ONLY=<goos>/<goarch> 只构建单个目标（CI 冒烟用，如 ONLY=linux/amd64）。
 
 set -euo pipefail
 
@@ -55,6 +57,9 @@ mkdir -p bin
 
 build() {
   local goos="$1" goarch="$2" out="$3"
+  if [[ -n "${ONLY:-}" && "$ONLY" != "${goos}/${goarch}" ]]; then
+    return 0
+  fi
   echo "构建 ${goos}/${goarch} -> bin/${out}"
   GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
     go build -trimpath -ldflags "$LDFLAGS" -o "bin/${out}" ./cmd/xtcpinmc
