@@ -26,7 +26,9 @@ Go 测试目前有 `internal/authplugin`（含与 Java 侧的跨语言已知答�
 `internal/authbridge`（stub 皮肤站走通预认证全流程）与 `internal/credfile`
 （凭证字节布局黄金向量）。
 
-跨平台构建（Windows/macOS/Linux 五个目标），密钥经 `-ldflags` 注入而不进源码：
+跨平台构建（Windows/macOS/Linux 五个目标），密钥经 `-ldflags` 注入而不进源码；
+真实部署参数（frps 地址、皮肤站等）放 gitignore 的 `build.env`（模板
+`build.env.example`），`SERVER_ADDR` 必填：
 
 ```bash
 TOKEN=<frps的auth.token> SECRET=<房间密钥> ./build.sh
@@ -269,6 +271,13 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 
 跟踪的源码与文档中不含任何真实凭证，`server/` 与 `client/` 下的 toml 模板用的是
 占位符。新增示例配置时保持这一点——凭证只经环境变量进入构建，不落盘到版本库。
+
+**版本库为「可随时转公开」标准维护**：文档、模板与测试中的示例地址一律用
+文档专用段（`203.0.113.x`，不可路由）与 `example.com`；真实部署参数（frps
+地址、皮肤站域名、MOTD）只存在于 gitignore 的 `build.env`。README 不写指向
+具体机器的运维细节（宿主机上跑着什么、真实端口表）。提交用 GitHub noreply
+邮箱（repo 本地 git config 已设）。内嵌密钥的 `build.sh` 产物绝不上公开
+Release，公开渠道只发 mod jar（natives 无密钥）。
 
 mod 方案的核心安全价值在于：**凭证由服务端在玩家登录后下发**，而非随客户端分发。
 能拿到密钥的必然是通过了服务器既有正版验证/白名单的玩家，因此不需要另建鉴权系统。

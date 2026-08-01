@@ -2,6 +2,7 @@
 > 用法：frpc -c frpc-visitor.toml，然后 MC 里直连 127.0.0.1:25565
 > 注意：本文件是 TOML，上面这几行注释请删掉（保留会解析失败）
 
+# 换成你的 frps 公网地址（203.0.113.x 是文档示例段，不可路由）
 serverAddr = "203.0.113.10"
 serverPort = 7000
 auth.method = "token"

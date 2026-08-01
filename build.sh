@@ -7,21 +7,32 @@
 # 用法：
 #   TOKEN=xxx SECRET=yyy ./build.sh
 #
-# 可覆盖的变量见下方默认值。
+# 真实部署参数（frps 地址、皮肤站等）放 build.env（已 gitignore，
+# 模板见 build.env.example），环境变量可临时覆盖其中任何一项。
+# 版本库里不出现任何真实地址——这是转公开仓库的前提之一。
 
 set -euo pipefail
 
+# 先读 build.env 再看环境变量：环境变量优先（已设置的不被覆盖）
+if [[ -f "$(dirname "$0")/build.env" ]]; then
+  while IFS='=' read -r k v; do
+    if [[ "$k" =~ ^[A-Z_]+$ && -z "${!k:-}" ]]; then
+      export "$k=$v"
+    fi
+  done < "$(dirname "$0")/build.env"
+fi
+
 PKG=github.com/ripplecraft/xtcpinmc/internal/config
 
-SERVER_ADDR="${SERVER_ADDR:-203.0.113.10}"
+: "${SERVER_ADDR:?请设置 SERVER_ADDR（frps 公网地址），经环境变量或 build.env}"
 SERVER_PORT="${SERVER_PORT:-7000}"
 ROOM="${ROOM:-gtnh}"
 # 逗号分隔的候选列表，与 internal/config 的默认一致：单台 STUN 会间歇性
 # 超时，agent 启动前会并行探测并选用当场验证过的一台。
 STUN="${STUN:-stun.miwifi.com:3478,stun.easyvoip.com:3478,stun.qq.com:3478}"
-MOTD="${MOTD:-涟漪GT:New Horizons}"
-# 预拉取凭证（prefetch/authbridge）用；AUTHBRIDGE 留空表示不内置，玩家侧需 -bridge
-AUTHSERVER="${AUTHSERVER:-https://skin.example.com/api/yggdrasil}"
+MOTD="${MOTD:-Minecraft Server (P2P)}"
+# 预拉取凭证（prefetch/authbridge）用；留空表示不内置，玩家侧需 -authserver/-bridge
+AUTHSERVER="${AUTHSERVER:-}"
 AUTHBRIDGE="${AUTHBRIDGE:-}"
 
 : "${TOKEN:?请设置 TOKEN（frps 的 auth.token）}"

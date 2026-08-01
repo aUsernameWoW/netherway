@@ -33,7 +33,7 @@
 | frps 网卡 TX 增量 | 约 1.62 MB |
 | 传输期间经 frps:7000 的包 | 24 个（12 上行 / 12 下行，即心跳） |
 
-若数据走中转，frps 必须先收 20 MB 再发 20 MB，两个方向都得有 20 MB 量级的增量。实际那 1.5 MB 左右是 rustdesk、headscale、nginx 和另外几个 frpc 在这 34 秒里的正常背景流量。
+若数据走中转，frps 必须先收 20 MB 再发 20 MB，两个方向都得有 20 MB 量级的增量。实际那 1.5 MB 左右是宿主机上其他服务在这 34 秒里的正常背景流量。
 
 架构上还有一条更根本的理由：**xtcp 打洞失败时不会退化成经 frps 中转**，那是 stcp 才有的行为。验证用的配置里没有 `fallbackTo`、服务端也没注册 stcp，所以不存在"慢但能用"的中间态——打不通就是连接失败。
 
@@ -46,7 +46,7 @@
 | 验证项 | 结果 |
 |---|---|
 | `xtcpinmc serve`（宿主机，零参数） | 注册 `gtnh-p2p` + `gtnh-relay` 成功 |
-| `xtcpinmc join`（客户端，零参数） | 打洞成功，对端 `203.0.113.20` |
+| `xtcpinmc join`（客户端，零参数） | 打洞成功，对端为玩家侧公网地址 |
 | 隧道过 Minecraft 协议 | `1.7.10 / protocol 5`，2 人在线，43–84 ms |
 | 组播广播 | 4 张网卡全部发出，解析为「涟漪GT:New Horizons」→ `192.168.0.108:25565` |
 | `start` / `stop` | 后台启停正常，重复 start 被拦，stop 后端口释放 |
@@ -82,13 +82,11 @@ agent 已在 `internal/stunpick` 里解决：默认自带多个候选，启动�
 
 frp 探测 NAT 的 mapping behavior，需要 STUN 从**两个不同地址**响应（RFC5780 的 OTHER-ADDRESS）。上表印证了这点：bilibili 那个只返回 1 个地址，frp 直接报 `need 2, got 1` 拒绝工作。
 
-标准 RFC5780 要求两个不同的**公网 IP**，而 203.0.113.10 是单 IP。单 IP 配双端口（3478/3479）coturn 能跑起来、frp 大概率也不报错，但探测结果会**偏乐观**——只有目标端口变化、目标 IP 没变，Address-and-Port-Dependent 的 NAT 会被误判成 EasyNAT。结果是 frp 以为能打洞、实际打不通，比直接报错更难排查。
+标准 RFC5780 要求两个不同的**公网 IP**，而 frps 宿主机往往只有单 IP。单 IP 配双端口（3478/3479）coturn 能跑起来、frp 大概率也不报错，但探测结果会**偏乐观**——只有目标端口变化、目标 IP 没变，Address-and-Port-Dependent 的 NAT 会被误判成 EasyNAT。结果是 frp 以为能打洞、实际打不通，比直接报错更难排查。
 
 要做就做对：加一个阿里云 EIP（很便宜），coturn 绑两个 IP。
 
-另外两点：
-- 该机器 podman 里**并没有 coturn 镜像**，只有 rustdesk-server 和 headscale
-- headscale 自带的 DERP STUN（`203.0.113.10:3478`）实测 frp 用不了，不能复用
+另外一点：headscale 之类自带的 DERP STUN 实测 frp 用不了（响应不满足双地址要求），不能复用。
 
 ### 2. 组播必须显式指定出接口
 
@@ -107,7 +105,7 @@ TTL 的选择：实测 `TTL=0` 配合 `IP_MULTICAST_LOOP=1` 能正常回环到�
 因为是专用服务器而非"对局域网开放"的单人世界，端口固定在 25565，服务端不需要动态发现端口，比一般的联机工具简单一截。
 
 ```
-GTNH 宿主机                      frps (203.0.113.10:7000)         玩家机器
+GTNH 宿主机                      frps (203.0.113.10:7000)           玩家机器
 127.0.0.1:25565                  仅做信令协调，不转发流量           frpc visitor
   └─ frpc (xtcp proxy) ──────────────── 控制连接 ────────────────── 0.0.0.0:25565
         │                                                              │
@@ -140,13 +138,18 @@ mod/                Minecraft mod 侧：Java core 驱动 agent 的 tunnel 子命
 
 ## 构建
 
-密钥通过 `-ldflags` 在构建时注入，因此不进源码仓库，而玩家拿到的二进制又是零配置可用的：
+密钥通过 `-ldflags` 在构建时注入，因此不进源码仓库，而玩家拿到的二进制又是零配置可用的。真实部署参数（frps 地址、皮肤站等）放 `build.env`（已 gitignore，模板见 `build.env.example`），环境变量可临时覆盖：
 
 ```bash
 TOKEN=<frps的auth.token> SECRET=<房间密钥> ./build.sh
 ```
 
 产出 Windows / macOS / Linux 五个平台的二进制，各约 13–15 MB。
+
+**发布纪律**：`build.sh` 的产物（`bin/`）内嵌 frps 令牌与房间密钥，只能经
+私有渠道分发给本服玩家，**绝不能挂公开 Release 或 CI artifact**。公开渠道
+只发 mod jar——它打包的 agent 由 `mod/build-natives.sh` 构建，刻意不注入
+任何密钥（CI 的三条流水线也因此全程不接触 TOKEN/SECRET）。
 
 ## 使用
 
@@ -243,9 +246,9 @@ accessToken 也支持环境变量 `XTCPINMC_ACCESS_TOKEN` 传入（避免出现�
 
 prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家走原有中转进服流程，进服后 mod 照常下发凭证、后台打洞，体验退化为原状而非不可用。
 
-### 部署到 MCSManager
+### 以进程管理器托管
 
-你现有的 6 个 frpc 都是以 MCSManager 实例管理的，新增的保持一致即可：工作目录放二进制，启动命令 `./xtcpinmc serve`。
+`serve` 是一个普通前台进程，交给 systemd / MCSManager 等任意进程管理器即可：工作目录放二进制，启动命令 `./xtcpinmc serve`。
 
 ## 待办
 
@@ -260,20 +263,24 @@ prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家�
 
 ## 关于 token 分发的风险
 
-你说暂时不做鉴权，那 `auth.token` 会随客户端分发给所有玩家。拿到 token 的人可以在你的 frps 上开**任意 tcp/udp 公网端口映射**，白嫖阿里云的带宽和 IP。
+`auth.token` 会随凭证下发给所有玩家。拿到 token 的人可以在 frps 上开
+**任意 tcp/udp 公网端口映射**，白嫖服务器的带宽和 IP。按部署成本从低到高：
 
-不写任何代码的缓解办法：在 `/etc/frp/frps.toml` 加 `allowPorts` 白名单，只放行现在实际在用的端口。xtcp / stcp 不占 `remotePort`，完全不受影响。
+1. **`allowPorts` 白名单**（零代码）：在 frps.toml 里只放行实际在用的端口。
+   xtcp / stcp 不占 `remotePort`，完全不受影响：
 
-```toml
-allowPorts = [
-  { start = 5901,  end = 5901  },   # vnc-desktop-tls
-  { start = 10031, end = 10032 },   # Palworld
-  { start = 23333, end = 23333 },   # MCSManager 面板
-  { start = 24444, end = 24444 },   # MCSManager daemon
-]
-```
+   ```toml
+   allowPorts = [
+     { start = 25565, end = 25565 },   # 按 frps 上实际在用的映射端口填写
+   ]
+   ```
 
-一行配置挡掉绝大部分滥用，且不影响本方案。改完需要重启 frps，会短暂断开现有映射，建议挑无人时段。
+   改完需要重启 frps，会短暂断开现有映射，建议挑无人时段。
+
+2. **部署 authplugin**（frps 的 httpPlugins，配置见
+   `mod/platform/forge-1.7.10/README.md` 部署章节）并在迁移完成后关掉
+   `-allow-legacy`：光有全局 token 连登录都过不了，注册代理只认 serve
+   的静态令牌，全局 token 泄露的滥用面收敛到零。
 
 ## 参考
 
