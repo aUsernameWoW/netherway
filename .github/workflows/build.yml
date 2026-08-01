@@ -31,7 +31,7 @@ jobs:
     name: Go agent
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -95,7 +95,7 @@ jobs:
       matrix:
         java: [8, 17, 21, 25]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # 先装 8 再装运行版本：每次 setup-java 都会覆盖默认 JAVA_HOME，
       # 于是编译固定走 JAVA_HOME_8_X64，运行走默认的 java
       - name: 安装 JDK 8（编译用）
@@ -120,7 +120,7 @@ jobs:
     name: Forge 1.7.10 mod
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
