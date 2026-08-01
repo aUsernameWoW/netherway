@@ -37,6 +37,9 @@ jobs:
           go-version-file: go.mod
       - run: go build ./...
       - run: go vet ./...
+      # 跨语言契约测试（authplugin/credfile 的已知答案向量）在这里守门：
+      # 只 build 不 test 的话，契约被改坏要到 Java 侧 SelfTest 才炸，甚至漏网
+      - run: go test ./...
 
   core:
     name: Java core SelfTest (JDK ${{ matrix.java }})

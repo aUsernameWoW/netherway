@@ -8,7 +8,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -39,12 +41,22 @@ func cmdPrefetch(args []string) error {
 	username := fs.String("username", "", "玩家名")
 	cacheDir := fs.String("cache-dir", "",
 		"凭证缓存目录，即 mod 的 .minecraft/xtcpinmc/credentials")
+	insecureHTTP := fs.Bool("insecure-http", false,
+		"允许对非回环地址走明文 http（仅调试用；凭证与 accessToken 会明文过网）")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *bridge == "" || *authServer == "" || *token == "" ||
 		*uuid == "" || *username == "" || *cacheDir == "" {
 		return errors.New("bridge/authserver/token/uuid/username/cache-dir 均不能为空")
+	}
+	// 这两条链路上分别走着凭证（含房间密钥与 frps 令牌）与 accessToken，
+	// 明文 http 一次配置失误就是全泄露——强制 https，回环调试豁免
+	if err := requireTLS("bridge", *bridge, *insecureHTTP); err != nil {
+		return err
+	}
+	if err := requireTLS("authserver", *authServer, *insecureHTTP); err != nil {
+		return err
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
@@ -158,4 +170,29 @@ func doConfirm(client *http.Client, bridge, serverID, username, uuid string) (cr
 // normUUID 去掉连字符，Yggdrasil 的 selectedProfile.id 用无连字符格式。
 func normUUID(uuid string) string {
 	return strings.ReplaceAll(uuid, "-", "")
+}
+
+// requireTLS 断言地址走 https。回环地址（本机调试、端口转发）豁免；
+// 其余明文只能经 -insecure-http 显式放行，绝不默认。
+func requireTLS(name, raw string, insecure bool) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("解析 %s 地址 %q: %w", name, raw, err)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	if insecure {
+		return nil
+	}
+	return fmt.Errorf("%s 地址 %q 不是 https：凭证/令牌会明文过网；"+
+		"请改用 https，本机调试可用回环地址，或加 -insecure-http 显式放行",
+		name, raw)
 }

@@ -44,6 +44,12 @@ func cmdAuthBridge(args []string) error {
 		"服务端建议的打洞超时秒数；0 表示由客户端配置决定")
 	tokenTTLDays := fs.Int("token-ttl-days", 30,
 		"签发令牌的有效期天数，与服务端 mod 的 tokenTtlDays 同语义")
+	ratePerIP := fs.Int("rate-per-ip", 0,
+		"每来源 IP 每分钟请求数上限；0 用默认值 30")
+	trustProxy := fs.Bool("trust-proxy-header", false,
+		"取 X-Forwarded-For 首跳作为来源 IP（做限流与日志）。\n"+
+			"仅当 authbridge 部署在反代之后才能开：直接暴露时开着它，\n"+
+			"任何人都能伪造头绕过限流")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -71,17 +77,30 @@ func cmdAuthBridge(args []string) error {
 		fmt.Printf(time.Now().Format("2006-01-02 15:04:05")+" "+format+"\n", a...)
 	}
 	handler := authbridge.NewHandler(authbridge.Config{
-		SigningKey:     *key,
-		AuthServer:     *authServer,
-		RoomParams:     roomParams,
-		PunchTimeoutMs: *punchTimeout * 1000,
-		TokenTTL:       time.Duration(*tokenTTLDays) * 24 * time.Hour,
-		Logf:           logf,
+		SigningKey:       *key,
+		AuthServer:       *authServer,
+		RoomParams:       roomParams,
+		PunchTimeoutMs:   *punchTimeout * 1000,
+		TokenTTL:         time.Duration(*tokenTTLDays) * 24 * time.Hour,
+		PerIPPerMinute:   *ratePerIP,
+		TrustProxyHeader: *trustProxy,
+		Logf:             logf,
 	})
 
 	mux := http.NewServeMux()
 	mux.Handle("/", handler)
-	srv := &http.Server{Addr: *listen, Handler: mux}
+	srv := &http.Server{
+		Addr:    *listen,
+		Handler: mux,
+		// 这是全项目唯一面向玩家侧公网的进程：不设超时的话，慢速连接
+		//（Slowloris）能无限占住连接数。写超时要盖过 confirm 的上游
+		// hasJoined 外呼（内部 10s 超时），否则响应会被掐在半路。
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
 
 	ctx, stop := signalContext()
 	defer stop()

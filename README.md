@@ -209,6 +209,13 @@ token），明文 HTTP 等于把它们交给路径上的任何人；serverId 被
 抢领。令牌有效期用 `-token-ttl-days` 调（默认 30 天，与服务端 mod 的
 `tokenTtlDays` 同语义）。
 
+authbridge 自带面向公网的加固：HTTP 超时、4 KiB 请求体上限、username/uuid/
+serverId 形状校验（顺带掐死日志注入）、每来源 IP 限流（默认 30 次/分钟，
+`-rate-per-ip` 可调）与 hasJoined 外呼并发上限。部署在反代之后时加
+`-trust-proxy-header`，限流与日志改用 `X-Forwarded-For` 的首跳——否则所有
+请求在它眼里都来自反代自己，限流会把全体玩家算作同一个来源；反之**直接
+暴露时绝不能开**，伪造的头能绕过限流。
+
 `secret=auto` 场景注意：authbridge 是独立进程，密钥取自启动旗标。服务端重启换
 密钥后要**随之重启 authbridge**，否则它下发的凭证一直打不通——玩家会退回中转
 进服后自愈，不致不可用，但预拉取就白做了。
@@ -229,6 +236,10 @@ xtcpinmc prefetch \
 ```
 
 accessToken 也支持环境变量 `XTCPINMC_ACCESS_TOKEN` 传入（避免出现在进程列表里）。不同启动器的变量名需各自对照。
+
+`-bridge` 与 `-authserver` 强制 https：这两条链路上分别走着凭证与 accessToken。
+回环地址豁免（本机调试、SSH 端口转发都还好用）；确要明文 http 需显式加
+`-insecure-http`。
 
 prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家走原有中转进服流程，进服后 mod 照常下发凭证、后台打洞，体验退化为原状而非不可用。
 

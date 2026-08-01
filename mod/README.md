@@ -76,10 +76,11 @@ core 与适配层同样零改动。
 
 ## 验证状态
 
-`SelfTest` 共 176 项，覆盖平台识别、JSON 转义、事件解析容错、凭证往返（含中文与
-任意 backend）、v1 兼容与前向兼容、命令行构造、时间参数回填、状态机去重、
-凭证缓存（往返/最近优先/损坏清理/上限）、预热隧道的复用与采认、每玩家令牌
-（含与 Go 侧 authplugin 的跨语言已知答案向量）。
+`SelfTest` 共 212 项，覆盖平台识别、JSON 转义、事件解析容错、凭证往返（含中文与
+任意 backend）、v1 兼容与前向兼容、命令行构造、时间参数回填、状态机去重与
+复位竞态（shutdown 后过期 worker 不得覆写状态）、凭证缓存（往返/最近优先/
+损坏清理/上限）、预热隧道的复用与采认、每玩家令牌（含与 Go 侧 authplugin 的
+跨语言已知答案向量）。
 刻意不依赖 JUnit，一条 javac + java 就能跑：
 
 ```bash
@@ -89,7 +90,8 @@ $JAVA8/bin/java -cp build/classes cn.ripplecraft.xtcpinmc.core.SelfTest
 ```
 
 **兼容性已实测**：用 Java 8 编译的字节码曾在 **Java 8 / 17 / 21 / 25**
-上全部通过（早期 87 项）；当前 176 项在 Java 8 与 21 上验证全过。
+上全部通过（早期 87 项）；当前 212 项在 Java 8 上验证全过，CI 在 8/17/21/25
+四个 JVM 上跑。
 这正是 GTNH 用 lwjgl3ify 让 1.7.10 跑在现代 JVM 上的场景。
 代码只用 `ProcessBuilder`、`java.nio.file`、`java.net` 这类公共稳定 API，
 不碰 `sun.misc.*` 和 JDK 内部反射（Java 16+ 的强封装会直接拒绝）。

@@ -46,6 +46,7 @@ public final class SelfTest {
         testTimingsNormalization();
         testUpgradeGivesUpWithoutBinary();
         testUpgradeIgnoresDuplicateCredentials();
+        testStaleWorkerCannotOverrideReset();
         testCredentialCacheRoundTrip();
         testCredentialCacheKeepsMostRecent();
         testCredentialCacheSkipsCorrupt();
@@ -474,8 +475,8 @@ public final class SelfTest {
 
     // ---------- UpgradeController ----------
 
-    /** 记录调用的假 bridge，避免测试触碰真实游戏。 */
-    private static final class FakeBridge implements ClientBridge {
+    /** 记录调用的假 bridge，避免测试触碰真实游戏。竞态测试会匿名子类化它加闩锁。 */
+    private static class FakeBridge implements ClientBridge {
         final List<String> logs = new ArrayList<String>();
         final List<String> connects = new ArrayList<String>();
         final List<byte[]> reports = new ArrayList<byte[]>();
@@ -589,6 +590,72 @@ public final class SelfTest {
         check("放弃后忽略同房间重复凭证", !c.onCredentials(cred));
         c.shutdown();
         check("shutdown 后回到 IDLE", c.state() == UpgradeController.State.IDLE);
+    }
+
+    /**
+     * 竞态回归：PUNCHING 期间玩家真退出触发 shutdown() 复位后，还在跑的
+     * 过期 worker 不得把状态覆写成 GAVE_UP——那会锁死本会话的直连升级，
+     * 还会往服务端发一条假的失败回执。
+     *
+     * <p>用闩锁把 worker 卡在 {@code cacheDirectory()} 上，确定性地构造
+     * 「shutdown 先于 worker 落败」的交织，不靠碰运气的 sleep。
+     */
+    private static void testStaleWorkerCannotOverrideReset() throws Exception {
+        Path tmp = Files.createTempDirectory("xtcpinmc-test-race");
+        final CountDownLatch workerEntered = new CountDownLatch(1);
+        final CountDownLatch resetDone = new CountDownLatch(1);
+        final CountDownLatch staleNoticed = new CountDownLatch(1);
+        FakeBridge bridge = new FakeBridge(tmp) {
+            @Override
+            public Path cacheDirectory() {
+                workerEntered.countDown();
+                try {
+                    // 卡住 worker，让测试线程有确定的窗口去 shutdown
+                    resetDone.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return super.cacheDirectory();
+            }
+
+            @Override
+            public void debug(String message) {
+                super.debug(message);
+                if (message.contains("忽略过期升级")) {
+                    staleNoticed.countDown();
+                }
+            }
+        };
+        UpgradeController c = new UpgradeController(bridge, Timings.defaults());
+        Credentials cred = Credentials.frpXtcp("127.0.0.1", 7000, "t",
+                "stun:1", "room-race", "k", 1000);
+
+        check("竞态：首次凭证启动升级", c.onCredentials(cred));
+        check("竞态：worker 已进入升级流程", workerEntered.await(10, TimeUnit.SECONDS));
+
+        // 玩家此刻真退出：复位到 IDLE，代际号递增
+        c.shutdown();
+        check("竞态：shutdown 后立即回到 IDLE",
+                c.state() == UpgradeController.State.IDLE);
+
+        // 放行 worker：它会因缺少 natives 而落败，但它已经过期
+        resetDone.countDown();
+        check("竞态：过期 worker 的放弃被识别并忽略",
+                staleNoticed.await(10, TimeUnit.SECONDS));
+        check("竞态：状态没有被过期 worker 覆写成 GAVE_UP",
+                c.state() == UpgradeController.State.IDLE);
+        synchronized (bridge.reports) {
+            check("竞态：没有发出假的失败回执", bridge.reports.isEmpty());
+        }
+
+        // 复位后的会话必须还能正常升级——这正是本 bug 锁死的东西
+        check("竞态：复位后同一凭证能重新启动升级", c.onCredentials(cred));
+        check("竞态：新一轮升级正常落败", bridge.settled.await(10, TimeUnit.SECONDS));
+        check("竞态：新一轮的终态是 GAVE_UP",
+                c.state() == UpgradeController.State.GAVE_UP);
+        check("竞态：新一轮的失败回执正常发出",
+                bridge.reportSent.await(10, TimeUnit.SECONDS));
+        c.shutdown();
     }
 
     // ---------- CredentialCache ----------

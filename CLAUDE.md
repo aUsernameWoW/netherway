@@ -47,7 +47,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.xtcpi
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 176 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 212 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有

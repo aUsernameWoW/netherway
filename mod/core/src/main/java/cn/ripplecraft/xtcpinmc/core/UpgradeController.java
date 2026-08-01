@@ -32,6 +32,20 @@ public final class UpgradeController {
     private final WarmupController warmup;
     private final AtomicReference<State> state = new AtomicReference<State>(State.IDLE);
 
+    /**
+     * 转移锁：所有复合状态转移（CAS + 关联字段）都在它下面做。锁内绝不做
+     * IO 或 {@link AgentProcess#close()}（最长阻塞 3 秒），netty 线程会经
+     * {@link #onCredentials}/{@link #shutdown} 拿这把锁。
+     */
+    private final Object transition = new Object();
+    /**
+     * 代际号，{@link #shutdown()} 每次复位时递增。worker 线程启动时记下
+     * 当时的代际，之后每次状态转移都要验代——玩家真退出触发 shutdown 复位
+     * 到 IDLE 后，还在跑的旧 worker 若无条件 {@code giveUp}，会把状态覆写成
+     * GAVE_UP，本会话的直连从此锁死。guarded by {@link #transition}。
+     */
+    private long epoch;
+
     private volatile AgentProcess agent;
     private volatile String activeKey;
     /** 成功时的 READY 事件，供切换落地后的结果回执取 rtt/耗时。 */
@@ -92,16 +106,25 @@ public final class UpgradeController {
             }
         }
 
-        if (!state.compareAndSet(State.IDLE, State.PUNCHING)) {
+        // -1 表示 CAS 失败（epoch 从 0 起只增不减，取不到负值）
+        final long gen;
+        synchronized (transition) {
+            if (state.compareAndSet(State.IDLE, State.PUNCHING)) {
+                activeKey = cred.dedupKey();
+                gen = epoch;
+            } else {
+                gen = -1;
+            }
+        }
+        if (gen < 0) {
             bridge.debug("当前状态为 " + state.get() + "，忽略本次凭证");
             return false;
         }
-        activeKey = cred.dedupKey();
 
         Thread worker = new Thread(new Runnable() {
             @Override
             public void run() {
-                runUpgrade(cred);
+                runUpgrade(cred, gen);
             }
         }, "xtcpinmc-upgrade");
         worker.setDaemon(true);
@@ -109,11 +132,11 @@ public final class UpgradeController {
         return true;
     }
 
-    private void runUpgrade(Credentials cred) {
+    private void runUpgrade(Credentials cred, long gen) {
         // 预热隧道已就绪时直接复用：对同一房间再起一个 agent 纯属浪费，
         // 日志里还会出现两套打洞记录。预热还在打洞或已失败则走既有流程
         // （下发的凭证可能比缓存新，比如 secret 轮换过）。
-        if (reuseWarmTunnel(cred)) {
+        if (reuseWarmTunnel(cred, gen)) {
             return;
         }
         AgentProcess proc = null;
@@ -143,30 +166,39 @@ public final class UpgradeController {
                             bridge.debug("agent: " + line);
                         }
                     });
-            agent = proc;
+            if (!attach(proc, gen)) {
+                // 启动进程期间 shutdown 已复位：这个 agent 没登记进任何人的
+                // 视野，不就地收掉就只剩 JVM 退出时的 shutdown hook 兜底
+                proc.close();
+                bridge.debug("忽略过期升级：复位后不再接管刚启动的 agent");
+                return;
+            }
 
             bridge.debug("等待打洞结果，最多 " + timings.outcomeWaitMs()
                     + "ms（agent 详细日志: " + agentLog + "）");
             AgentEvent outcome = proc.awaitOutcome(timings.outcomeWaitMs());
 
             if (outcome == null) {
-                giveUp(proc, cred, "等待直连结果超时");
+                giveUp(proc, cred, "等待直连结果超时", gen);
                 return;
             }
             if (outcome.type() != AgentEvent.Type.READY) {
                 String why = outcome.reason() == null ? "打洞未成功" : outcome.reason();
-                giveUp(proc, cred, why);
+                giveUp(proc, cred, why, gen);
                 return;
             }
 
             // 到这里隧道已经通过 Minecraft 握手验证过，切换是安全的
             final int port = outcome.port();
             long rtt = outcome.rttMs();
+            if (!markUpgraded(outcome, gen)) {
+                proc.close();
+                bridge.debug("忽略过期升级：复位后不再切换（房间 " + cred.room() + "）");
+                return;
+            }
             bridge.info("直连就绪，端口 " + port + "，延迟 " + rtt + "ms，用时 "
                     + outcome.elapsedMs() + "ms");
 
-            lastReady = outcome;
-            state.set(State.UPGRADED);
             final String msg = rtt > 0
                     ? "已建立直连（延迟 " + rtt + "ms），正在切换…"
                     : "已建立直连，正在切换…";
@@ -180,13 +212,39 @@ public final class UpgradeController {
 
         } catch (Platform.UnsupportedPlatformException e) {
             // 没有对应平台的二进制，重试也没意义
-            giveUp(proc, cred, "当前系统不支持直连: " + e.getMessage());
+            giveUp(proc, cred, "当前系统不支持直连: " + e.getMessage(), gen);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            giveUp(proc, cred, "升级过程被中断");
-        } catch (Exception e) {
-            bridge.warn("建立直连失败", e);
-            giveUp(proc, cred, e.getMessage());
+            giveUp(proc, cred, "升级过程被中断", gen);
+        } catch (Throwable t) {
+            // Exception 之外还必须接住 Error：1.7.10 挤着几百个 mod 的类路径上
+            // NoClassDefFoundError/LinkageError 并不罕见，逃逸出去状态就永远
+            // 停在 PUNCHING，本会话再也无法升级
+            bridge.warn("建立直连失败", t);
+            giveUp(proc, cred, t.getMessage(), gen);
+        }
+    }
+
+    /** worker 把刚启动的 agent 登记进控制器；复位后登记被拒，进程由 worker 自行收掉。 */
+    private boolean attach(AgentProcess proc, long gen) {
+        synchronized (transition) {
+            if (gen != epoch) {
+                return false;
+            }
+            agent = proc;
+            return true;
+        }
+    }
+
+    /** worker 申请把状态置为 UPGRADED；shutdown 复位过（换代）则拒绝。 */
+    private boolean markUpgraded(AgentEvent ready, long gen) {
+        synchronized (transition) {
+            if (gen != epoch) {
+                return false;
+            }
+            lastReady = ready;
+            state.set(State.UPGRADED);
+            return true;
         }
     }
 
@@ -197,7 +255,7 @@ public final class UpgradeController {
      * 会话）；极端情况下切换会失败，玩家重连一次即可回到既有流程——
      * 这与点击直连条目失败的体验一致，不为它增加一套探测。
      */
-    private boolean reuseWarmTunnel(Credentials cred) {
+    private boolean reuseWarmTunnel(Credentials cred, long gen) {
         if (warmup == null) {
             return false;
         }
@@ -208,8 +266,11 @@ public final class UpgradeController {
         final int port = readyEv.port();
         long rtt = readyEv.rttMs();
         // agent 字段保持 null：隧道归 WarmupController 管，shutdown() 不会误杀
-        lastReady = readyEv;
-        state.set(State.UPGRADED);
+        if (!markUpgraded(readyEv, gen)) {
+            // 本轮升级已被 shutdown 作废，也别落回冷启动流程
+            bridge.debug("忽略过期升级：复位后不再复用预热隧道");
+            return true;
+        }
         bridge.info("复用预热隧道，端口 " + port + "，延迟 " + rtt + "ms，正在切换");
         final String msg = rtt > 0
                 ? "已建立直连（延迟 " + rtt + "ms，预热），正在切换…"
@@ -238,13 +299,19 @@ public final class UpgradeController {
         if (cred == null || ready == null) {
             return false;
         }
-        if (!state.compareAndSet(State.IDLE, State.UPGRADED)) {
+        boolean adopted;
+        synchronized (transition) {
+            adopted = state.compareAndSet(State.IDLE, State.UPGRADED);
+            if (adopted) {
+                activeKey = cred.dedupKey();
+                lastReady = ready;
+                adoptedDirect = true;
+            }
+        }
+        if (!adopted) {
             bridge.debug("当前状态为 " + state.get() + "，不采认直连条目的连接");
             return false;
         }
-        activeKey = cred.dedupKey();
-        lastReady = ready;
-        adoptedDirect = true;
         bridge.info("本次连接经直连条目建立（房间 " + cred.room() + "，端口 "
                 + ready.port() + "），视作已升级");
         return true;
@@ -270,12 +337,26 @@ public final class UpgradeController {
         worker.start();
     }
 
-    private void giveUp(AgentProcess proc, Credentials cred, String reason) {
-        state.set(State.GAVE_UP);
+    private void giveUp(AgentProcess proc, Credentials cred, String reason, long gen) {
+        boolean stale;
+        synchronized (transition) {
+            stale = gen != epoch;
+            if (!stale) {
+                state.set(State.GAVE_UP);
+                agent = null;
+            }
+        }
+        // close 最长阻塞 3 秒，放在转移锁外；重复 close 是幂等的
         if (proc != null) {
             proc.close();
         }
-        agent = null;
+        if (stale) {
+            // shutdown 已复位（或已进入新一轮升级）：状态不归这个 worker 管。
+            // 覆写成 GAVE_UP 会把玩家重进后的正常升级一并锁死，
+            // 还会往服务端发一条假的失败回执。
+            bridge.debug("忽略过期升级的放弃（" + reason + "）");
+            return;
+        }
         // 升级失败对玩家无感：他仍在原有的中转连接上正常游戏，
         // 所以只记日志，不去打扰他。
         bridge.info("放弃直连，继续使用当前线路（" + reason + "）");
@@ -339,13 +420,19 @@ public final class UpgradeController {
      * 它要活到游戏进程结束，承载服务器列表里的直连条目。
      */
     public void shutdown() {
-        AgentProcess proc = agent;
-        agent = null;
-        activeKey = null;
-        lastReady = null;
-        upgradeReported = false;
-        adoptedDirect = false;
-        state.set(State.IDLE);
+        AgentProcess proc;
+        synchronized (transition) {
+            // 换代：还在跑的旧 worker 之后的任何状态转移都会被拒
+            epoch++;
+            proc = agent;
+            agent = null;
+            activeKey = null;
+            lastReady = null;
+            upgradeReported = false;
+            adoptedDirect = false;
+            state.set(State.IDLE);
+        }
+        // close 最长阻塞 3 秒，不能占着转移锁
         if (proc != null) {
             proc.close();
         }

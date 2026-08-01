@@ -49,10 +49,22 @@ type event struct {
 // measureRTT 连测几次取最小值。隧道刚建立时首条连接会带上协商开销，
 // 单次测量会严重高估延迟，最小值更接近稳定后的真实往返。
 // 全部失败返回 0，由 mod 按「未知」处理。
-func measureRTT(port int, timeout time.Duration) int64 {
+//
+// 采样必须挤在 deadline 之前：mod 只等 punchTimeout+startupGrace，慢路径
+// 打洞在临期才就绪时，再花 3×probeTimeout 采样会把 ready 事件推出等待
+// 窗口——一条刚建成的隧道反而被 mod 判成超时。宁可少测或不测（rtt=0
+// 即「未知」），也不能耽误 ready 的发出。
+func measureRTT(port int, timeout time.Duration, deadline time.Time) int64 {
 	const samples = 3
 	best := int64(0)
 	for range samples {
+		remain := time.Until(deadline)
+		if remain <= 0 {
+			break
+		}
+		if remain < timeout {
+			timeout = remain
+		}
 		_, rtt, err := mcping.Ping("127.0.0.1", port, timeout)
 		if err != nil {
 			continue
@@ -252,7 +264,7 @@ func cmdTunnel(args []string) error {
 		}
 		// 隧道刚打通时的第一条连接会明显偏慢（实测能到 2.4s），
 		// 多测几次取最小值才反映真实往返延迟。
-		e.RTTMs = measureRTT(port, timings.ProbeTimeout)
+		e.RTTMs = measureRTT(port, timings.ProbeTimeout, deadline)
 		emit(e)
 	}
 
