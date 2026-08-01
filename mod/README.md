@@ -86,7 +86,7 @@ core 与适配层同样零改动。
 ```bash
 JAVA8=/path/to/jdk8
 $JAVA8/bin/javac -encoding UTF-8 -d build/classes $(find core/src -name "*.java")
-$JAVA8/bin/java -cp build/classes cn.ripplecraft.xtcpinmc.core.SelfTest
+$JAVA8/bin/java -cp build/classes cn.ripplecraft.netherway.core.SelfTest
 ```
 
 **兼容性已实测**：用 Java 8 编译的字节码曾在 **Java 8 / 17 / 21 / 25**
@@ -100,20 +100,4 @@ $JAVA8/bin/java -cp build/classes cn.ripplecraft.xtcpinmc.core.SelfTest
 释放、进程启动、JSON 解析、错误传播、agent 自身建链（实测 31ms RTT）——但把它们
 串起来跑通需要两个处于不同网络位置的机器，而开发机当时被全局 VPN 接管了 UDP，
 同机测试又受 hairpin NAT 限制。在正常网络下按上面的方式跑 `IntegrationTest`
-即可确认。
-
-## 待办
-
-- [x] Forge 1.7.10 适配层：自定义频道注册、登录事件、重连触发（`platform/forge-1.7.10`）
-- [x] 服务端凭证下发（做在同一个 Forge mod 里，日后按需加 Sponge/Paper 实现）
-- [x] mod 配置文件，把 `Timings` 暴露给服主（`ModConfig`，server/client 两个类目）
-- [x] 构建脚本：把各平台 agent 二进制打进 jar 的 `natives/`（`build-natives.sh`，
-      刻意不注入 TOKEN/SECRET——jar 要分发给玩家）
-- [x] 凭证缓存 + 启动期预热 + 服务器列表直连条目（`CredentialCache` /
-      `WarmupController` / forge 侧 `DirectServerEntry`），配套 `secret=auto`
-      随重启轮换密钥
-- [x] 每玩家令牌：`TokenIssuer` 签发（绑定 UUID、30 天过期、登录续签），
-      frps 侧 `authplugin` 校验（Login/NewProxy 分层策略、`-allow-legacy`
-      迁移开关），跨语言已知答案测试钉住令牌格式
-- [ ] 跨网络端到端验证（一二阶段均待实测：预热/直连条目/`secret=auto` 轮换、
-      authplugin 分层鉴权）
+即可确认。未验证事项集中记录在 `docs/field-notes.md` 的「尚未验证」一节。

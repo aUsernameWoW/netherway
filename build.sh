@@ -62,16 +62,16 @@ build() {
   fi
   echo "构建 ${goos}/${goarch} -> bin/${out}"
   GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-    go build -trimpath -ldflags "$LDFLAGS" -o "bin/${out}" ./cmd/xtcpinmc
+    go build -trimpath -ldflags "$LDFLAGS" -o "bin/${out}" ./cmd/netherway
 }
 
 # 玩家侧：Windows 是主力，其次是 macOS
-build windows amd64 xtcpinmc-windows-amd64.exe
-build windows arm64 xtcpinmc-windows-arm64.exe
-build darwin  arm64 xtcpinmc-macos-arm64
-build darwin  amd64 xtcpinmc-macos-amd64
+build windows amd64 netherway-windows-amd64.exe
+build windows arm64 netherway-windows-arm64.exe
+build darwin  arm64 netherway-macos-arm64
+build darwin  amd64 netherway-macos-amd64
 # 服务器侧
-build linux   amd64 xtcpinmc-linux-amd64
+build linux   amd64 netherway-linux-amd64
 
 echo
 echo "完成。产物："

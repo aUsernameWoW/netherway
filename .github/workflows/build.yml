@@ -55,7 +55,7 @@ jobs:
           for v in 203.0.113.99 7391 ci-smoke-room ci-smoke-motd \
                    ci-dummy-token ci-dummy-secret \
                    ci-authserver.example.com ci-authbridge.example.com; do
-            grep -aq "$v" bin/xtcpinmc-linux-amd64 || {
+            grep -aq "$v" bin/netherway-linux-amd64 || {
               echo "注入值 $v 未落进二进制：-X symbol 名与 internal/config 失配？"
               exit 1
             }
@@ -70,7 +70,7 @@ jobs:
       # failed 的原因不同但断言不变。
       - name: tunnel stdout JSON 契约冒烟
         run: |
-          if bin/xtcpinmc-linux-amd64 tunnel \
+          if bin/netherway-linux-amd64 tunnel \
                -server 127.0.0.1 -server-port 1 -token ci \
                -room ci-smoke -secret ci-smoke -timeout 6 \
                -log-file /tmp/tunnel-smoke.log \
@@ -114,7 +114,7 @@ jobs:
           "$JAVA_HOME_8_X64/bin/javac" -encoding UTF-8 -Xlint:all \
             -d mod/build/classes $(find mod/core/src -name "*.java")
       - name: 在 JDK ${{ matrix.java }} 上跑 SelfTest
-        run: java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.xtcpinmc.core.SelfTest
+        run: java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.netherway.core.SelfTest
 
   mod:
     name: Forge 1.7.10 mod

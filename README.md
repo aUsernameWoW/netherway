@@ -13,9 +13,6 @@ mod 的核心层不含任何 Minecraft 类型，换游戏版本或加载器只�
 验证（经隧道传 20 MB，frps 侧只看到心跳包），完整的端到端验证记录与踩坑见
 [docs/field-notes.md](docs/field-notes.md)。
 
-命令行工具与内部标识（自定义频道、缓存目录、环境变量等）沿用项目旧名
-`xtcpinmc`。
-
 ## 两种接入方式
 
 **独立 agent**：玩家跑一个单文件可执行程序，打开游戏就能在「多人游戏 →
@@ -55,7 +52,7 @@ Minecraft 自己的握手（Server List Ping，`internal/mcping`）判断隧道�
 建链失败就该留在原连接上，而且有兜底的话就绪探测会永远成功，反而分不清到底
 打没打通。
 
-**新增一种隧道方案**只需一个 Go 实现包加一行注册（`cmd/xtcpinmc/backends.go`）；
+**新增一种隧道方案**只需一个 Go 实现包加一行注册（`cmd/netherway/backends.go`）；
 凭证是「backend 标识 + 参数表」，核心层不解释参数，原样转交 agent。
 
 ## 构建
@@ -81,17 +78,17 @@ TOKEN=<frps的auth.token> SECRET=<房间密钥> ./build.sh
 管理器托管即可）：
 
 ```bash
-xtcpinmc serve
+netherway serve
 ```
 
 玩家：
 
 ```bash
-xtcpinmc join
+netherway join
 ```
 
 两者都不需要参数——构建时注入过了。需要临时覆盖时用 `-server` `-room`
-`-port` 等，`xtcpinmc help` 有完整列表。
+`-port` 等，`netherway help` 有完整列表。
 
 玩家侧启动后打开游戏，服务器会出现在「多人游戏 → 局域网游戏」里。若 25565
 被本机占用，会自动改用空闲端口并把新端口写进广播包，玩家无感知。
@@ -100,8 +97,8 @@ xtcpinmc join
 
 启动器支持实例级自定义命令，在实例设置 → Custom Commands 里填：
 
-- **Pre-launch command**: `path/to/xtcpinmc start`
-- **Post-exit command**: `path/to/xtcpinmc stop`
+- **Pre-launch command**: `path/to/netherway start`
+- **Post-exit command**: `path/to/netherway stop`
 
 `start` 派生后台进程后立即返回，不会卡住游戏启动（Pre-launch 是阻塞等待的，
 所以不能直接写 `join`）。把这两行预置进分发的整合包实例 `instance.cfg`，
@@ -125,14 +122,14 @@ mod 方式下，玩家首次进服要先走中转、登录后拿凭证、打洞�
 ② prefetch → 皮肤站 /join             带 accessToken + serverId 报到（token 只到这步）
 ③ prefetch → authbridge /confirm      authbridge 调皮肤站 /hasJoined 查证
    ↳ 通过 → 签发玩家令牌 + 组装凭证 → base64 返回
-④ prefetch 把凭证写进 .minecraft/xtcpinmc/credentials/
+④ prefetch 把凭证写进 .minecraft/netherway/credentials/
    ↳ 游戏启动时 mod 读缓存 → 预热打洞 → 首次进服即直连
 ```
 
 **服务端**（与 authplugin 并列，独立进程）：
 
 ```bash
-xtcpinmc authbridge \
+netherway authbridge \
   -listen 127.0.0.1:7201 \
   -key <签发密钥，与authplugin -key同值> \
   -authserver https://skin.example.com/api/yggdrasil \
@@ -157,16 +154,16 @@ xtcpinmc authbridge \
 **玩家端**（启动器 Pre-launch 调用，PrismLauncher 变量示例）：
 
 ```
-xtcpinmc prefetch \
+netherway prefetch \
   -bridge https://authbridge.example.com \
   -authserver https://skin.example.com/api/yggdrasil \
   -token ${auth_access_token} \
   -uuid ${auth_uuid} \
   -username ${auth_player_name} \
-  -cache-dir .minecraft/xtcpinmc/credentials
+  -cache-dir .minecraft/netherway/credentials
 ```
 
-accessToken 也可经环境变量 `XTCPINMC_ACCESS_TOKEN` 传入（避免出现在进程
+accessToken 也可经环境变量 `NETHERWAY_ACCESS_TOKEN` 传入（避免出现在进程
 列表里）。`-bridge` 与 `-authserver` 强制 https（回环地址豁免，本机调试与
 SSH 端口转发不受影响；确要明文需显式 `-insecure-http`）。两个地址可经
 `build.sh` 的 `AUTHSERVER`/`AUTHBRIDGE` 注入为内置默认值，玩家侧命令即可
@@ -193,7 +190,7 @@ prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家�
    ]
    ```
 
-2. **部署 authplugin**（frps 的 httpPlugins，`xtcpinmc authplugin` 子命令，
+2. **部署 authplugin**（frps 的 httpPlugins，`netherway authplugin` 子命令，
    配置见 [mod/platform/forge-1.7.10/README.md](mod/platform/forge-1.7.10/README.md)
    部署章节）：在全局 token 之上叠加每玩家令牌（绑定 UUID、带有效期、HMAC
    签名，服务端登录时签发）。迁移完成后关掉 `-allow-legacy`，光有全局 token
@@ -210,7 +207,7 @@ prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家�
 ## 代码结构
 
 ```
-cmd/xtcpinmc/        CLI 入口；daemon_{unix,windows}.go 处理平台差异
+cmd/netherway/        CLI 入口；daemon_{unix,windows}.go 处理平台差异
 internal/backend/    隧道方案的统一接口与注册表；frp xtcp 是首个实现
 internal/tunnel/     以库的方式嵌入 frpc，无独立进程、无 toml
 internal/authplugin/ frps 的 HTTP server plugin：每玩家令牌校验（authplugin 子命令）

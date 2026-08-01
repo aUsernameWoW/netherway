@@ -5,8 +5,8 @@
 # 所以 gate 步骤会先确认两者都已就位，否则跳过合并、只留提示。
 # 免费计划下这两个设置仅公开仓库可用（私有仓库需 Pro），转公开后执行：
 #
-#   gh api -X PATCH repos/aUsernameWoW/xtcpinmc -F allow_auto_merge=true
-#   gh api -X PUT repos/aUsernameWoW/xtcpinmc/branches/main/protection \
+#   gh api -X PATCH repos/aUsernameWoW/netherway -F allow_auto_merge=true
+#   gh api -X PUT repos/aUsernameWoW/netherway/branches/main/protection \
 #     --input .github/branch-protection.json
 #
 # frp 的 bump 不做特殊拦截，理由见 ../dependabot.yml 头注。
@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       github.event.pull_request.user.login == 'dependabot[bot]' &&
-      github.repository == 'aUsernameWoW/xtcpinmc'
+      github.repository == 'aUsernameWoW/netherway'
     steps:
       # .protected 只说明 main 有分支保护，不细究是否配了 required checks——
       # 保护规则由上面注释里的 branch-protection.json 统一施加，两者一致。

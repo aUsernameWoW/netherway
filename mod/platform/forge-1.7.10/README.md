@@ -3,7 +3,7 @@
 core 的 Forge 1.7.10 接线。同一个 jar 同时装在服务端与客户端：
 
 - **服务端半边**（`CredentialSender`）：玩家登录后把配置里的凭证编码成裸字节，
-  经自定义频道 `xtcpinmc` 下发。走的是 Minecraft 原生 plugin channel，
+  经自定义频道 `netherway` 下发。走的是 Minecraft 原生 plugin channel，
   将来换 Bukkit/Sponge 插件下发也不用改客户端。
 - **客户端半边**（`ClientProxy` 接线）：收到凭证交给 core 的 `UpgradeController`，
   打洞成功后经 `ForgeClientBridge` 切换连接。凭证同时落进本地缓存：下次启动时
@@ -42,19 +42,19 @@ curl -L -C - -O $BASE/retrofuturagradle-1.4.9.jar -O $BASE/retrofuturagradle-1.4
 ## 服务端配置
 
 **不必为了生成配置骨架先空跑一次服务端**：启动前直接把下面的内容存成
-`config/xtcpinmc.cfg`（跟 mods 目录平级的那个 config），改好占位符再启动，
+`config/netherway.cfg`（跟 mods 目录平级的那个 config），改好占位符再启动，
 一次到位。没写的键按默认值处理；语法写错也不会炸服——mod 会记一条
 错误日志并按默认值运行（即不下发凭证），改好后重启生效。
 
 ```
-# xtcpinmc 服务端配置。此文件含密钥，注意文件权限。
+# netherway 服务端配置。此文件含密钥，注意文件权限。
 
 server {
     B:enabled=true
     S:backend=frp-xtcp
 
     # 随服务端启动内置 serve，用下面的 params 把本地端口注册为房间代理。
-    # 已在宿主机单独运行 xtcpinmc serve、或托管环境禁止子进程时设为 false。
+    # 已在宿主机单独运行 netherway serve、或托管环境禁止子进程时设为 false。
     B:runAgent=true
     # 内置 serve 发布的本地端口，0 表示用服务器实际监听的端口
     I:localPort=0
@@ -115,14 +115,14 @@ backend 实现（如 `internal/backend/frpxtcp`）保持一致。
 frps 宿主机上运行（密钥经环境变量传入，避免出现在进程列表）：
 
 ```bash
-XTCPINMC_AUTH_KEY=<签发密钥> ./xtcpinmc authplugin -static-token <serve静态令牌> -allow-legacy
+NETHERWAY_AUTH_KEY=<签发密钥> ./netherway authplugin -static-token <serve静态令牌> -allow-legacy
 ```
 
 frps.toml 加上（然后重启 frps）：
 
 ```toml
 [[httpPlugins]]
-name = "xtcpinmc-auth"
+name = "netherway-auth"
 addr = "127.0.0.1:7200"
 path = "/handler"
 ops = ["Login", "NewProxy"]
@@ -141,13 +141,13 @@ ops = ["Login", "NewProxy"]
 
 直连没生效时看日志，两侧都有料：
 
-- **客户端游戏日志**（搜 `xtcpinmc`）：默认 `client.verboseLogging=true`，
+- **客户端游戏日志**（搜 `netherway`）：默认 `client.verboseLogging=true`，
   打洞全过程——收到的凭证键名、agent 启动命令（参数值已脱敏）、agent 的
   每个事件与诊断输出、以及 frp 自身 info 及以上的日志（比如
   `xtcp server for [xxx-p2p] doesn't exist`，意思是宿主机的 serve 没在
   运行）——都以 INFO 级别写进游戏日志。嫌吵可在 cfg 里关掉，
   这些内容会降为 DEBUG 级别。
-- **agent 详细日志**：`.minecraft/xtcpinmc/tunnel.log`（进服后的升级流程）与
+- **agent 详细日志**：`.minecraft/netherway/tunnel.log`（进服后的升级流程）与
   `tunnel-warmup.log`（启动期预热），frp 的 debug 级输出，打洞握手的每一步
   都在里面，玩家报告问题时让他带上对应文件。
   （debug 级刻意不进游戏日志：隧道存活期间会持续刷屏。）
@@ -158,7 +158,7 @@ ops = ["Login", "NewProxy"]
 - **常见失败**：`xtcp server for [房间-p2p] doesn't exist` 意思是 frps 上
   没有这个代理。默认 `server.runAgent=true` 时代理由 mod 内置的 serve
   注册（参数与凭证同源，日志里带 `[serve]` 前缀，出问题先看它们）；
-  关掉 runAgent 的话代理注册靠宿主机上独立运行的 `xtcpinmc serve`，
+  关掉 runAgent 的话代理注册靠宿主机上独立运行的 `netherway serve`，
   检查它是否在跑、`-room` 与 `-server` 是否与 `server.params` 一致
   （serve 不带 `-room` 时用的是构建期默认房间名）。两种方式**只能开一个**：
   同名代理在 frps 上会注册冲突。

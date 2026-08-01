@@ -9,7 +9,7 @@ plugins {
     id 'com.gtnewhorizons.retrofuturagradle' version '1.4.9'
 }
 
-group = 'cn.ripplecraft.xtcpinmc'
+group = 'cn.ripplecraft.netherway'
 version = project.modVersion
 
 java {
@@ -25,7 +25,7 @@ minecraft {
 }
 
 tasks.injectTags.configure {
-    outputClassName = 'cn.ripplecraft.xtcpinmc.forge.Tags'
+    outputClassName = 'cn.ripplecraft.netherway.forge.Tags'
 }
 
 // core 直接以源码形式编入：它零依赖、纯 Java 8，单独发布产物反而多一层要同步的东西

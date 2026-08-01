@@ -9,9 +9,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 实测收益：P2P 直连 SLP 往返 **31–49 ms**，对比中转节点 156–214 ms。
 
-项目对外名为 **Netherway**；`xtcpinmc` 保留为内部技术标识——二进制名、
-Go/Java 包名、MC 自定义频道、缓存目录、cfg 文件名、`XTCPINMC_*` 环境变量、
-modid 都不随品牌改名，不要「顺手」统一成新名。
+命名已全量统一为 **netherway**（2026-08-01，原名 xtcpinmc）：二进制名、
+Go/Java 包名、MC 自定义频道、缓存目录（`.minecraft/netherway/`）、cfg 文件名、
+`NETHERWAY_*` 环境变量、modid 全部一致，版本库中不应再出现旧名。对已部署
+环境这是破坏性迁移：旧 mod 客户端监听旧频道收不到凭证，退化为中转直至更新
+mod；旧缓存目录成为孤儿（首次中转进服后在新目录自愈）；服主需同步改
+`config/netherway.cfg`（原 xtcpinmc.cfg）、authplugin 的 `NETHERWAY_AUTH_KEY`
+环境变量名、启动器 instance.cfg 里的二进制路径。
 
 仓库包含两个独立但配套的部分：
 
@@ -48,7 +52,7 @@ TOKEN=<frps的auth.token> SECRET=<房间密钥> ./build.sh
 JAVA8=/Library/Java/JavaVirtualMachines/zulu-8.jdk/Contents/Home
 mkdir -p mod/build/classes   # javac -d 不会创建多级目录
 $JAVA8/bin/javac -encoding UTF-8 -Xlint:all -d mod/build/classes $(find mod/core/src -name "*.java")
-$JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.xtcpinmc.core.SelfTest
+$JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.netherway.core.SelfTest
 ```
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
@@ -57,11 +61,11 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.xtcpi
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
-`natives/<平台>/xtcpinmc`：
+`natives/<平台>/netherway`：
 
 ```bash
 java -cp mod/build/classes:mod/build/testres \
-  cn.ripplecraft.xtcpinmc.core.IntegrationTest <frps地址> <端口> <令牌> <stun> <房间> <密钥>
+  cn.ripplecraft.netherway.core.IntegrationTest <frps地址> <端口> <令牌> <stun> <房间> <密钥>
 ```
 
 ### Forge 1.7.10 mod（`mod/platform/forge-1.7.10`）
@@ -91,7 +95,7 @@ Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者�
 {"event":"failed","reason":"打洞超时"}
 ```
 
-字段定义在 Go 侧 `cmd/xtcpinmc/modbridge.go` 的 `event` 结构与 Java 侧
+字段定义在 Go 侧 `cmd/netherway/modbridge.go` 的 `event` 结构与 Java 侧
 `AgentEvent` 中，**改动必须两边同步**。同样必须两边同步的还有各 backend 的
 参数键名：Go 侧实现包的常量（如 `internal/backend/frpxtcp`）↔ Java 侧
 `Credentials` 的对应工厂方法（如 `Credentials.frpXtcp`）。以及每玩家令牌的
@@ -104,7 +108,7 @@ Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者�
 agent 的 stderr 是诊断通道：backend 的参数快照、被忽略的未知键、frp 自身
 info 及以上的日志都会回显到这里，mod 逐行转进游戏日志（`bridge.debug`）。
 
-Minecraft 自定义频道（`xtcpinmc`）上还有一条 Java↔Java 的契约：服务端下发
+Minecraft 自定义频道（`netherway`）上还有一条 Java↔Java 的契约：服务端下发
 `Credentials`，客户端在升级结束后回传 `UpgradeReport`（失败立即发、成功等
 切换落地后发），服务端记进日志。两者都是裸字节编解码、版本化、向前兼容。
 
@@ -114,7 +118,7 @@ Minecraft 自定义频道（`xtcpinmc`）上还有一条 Java↔Java 的契约�
 指定地址开一个 TCP 端口，通向 MC 服务器」，就绪与否由调用方用 SLP 探测判定。
 `tunnel` 子命令里选端口、起 backend、探测、输出 JSON 四件事都与方案无关。
 
-新增一种隧道方案 = 一个 Go 实现包 + `cmd/xtcpinmc/backends.go` 里注册一行 +
+新增一种隧道方案 = 一个 Go 实现包 + `cmd/netherway/backends.go` 里注册一行 +
 Java 侧 `Credentials` 加一个工厂方法（可选，服务端也可直接构造参数表）。
 core 与平台适配层不解释参数，无需改动。约束：**backend 实现不得自带中转
 兜底**（否则就绪探测分不清打没打通）；**无法识别的参数键必须忽略**（服务端
@@ -158,7 +162,7 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 
 ### 预热与凭证缓存
 
-每次下发的凭证都会写进本地缓存（`CredentialCache`，`.minecraft/xtcpinmc/credentials/`）；
+每次下发的凭证都会写进本地缓存（`CredentialCache`，`.minecraft/netherway/credentials/`）；
 下次启动时 `WarmupController` 在 FML 加载期就用缓存凭证后台打洞，并经
 `DirectServerEntry` 在服务器列表里维护一个直连条目（agent 的 STARTING 事件
 一报出端口就更新地址）。玩家可三种方式进服，互为兜底：
@@ -273,8 +277,8 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 `/bin/` 与 `/mod/build/` 已列入 `.gitignore`：两者下面的产物都内嵌了经 `-ldflags`
 注入的 frps 令牌与房间密钥，**绝不能提交**。
 
-跟踪的源码与文档中不含任何真实凭证，`server/` 与 `client/` 下的 toml 模板用的是
-占位符。新增示例配置时保持这一点——凭证只经环境变量进入构建，不落盘到版本库。
+跟踪的源码与文档中不含任何真实凭证，示例配置一律用占位符。新增示例配置时
+保持这一点——凭证只经环境变量进入构建，不落盘到版本库。
 
 **版本库为「可随时转公开」标准维护**：文档、模板与测试中的示例地址一律用
 文档专用段（`203.0.113.x`，不可路由）与 `example.com`；真实部署参数（frps
