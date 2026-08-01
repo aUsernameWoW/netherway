@@ -5,7 +5,7 @@ go 1.25.1
 require (
 	github.com/fatedier/frp v0.70.0
 	github.com/fatedier/golib v0.7.0
-	github.com/samber/lo v1.47.0
+	github.com/samber/lo v1.53.0
 )
 
 require (
