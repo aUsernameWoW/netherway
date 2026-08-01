@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ripplecraft/xtcpinmc/internal/backend"
-	"github.com/ripplecraft/xtcpinmc/internal/backend/frpxtcp"
-	"github.com/ripplecraft/xtcpinmc/internal/config"
-	"github.com/ripplecraft/xtcpinmc/internal/mcping"
+	"github.com/aUsernameWoW/netherway/internal/backend"
+	"github.com/aUsernameWoW/netherway/internal/backend/frpxtcp"
+	"github.com/aUsernameWoW/netherway/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/mcping"
 )
 
 // tunnel 子命令供 Minecraft mod 作为子进程调用。

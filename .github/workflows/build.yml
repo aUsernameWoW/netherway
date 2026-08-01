@@ -146,6 +146,6 @@ jobs:
         run: ./gradlew build -Dorg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64 --console=plain
       - uses: actions/upload-artifact@v4
         with:
-          name: xtcpinmc-forge-1.7.10
+          name: netherway-forge-1.7.10
           path: mod/platform/forge-1.7.10/build/libs/*.jar
           if-no-files-found: error

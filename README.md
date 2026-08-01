@@ -1,111 +1,39 @@
-# xtcpinmc — GTNH 服务器 P2P 直连
+# Netherway
 
-让玩家绕过中转节点，通过 frp xtcp 打洞直连 GTNH 服务器。两种接入方式：独立 agent（打开游戏就能在"局域网游戏"里看到服务器，不用手动填地址），以及 Minecraft mod（进服后后台打洞，成功了自动切换连接，见 `mod/`）。隧道方案经 `internal/backend` 抽象，frp xtcp 是当前实现。
+让 Minecraft 玩家绕过中转节点，通过 [frp](https://github.com/fatedier/frp) 的
+xtcp 打洞与服务器 P2P 直连。
 
-## 实测结论（2026-07-29，真机端到端验证）
+为 GTNH（GregTech: New Horizons，Forge 1.7.10，跑在现代 JVM 上）而做，但架构
+上不与它绑定：隧道方案经 `internal/backend` 接口抽象（frp xtcp 是当前实现），
+mod 的核心层不含任何 Minecraft 类型，换游戏版本或加载器只需重写一层薄适配
+（见 [mod/README.md](mod/README.md)）。
 
-方案可行，且收益很大。测试用一台家用 Mac 当客户端，真实打洞连上了生产中的 GTNH 服务器。
+实测收益：P2P 直连的 Server List Ping 往返 **31–49 ms**，同一客户端经中转
+节点为 156–214 ms。打洞成功后游戏流量不经过任何第三方机器——这一点做过网络层
+验证（经隧道传 20 MB，frps 侧只看到心跳包），完整的端到端验证记录与踩坑见
+[docs/field-notes.md](docs/field-notes.md)。
 
-**打洞成功。** 两端 NAT 类型都是 `EasyNAT` / `BehaviorNoChange`，frp 0.70 用 QUIC 建隧道，从发起到成功约 1 秒。
+命令行工具与内部标识（自定义频道、缓存目录、环境变量等）沿用项目旧名
+`xtcpinmc`。
 
-**延迟对比**（Minecraft Server List Ping 完整往返，各测 4 次取中位数）：
+## 两种接入方式
 
-| 线路 | SLP 往返 |
-|---|---|
-| **P2P 直连 (xtcp)** | **49 ms** |
-| 宿迁01 中转 | 156 ms |
-| 宿迁00 中转 | 161 ms |
-| 枣庄 中转 | 175 ms |
-| 台州 中转 | 214 ms |
+**独立 agent**：玩家跑一个单文件可执行程序，打开游戏就能在「多人游戏 →
+局域网游戏」里看到服务器，不用手动填地址。适合不装 mod 的玩家，可挂进
+启动器实现全自动（见下文「启动器集成」）。
 
-比最快的中转还快 3 倍以上。对 GTNH 这种交互密集的整合包，体感差异会非常明显。
+**Minecraft mod**（`mod/`）：玩家先经既有中转正常进服，服务端在登录后下发
+P2P 凭证，客户端后台打洞，成功了自动切换连接，失败就安静地留在原线路上。
+从第二次启动起，缓存的凭证会在游戏加载期间提前打洞，并在服务器列表里维护
+一个直连条目——配合预拉取凭证（见下），首次进服就能直连。
 
-**通路验证**：握手拿到 `{'name': '1.7.10', 'protocol': 5}`，MOTD 与在线人数正确返回。
+## 工作原理
 
-### 数据确实没走 frps（网络层验证）
-
-"日志说打洞成功"不等于数据真的走了那条路，所以单独验证了一次：通过隧道拉一个 20 MB 文件，同时观察 frps。
-
-| 观测项 | 数值 |
-|---|---|
-| 隧道实际传输 | 20,971,520 字节，耗时 34 s |
-| frps 网卡 RX 增量 | 约 1.46 MB |
-| frps 网卡 TX 增量 | 约 1.62 MB |
-| 传输期间经 frps:7000 的包 | 24 个（12 上行 / 12 下行，即心跳） |
-
-若数据走中转，frps 必须先收 20 MB 再发 20 MB，两个方向都得有 20 MB 量级的增量。实际那 1.5 MB 左右是宿主机上其他服务在这 34 秒里的正常背景流量。
-
-架构上还有一条更根本的理由：**xtcp 打洞失败时不会退化成经 frps 中转**，那是 stcp 才有的行为。验证用的配置里没有 `fallbackTo`、服务端也没注册 stcp，所以不存在"慢但能用"的中间态——打不通就是连接失败。
-
-**吞吐实测 616 KB/s（约 4.9 Mbps）**，这是家宽上行的天花板而非隧道开销。GTNH 联机带宽需求很低，完全够用；但让玩家经隧道拉存档或资源包会卡在这里。
-
-### agent 端到端验证
-
-用注入过密钥的二进制，两端都**零参数**启动：
-
-| 验证项 | 结果 |
-|---|---|
-| `xtcpinmc serve`（宿主机，零参数） | 注册 `gtnh-p2p` + `gtnh-relay` 成功 |
-| `xtcpinmc join`（客户端，零参数） | 打洞成功，对端为玩家侧公网地址 |
-| 隧道过 Minecraft 协议 | `1.7.10 / protocol 5`，2 人在线，43–84 ms |
-| 组播广播 | 4 张网卡全部发出，解析为「涟漪GT:New Horizons」→ `192.168.0.108:25565` |
-| `start` / `stop` | 后台启停正常，重复 start 被拦，stop 后端口释放 |
-
-注意广播里的地址是 `192.168.0.108`（网卡地址）而非回环地址，与坑 3 一致——这条真实路径也单独验证过能连通。
-
-## 三个实测踩到的坑
-
-这几个都是会直接导致"连不上"或"列表里看不到"的硬问题，实现时必须处理。
-
-### 1. 默认 STUN 服务器不可用
-
-frp 默认的 `stun.easyvoip.com:3478` 在服务器所在网络**实测超时**。测过的几个：
-
-| STUN | 结果 |
-|---|---|
-| `stun.miwifi.com:3478` | ✅ 可用，返回 2 个地址 |
-| `stun.easyvoip.com:3478`（默认） | ❌ 超时 |
-| `stun.qq.com:3478` | ❌ 超时 |
-| `turn.cloudflare.com:3478` | ❌ 超时 |
-| `stun.chat.bilibili.com:3478` | ❌ 只返回 1 个地址，frp 要求至少 2 个 |
-
-**两端都必须显式配 `natHoleStunServer`。** 只配一端，另一端会静默失败。
-（此坑只影响手工 frpc 配置——agent 会自动注入选好的 STUN。）
-
-frp 的 `natHoleStunServer` 只接受单个值，不支持备选列表，押在一台上就是单点。
-agent 已在 `internal/stunpick` 里解决：默认自带多个候选，启动前并行探测、
-按「至少返回 2 个映射地址」筛选，注入一台当场验证过的。残余风险是候选全部为
-第三方公共服务（且实测 `stun.miwifi.com` 会间歇性超时），自建 STUN 加入候选池
-是可选的加固手段（坑见下节）。
-
-### 自建 coturn 的硬约束：需要两个公网 IP
-
-frp 探测 NAT 的 mapping behavior，需要 STUN 从**两个不同地址**响应（RFC5780 的 OTHER-ADDRESS）。上表印证了这点：bilibili 那个只返回 1 个地址，frp 直接报 `need 2, got 1` 拒绝工作。
-
-标准 RFC5780 要求两个不同的**公网 IP**，而 frps 宿主机往往只有单 IP。单 IP 配双端口（3478/3479）coturn 能跑起来、frp 大概率也不报错，但探测结果会**偏乐观**——只有目标端口变化、目标 IP 没变，Address-and-Port-Dependent 的 NAT 会被误判成 EasyNAT。结果是 frp 以为能打洞、实际打不通，比直接报错更难排查。
-
-要做就做对：加一个阿里云 EIP（很便宜），coturn 绑两个 IP。
-
-另外一点：headscale 之类自带的 DERP STUN 实测 frp 用不了（响应不满足双地址要求），不能复用。
-
-### 2. 组播必须显式指定出接口
-
-局域网广播注入依赖组播 `224.0.2.60:4445`。在测试机上，不设 `IP_MULTICAST_IF` 时**一个包都收不到**——因为默认路由走的是 VPN 虚拟网卡（utun4），组播包发去了错误的接口。显式绑定到真实网卡（en0）后立刻正常。
-
-玩家电脑上装 VPN、VMware/VirtualBox、Hyper-V、WSL 的情况非常普遍，这个坑几乎必然遇到。实现时要枚举网卡，挑真实物理网卡发包，或者干脆在所有候选网卡上都发一遍。
-
-### 3. bindAddr 不能只填 127.0.0.1
-
-Minecraft 取的是**广播包的源 IP**加上 `[AD]` 里的端口。实测源 IP 是网卡地址（`192.168.0.108`），不是 `127.0.0.1`。所以一旦要做广播注入，visitor 的 `bindAddr` 必须是 `0.0.0.0`，否则 MC 会去连一个没人监听的地址。
-
-TTL 的选择：实测 `TTL=0` 配合 `IP_MULTICAST_LOOP=1` 能正常回环到本机，且包不出网。默认用 TTL=0，这样不会污染玩家的真实局域网（否则同网段其他人会看到一个连不上的"世界"）。
-
-## 架构
-
-因为是专用服务器而非"对局域网开放"的单人世界，端口固定在 25565，服务端不需要动态发现端口，比一般的联机工具简单一截。
+服务器端口固定（专用服务器，非「对局域网开放」的单人世界），服务端不需要
+动态发现端口，比一般的联机工具简单一截：
 
 ```
-GTNH 宿主机                      frps (203.0.113.10:7000)           玩家机器
+MC 服务器宿主机                  frps (203.0.113.10:7000)           玩家机器
 127.0.0.1:25565                  仅做信令协调，不转发流量           frpc visitor
   └─ frpc (xtcp proxy) ──────────────── 控制连接 ────────────────── 0.0.0.0:25565
         │                                                              │
@@ -115,32 +43,28 @@ GTNH 宿主机                      frps (203.0.113.10:7000)           玩家机
                                               → MC「局域网游戏」自动出现
 ```
 
-打洞失败时 `fallbackTo` 走 stcp 经 frps 中转，同时后台继续打洞，成功后下一条连接自动升级。
+frpc 以**库**的形式内嵌进 agent 而不是调用二进制：单文件分发、零配置文件、
+Windows 上不弹黑窗。
 
-## 代码结构
+**就绪判断靠主动探测。** frp 没有提供查询打洞状态的 API，所以 agent 用
+Minecraft 自己的握手（Server List Ping，`internal/mcping`）判断隧道是否真的
+可用——顺带确认了服务端进程在响应，而不只是端口被监听着。
 
-```
-cmd/xtcpinmc/       CLI 入口；daemon_{unix,windows}.go 处理平台差异
-internal/backend/   隧道方案的统一接口与注册表；frp xtcp 是首个实现
-internal/tunnel/    以库的方式嵌入 frpc，无独立进程、无 toml
-internal/authplugin/ frps 的 HTTP server plugin：每玩家令牌校验（authplugin 子命令）
-internal/authbridge/ 预认证服务：hasJoined 撮合验证 accessToken，提前签发令牌与凭证（authbridge 子命令）
-internal/credfile/   凭证缓存文件编解码，与 Java 侧 CredentialCache 兼容（prefetch 子命令用）
-internal/mcping/    Minecraft Server List Ping，用游戏握手判定隧道就绪
-internal/stunpick/  启动前并行探测候选，挑一个当场验证过的 STUN
-internal/lanbeacon/ 组播广播，含多网卡枚举
-internal/config/    房间标识与构建期注入的默认值
-mod/                Minecraft mod 侧：Java core 驱动 agent 的 tunnel 子命令，
-                    打洞成功后游戏内自动切换连接（详见 mod/README.md）
-```
+**打洞失败的行为按场景区分。** 独立 agent（`join`）带 stcp 中转兜底，打不通
+也能玩；mod 用的 `tunnel` 子命令**刻意无兜底**——玩家此刻本来就连着中转，
+建链失败就该留在原连接上，而且有兜底的话就绪探测会永远成功，反而分不清到底
+打没打通。
 
-选择把 frpc 当**库**嵌入而不是调用二进制，是为了单文件分发、零配置文件，以及 Windows 上不弹黑窗。
+**新增一种隧道方案**只需一个 Go 实现包加一行注册（`cmd/xtcpinmc/backends.go`）；
+凭证是「backend 标识 + 参数表」，核心层不解释参数，原样转交 agent。
 
 ## 构建
 
-密钥通过 `-ldflags` 在构建时注入，因此不进源码仓库，而玩家拿到的二进制又是零配置可用的。真实部署参数（frps 地址、皮肤站等）放 `build.env`（已 gitignore，模板见 `build.env.example`），环境变量可临时覆盖：
+密钥经 `-ldflags` 在构建时注入，不进源码仓库，而产出的二进制零配置可用。
+部署参数（frps 地址、房间名等）放 gitignore 的 `build.env`：
 
 ```bash
+cp build.env.example build.env   # 填入你的 frps 地址等部署参数
 TOKEN=<frps的auth.token> SECRET=<房间密钥> ./build.sh
 ```
 
@@ -149,11 +73,12 @@ TOKEN=<frps的auth.token> SECRET=<房间密钥> ./build.sh
 **发布纪律**：`build.sh` 的产物（`bin/`）内嵌 frps 令牌与房间密钥，只能经
 私有渠道分发给本服玩家，**绝不能挂公开 Release 或 CI artifact**。公开渠道
 只发 mod jar——它打包的 agent 由 `mod/build-natives.sh` 构建，刻意不注入
-任何密钥（CI 的三条流水线也因此全程不接触 TOKEN/SECRET）。
+任何密钥。
 
 ## 使用
 
-服务器宿主机：
+服务器宿主机（`serve` 是普通前台进程，交给 systemd / MCSManager 等任意进程
+管理器托管即可）：
 
 ```bash
 xtcpinmc serve
@@ -165,26 +90,35 @@ xtcpinmc serve
 xtcpinmc join
 ```
 
-两者都不需要参数——构建时注入过了。需要临时覆盖时用 `-server` `-room` `-port` 等，`xtcpinmc help` 有完整列表。
+两者都不需要参数——构建时注入过了。需要临时覆盖时用 `-server` `-room`
+`-port` 等，`xtcpinmc help` 有完整列表。
 
-玩家侧启动后打开游戏，服务器会出现在「多人游戏 → 局域网游戏」里。若 25565 被本机占用，会自动改用空闲端口并把新端口写进广播包，玩家无感知。
+玩家侧启动后打开游戏，服务器会出现在「多人游戏 → 局域网游戏」里。若 25565
+被本机占用，会自动改用空闲端口并把新端口写进广播包，玩家无感知。
 
-### 接入 PrismLauncher / MultiMC
+### 启动器集成（PrismLauncher / MultiMC）
 
-不用（或不想装）mod 的玩家可以走启动器：GTNH 玩家基本都用 Prism/MultiMC，它支持实例级自定义命令。在实例设置 → Custom Commands 里填：
+启动器支持实例级自定义命令，在实例设置 → Custom Commands 里填：
 
 - **Pre-launch command**: `path/to/xtcpinmc start`
 - **Post-exit command**: `path/to/xtcpinmc stop`
 
-`start` 派生后台进程后立即返回，不会卡住游戏启动（Pre-launch 是阻塞等待的，所以不能直接写 `join`）。把这两行预置进你分发的整合包实例 `instance.cfg`，玩家启动游戏自动连、退出自动断，全程无操作。
+`start` 派生后台进程后立即返回，不会卡住游戏启动（Pre-launch 是阻塞等待的，
+所以不能直接写 `join`）。把这两行预置进分发的整合包实例 `instance.cfg`，
+玩家启动游戏自动连、退出自动断，全程无操作。
 
-重复 `start` 会被 PID 文件拦下，不会起两个实例；PID 文件也会校验进程是否真的存活，崩溃或重启留下的陈旧记录不会阻塞下次启动。
+重复 `start` 会被 PID 文件拦下，不会起两个实例；PID 文件也会校验进程是否
+真的存活，崩溃或重启留下的陈旧记录不会阻塞下次启动。
 
 ### 预拉取凭证（首次进服即直连）
 
-mod 方式下，玩家首次进服要先走中转、登录后拿凭证、后台打洞、成功后重连切换——玩家会看到"进去几秒后自动退出重连"。预拉取凭证把这个过程提前到启动器阶段：玩家点连接服务器前，直连隧道已就绪，第一次进服就是直连。
+mod 方式下，玩家首次进服要先走中转、登录后拿凭证、打洞、重连切换——会看到
+「进去几秒后自动退出重连」。预拉取把这个过程提前到启动器阶段：玩家点连接
+服务器前，直连隧道已就绪。
 
-**安全模型**：复现 MC 原生进服验证的 hasJoined 撮合。accessToken 全程只在「玩家本机 prefetch 程序 ↔ 皮肤站」之间，authbridge 碰不到 token——与 MC 同款安全模型。authbridge 无状态，serverId 是随机串，状态全在皮肤站。
+安全模型复现 MC 原生进服验证的 hasJoined 撮合：accessToken 全程只在「玩家
+本机 prefetch 程序 ↔ 皮肤站」之间，authbridge 碰不到 token。authbridge
+无状态，serverId 是随机串，状态全在皮肤站。
 
 ```
 ① prefetch → authbridge /prefetch     领取随机 serverId（不带 token）
@@ -192,10 +126,10 @@ mod 方式下，玩家首次进服要先走中转、登录后拿凭证、后台�
 ③ prefetch → authbridge /confirm      authbridge 调皮肤站 /hasJoined 查证
    ↳ 通过 → 签发玩家令牌 + 组装凭证 → base64 返回
 ④ prefetch 把凭证写进 .minecraft/xtcpinmc/credentials/
-   ↳ 游戏启动时 WarmupController 读缓存 → 预热打洞 → 首次进服即直连
+   ↳ 游戏启动时 mod 读缓存 → 预热打洞 → 首次进服即直连
 ```
 
-**服务端部署**（与 authplugin 并列，手动跑一个进程）：
+**服务端**（与 authplugin 并列，独立进程）：
 
 ```bash
 xtcpinmc authbridge \
@@ -206,27 +140,21 @@ xtcpinmc authbridge \
   -token <frps全局token> -stun <STUN> -server-port <端口>
 ```
 
-房间参数必须与 `serve` 同源，否则打洞时密钥不匹配。authbridge 需对玩家机器可达，
-**必须经 TLS 反代暴露**：`/confirm` 的响应里带着完整凭证（房间密钥 + frps 全局
-token），明文 HTTP 等于把它们交给路径上的任何人；serverId 被截获还可能让凭证被
-抢领。令牌有效期用 `-token-ttl-days` 调（默认 30 天，与服务端 mod 的
-`tokenTtlDays` 同语义）。
+部署要点：
 
-authbridge 自带面向公网的加固：HTTP 超时、4 KiB 请求体上限、username/uuid/
-serverId 形状校验（顺带掐死日志注入）、每来源 IP 限流（默认 30 次/分钟，
-`-rate-per-ip` 可调）与 hasJoined 外呼并发上限。部署在反代之后时加
-`-trust-proxy-header`，限流与日志改用 `X-Forwarded-For` 的首跳——否则所有
-请求在它眼里都来自反代自己，限流会把全体玩家算作同一个来源；反之**直接
-暴露时绝不能开**，伪造的头能绕过限流。
+- 房间参数必须与 `serve` 同源，否则打洞时密钥不匹配。
+- **必须经 TLS 反代暴露**：`/confirm` 的响应里带着完整凭证（房间密钥 +
+  frps 全局 token），明文 HTTP 等于把它们交给路径上的任何人。
+- 反代之后要加 `-trust-proxy-header`，限流与日志改用 `X-Forwarded-For`
+  的首跳——否则所有请求都被算作来自反代自己；反之**直接暴露时绝不能开**，
+  伪造的头能绕过限流。
+- 自带面向公网的加固：HTTP 超时、4 KiB 请求体上限、参数形状校验、每来源
+  IP 限流（`-rate-per-ip`）与 hasJoined 外呼并发上限。
+- `secret=auto`（房间密钥随服务端重启轮换）场景下，服务端重启后要**随之
+  重启 authbridge**，否则它下发的凭证一直打不通——玩家会退回中转进服后
+  自愈，不致不可用，但预拉取就白做了。
 
-`secret=auto` 场景注意：authbridge 是独立进程，密钥取自启动旗标。服务端重启换
-密钥后要**随之重启 authbridge**，否则它下发的凭证一直打不通——玩家会退回中转
-进服后自愈，不致不可用，但预拉取就白做了。
-
-皮肤站与 authbridge 地址可经 `build.sh` 的 `AUTHSERVER`/`AUTHBRIDGE` 注入为
-内置默认值，玩家侧命令即可省去 `-authserver`/`-bridge`。
-
-**玩家端**（启动器 Pre-launch 调用，PrismLauncher 示例）：
+**玩家端**（启动器 Pre-launch 调用，PrismLauncher 变量示例）：
 
 ```
 xtcpinmc prefetch \
@@ -238,33 +166,23 @@ xtcpinmc prefetch \
   -cache-dir .minecraft/xtcpinmc/credentials
 ```
 
-accessToken 也支持环境变量 `XTCPINMC_ACCESS_TOKEN` 传入（避免出现在进程列表里）。不同启动器的变量名需各自对照。
+accessToken 也可经环境变量 `XTCPINMC_ACCESS_TOKEN` 传入（避免出现在进程
+列表里）。`-bridge` 与 `-authserver` 强制 https（回环地址豁免，本机调试与
+SSH 端口转发不受影响；确要明文需显式 `-insecure-http`）。两个地址可经
+`build.sh` 的 `AUTHSERVER`/`AUTHBRIDGE` 注入为内置默认值，玩家侧命令即可
+省去这两个旗标。
 
-`-bridge` 与 `-authserver` 强制 https：这两条链路上分别走着凭证与 accessToken。
-回环地址豁免（本机调试、SSH 端口转发都还好用）；确要明文 http 需显式加
-`-insecure-http`。
+prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家走原有中转进服
+流程，体验退化为原状而非不可用。
 
-prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家走原有中转进服流程，进服后 mod 照常下发凭证、后台打洞，体验退化为原状而非不可用。
+## 安全
 
-### 以进程管理器托管
+**凭证不随客户端分发。** mod 路径下，凭证由服务端在玩家通过既有正版验证 /
+白名单登录后才下发——能拿到密钥的必然是有权进服的人，因此不需要另建一套
+鉴权系统。凭证换来的隧道也只通向 MC 端口。
 
-`serve` 是一个普通前台进程，交给 systemd / MCSManager 等任意进程管理器即可：工作目录放二进制，启动命令 `./xtcpinmc serve`。
-
-## 待办
-
-- [x] Go client agent：内嵌 frpc + 组播广播，单文件可执行
-- [x] 多网卡枚举（见坑 2）
-- [x] 后台模式与启动器集成
-- [x] 预拉取凭证（authbridge + prefetch）：首次进服即直连，免重连
-- [ ] Windows 首次运行的防火墙弹窗——需要签名安装器预写规则，否则"无感"会破功
-- [ ] 真机验证 1.7.10 客户端能看到并连上局域网条目（协议层已验证，缺真实客户端）
-- [ ] frps 加 `allowPorts` 白名单收口（见下）
-- [ ] 可选：自建 RFC5780 STUN 加入 `stunpick` 候选池（当前候选全是第三方公共服务，见上）
-
-## 关于 token 分发的风险
-
-`auth.token` 会随凭证下发给所有玩家。拿到 token 的人可以在 frps 上开
-**任意 tcp/udp 公网端口映射**，白嫖服务器的带宽和 IP。按部署成本从低到高：
+**frps 全局 token 的泄露面需要收口。** token 会随凭证下发给所有玩家，拿到
+它的人可以在 frps 上开任意 tcp/udp 公网端口映射。按部署成本从低到高：
 
 1. **`allowPorts` 白名单**（零代码）：在 frps.toml 里只放行实际在用的端口。
    xtcp / stcp 不占 `remotePort`，完全不受影响：
@@ -275,15 +193,42 @@ prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家�
    ]
    ```
 
-   改完需要重启 frps，会短暂断开现有映射，建议挑无人时段。
+2. **部署 authplugin**（frps 的 httpPlugins，`xtcpinmc authplugin` 子命令，
+   配置见 [mod/platform/forge-1.7.10/README.md](mod/platform/forge-1.7.10/README.md)
+   部署章节）：在全局 token 之上叠加每玩家令牌（绑定 UUID、带有效期、HMAC
+   签名，服务端登录时签发）。迁移完成后关掉 `-allow-legacy`，光有全局 token
+   连登录都过不了，注册代理只认 serve 的静态令牌，泄露的滥用面收敛到零。
 
-2. **部署 authplugin**（frps 的 httpPlugins，配置见
-   `mod/platform/forge-1.7.10/README.md` 部署章节）并在迁移完成后关掉
-   `-allow-legacy`：光有全局 token 连登录都过不了，注册代理只认 serve
-   的静态令牌，全局 token 泄露的滥用面收敛到零。
+## 已知限制
+
+- 打洞成功率取决于两端 NAT 类型，对称 NAT 大概率失败。mod 场景失败留在
+  中转不受影响；独立 agent 走 stcp 中转兜底。
+- Windows 首次运行有防火墙弹窗——预写规则需要签名安装器，暂未做。
+- 吞吐受玩家家宽上行限制（实测约 616 KB/s 即为上行天花板）。联机绰绰有余，
+  但不适合让玩家经隧道拉存档或资源包。
+
+## 代码结构
+
+```
+cmd/xtcpinmc/        CLI 入口；daemon_{unix,windows}.go 处理平台差异
+internal/backend/    隧道方案的统一接口与注册表；frp xtcp 是首个实现
+internal/tunnel/     以库的方式嵌入 frpc，无独立进程、无 toml
+internal/authplugin/ frps 的 HTTP server plugin：每玩家令牌校验（authplugin 子命令）
+internal/authbridge/ 预认证服务：hasJoined 撮合验证，提前签发令牌与凭证（authbridge 子命令）
+internal/credfile/   凭证缓存文件编解码，与 Java 侧 CredentialCache 兼容（prefetch 子命令用）
+internal/mcping/     Minecraft Server List Ping，用游戏握手判定隧道就绪
+internal/stunpick/   启动前并行探测候选，挑一个当场验证过的 STUN
+internal/lanbeacon/  组播广播，含多网卡枚举
+internal/config/     房间标识与构建期注入的默认值
+mod/                 Minecraft mod 侧：Java core 驱动 agent 的 tunnel 子命令，
+                     打洞成功后游戏内自动切换连接（详见 mod/README.md）
+```
 
 ## 参考
 
+- [实测记录：端到端验证与踩坑](docs/field-notes.md) — 本 README 所有实测
+  数字的出处，含 STUN 选型、组播出接口、bindAddr 三个必踩的坑
 - [XTCP | frp 官方文档](https://gofrp.org/zh-cn/docs/features/xtcp/)
 - [frp client/service.go](https://github.com/fatedier/frp/blob/dev/client/service.go) — 嵌入 frpc 的 API
 - [LAN Server Discovery](https://github.com/tomsik68/mclauncher-api/wiki/LAN-Server-Discovery) — 组播包格式
+- [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)

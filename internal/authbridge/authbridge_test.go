@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ripplecraft/xtcpinmc/internal/authplugin"
+	"github.com/aUsernameWoW/netherway/internal/authplugin"
 )
 
 const testKey = "test-signing-key"

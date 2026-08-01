@@ -9,6 +9,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 实测收益：P2P 直连 SLP 往返 **31–49 ms**，对比中转节点 156–214 ms。
 
+项目对外名为 **Netherway**；`xtcpinmc` 保留为内部技术标识——二进制名、
+Go/Java 包名、MC 自定义频道、缓存目录、cfg 文件名、`XTCPINMC_*` 环境变量、
+modid 都不随品牌改名，不要「顺手」统一成新名。
+
 仓库包含两个独立但配套的部分：
 
 - **Go agent**（仓库根目录）— 内嵌 frpc 作为库，负责打洞与隧道

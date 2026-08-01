@@ -203,9 +203,9 @@ public final class SelfTest {
 
         // 中文和特殊字符要能安全通过（writeUTF 是 modified UTF-8）
         Credentials cn = Credentials.frpXtcp("a.example.com", 1, "令牌", "s:1",
-                "涟漪GT", "密钥#1", 0);
+                "青金石小镇", "密钥#1", 0);
         Credentials cnBack = Credentials.decode(cn.encode());
-        check("往返中文房间名", cnBack.room().equals("涟漪GT"));
+        check("往返中文房间名", cnBack.room().equals("青金石小镇"));
         check("往返中文密钥", "密钥#1".equals(cnBack.param("secret")));
     }
 

@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/ripplecraft/xtcpinmc/internal/authplugin"
+	"github.com/aUsernameWoW/netherway/internal/authplugin"
 )
 
 // authplugin 子命令在 frps 宿主机运行，作为 frps 的 HTTP server plugin

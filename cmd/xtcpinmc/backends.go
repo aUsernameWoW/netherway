@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/ripplecraft/xtcpinmc/internal/backend"
-	"github.com/ripplecraft/xtcpinmc/internal/backend/frpxtcp"
+	"github.com/aUsernameWoW/netherway/internal/backend"
+	"github.com/aUsernameWoW/netherway/internal/backend/frpxtcp"
 )
 
 // 这里是 backend 的唯一注册点：新增一种隧道方案 = 一个实现包 + 这里一行。

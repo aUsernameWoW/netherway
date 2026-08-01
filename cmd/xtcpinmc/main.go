@@ -21,10 +21,10 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/ripplecraft/xtcpinmc/internal/config"
-	"github.com/ripplecraft/xtcpinmc/internal/lanbeacon"
-	"github.com/ripplecraft/xtcpinmc/internal/stunpick"
-	"github.com/ripplecraft/xtcpinmc/internal/tunnel"
+	"github.com/aUsernameWoW/netherway/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/lanbeacon"
+	"github.com/aUsernameWoW/netherway/internal/stunpick"
+	"github.com/aUsernameWoW/netherway/internal/tunnel"
 )
 
 func main() {

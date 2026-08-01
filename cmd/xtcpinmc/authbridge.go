@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ripplecraft/xtcpinmc/internal/authbridge"
-	"github.com/ripplecraft/xtcpinmc/internal/authplugin"
-	"github.com/ripplecraft/xtcpinmc/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/authbridge"
+	"github.com/aUsernameWoW/netherway/internal/authplugin"
+	"github.com/aUsernameWoW/netherway/internal/config"
 )
 
 // authbridge 子命令在服务端宿主机运行，是预认证服务：让玩家在进服前

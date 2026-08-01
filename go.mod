@@ -1,4 +1,4 @@
-module github.com/ripplecraft/xtcpinmc
+module github.com/aUsernameWoW/netherway
 
 go 1.25.1
 

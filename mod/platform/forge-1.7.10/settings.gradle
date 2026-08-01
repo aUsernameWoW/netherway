@@ -13,4 +13,4 @@ pluginManagement {
     }
 }
 
-rootProject.name = 'xtcpinmc-forge-1.7.10'
+rootProject.name = 'netherway-forge-1.7.10'

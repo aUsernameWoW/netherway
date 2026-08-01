@@ -24,7 +24,7 @@ if [[ -f "$(dirname "$0")/build.env" ]]; then
   done < "$(dirname "$0")/build.env"
 fi
 
-PKG=github.com/ripplecraft/xtcpinmc/internal/config
+PKG=github.com/aUsernameWoW/netherway/internal/config
 
 : "${SERVER_ADDR:?请设置 SERVER_ADDR（frps 公网地址），经环境变量或 build.env}"
 SERVER_PORT="${SERVER_PORT:-7000}"

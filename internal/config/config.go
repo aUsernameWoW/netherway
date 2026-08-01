@@ -68,7 +68,7 @@ func (t Timings) Normalize() Timings {
 	return t
 }
 
-// 这些值通过 -ldflags "-X github.com/ripplecraft/xtcpinmc/internal/config.XXX=..."
+// 这些值通过 -ldflags "-X github.com/aUsernameWoW/netherway/internal/config.XXX=..."
 // 在构建时注入，目的是让玩家拿到的二进制零配置可用，同时密钥不进源码仓库。
 // 具体命令见 build.sh。
 var (

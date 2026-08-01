@@ -27,8 +27,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/ripplecraft/xtcpinmc/internal/authplugin"
-	"github.com/ripplecraft/xtcpinmc/internal/credfile"
+	"github.com/aUsernameWoW/netherway/internal/authplugin"
+	"github.com/aUsernameWoW/netherway/internal/credfile"
 )
 
 // 令牌有效期默认值：与服务端 mod 的默认 tokenTtlDays=30 一致。

@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ripplecraft/xtcpinmc/internal/backend"
-	"github.com/ripplecraft/xtcpinmc/internal/config"
-	"github.com/ripplecraft/xtcpinmc/internal/stunpick"
-	"github.com/ripplecraft/xtcpinmc/internal/tunnel"
+	"github.com/aUsernameWoW/netherway/internal/backend"
+	"github.com/aUsernameWoW/netherway/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/stunpick"
+	"github.com/aUsernameWoW/netherway/internal/tunnel"
 )
 
 // Name 是本 backend 在凭证与命令行中的标识。

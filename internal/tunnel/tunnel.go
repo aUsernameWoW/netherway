@@ -16,7 +16,7 @@ import (
 	golog "github.com/fatedier/golib/log"
 	"github.com/samber/lo"
 
-	"github.com/ripplecraft/xtcpinmc/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/config"
 )
 
 // Endpoint 描述 frps 的位置和鉴权，两端相同。

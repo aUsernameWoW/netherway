@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ripplecraft/xtcpinmc/internal/config"
-	"github.com/ripplecraft/xtcpinmc/internal/credfile"
+	"github.com/aUsernameWoW/netherway/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/credfile"
 )
 
 // prefetch 子命令在玩家机器运行（通常由启动器 Pre-launch 调用）：

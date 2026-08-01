@@ -15,7 +15,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/ripplecraft/xtcpinmc/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/config"
 )
 
 // Options 是调用方传给 backend 的通用运行参数，与具体隧道方案无关。
