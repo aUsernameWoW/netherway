@@ -48,11 +48,11 @@ jobs:
         run: |
           ONLY=linux/amd64 \
           SERVER_ADDR=203.0.113.99 SERVER_PORT=7391 ROOM=ci-smoke-room \
-          MOTD=ci-smoke-motd TOKEN=ci-dummy-token SECRET=ci-dummy-secret \
+          TOKEN=ci-dummy-token SECRET=ci-dummy-secret \
           AUTHSERVER=https://ci-authserver.example.com \
           AUTHBRIDGE=https://ci-authbridge.example.com \
             ./build.sh
-          for v in 203.0.113.99 7391 ci-smoke-room ci-smoke-motd \
+          for v in 203.0.113.99 7391 ci-smoke-room \
                    ci-dummy-token ci-dummy-secret \
                    ci-authserver.example.com ci-authbridge.example.com; do
             grep -aq "$v" bin/netherway-linux-amd64 || {

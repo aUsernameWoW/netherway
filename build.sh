@@ -32,7 +32,6 @@ ROOM="${ROOM:-gtnh}"
 # 逗号分隔的候选列表，与 internal/config 的默认一致：单台 STUN 会间歇性
 # 超时，agent 启动前会并行探测并选用当场验证过的一台。
 STUN="${STUN:-stun.miwifi.com:3478,stun.easyvoip.com:3478,stun.qq.com:3478}"
-MOTD="${MOTD:-Minecraft Server (P2P)}"
 # 预拉取凭证（prefetch/authbridge）用；留空表示不内置，玩家侧需 -authserver/-bridge
 AUTHSERVER="${AUTHSERVER:-}"
 AUTHBRIDGE="${AUTHBRIDGE:-}"
@@ -40,7 +39,7 @@ AUTHBRIDGE="${AUTHBRIDGE:-}"
 : "${TOKEN:?请设置 TOKEN（frps 的 auth.token）}"
 : "${SECRET:?请设置 SECRET（房间密钥，两端必须一致）}"
 
-# 每个值都用单引号包起来：MOTD 之类的值含空格，
+# 每个值都用单引号包起来：值可能含空格，
 # 不加引号会被 go 的 ldflags 解析器按空格拆成多个参数。
 LDFLAGS="-s -w"
 LDFLAGS+=" -X '${PKG}.DefaultServerAddr=${SERVER_ADDR}'"
@@ -49,7 +48,6 @@ LDFLAGS+=" -X '${PKG}.DefaultToken=${TOKEN}'"
 LDFLAGS+=" -X '${PKG}.DefaultSTUNServer=${STUN}'"
 LDFLAGS+=" -X '${PKG}.DefaultRoom=${ROOM}'"
 LDFLAGS+=" -X '${PKG}.DefaultSecretKey=${SECRET}'"
-LDFLAGS+=" -X '${PKG}.DefaultMOTD=${MOTD}'"
 LDFLAGS+=" -X '${PKG}.DefaultAuthServer=${AUTHSERVER}'"
 LDFLAGS+=" -X '${PKG}.DefaultAuthBridge=${AUTHBRIDGE}'"
 

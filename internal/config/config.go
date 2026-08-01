@@ -19,10 +19,6 @@ type Timings struct {
 	ProbeInterval time.Duration
 	// ProbeTimeout 单次就绪探测的超时。
 	ProbeTimeout time.Duration
-	// FallbackTimeout 仅用于独立运行模式：打洞未成先走中转的等待时间。
-	FallbackTimeout time.Duration
-	// BeaconInterval 局域网广播间隔，原版 Minecraft 是 1.5s。
-	BeaconInterval time.Duration
 	// RetryMinInterval 打洞失败后的最小重试间隔。
 	RetryMinInterval time.Duration
 	// MaxRetriesAnHour 每小时打洞重试次数上限，防止频繁重试打爆 STUN。
@@ -34,8 +30,6 @@ func DefaultTimings() Timings {
 		PunchTimeout:     15 * time.Second,
 		ProbeInterval:    250 * time.Millisecond,
 		ProbeTimeout:     2 * time.Second,
-		FallbackTimeout:  500 * time.Millisecond,
-		BeaconInterval:   1500 * time.Millisecond,
 		RetryMinInterval: 90 * time.Second,
 		MaxRetriesAnHour: 8,
 	}
@@ -52,12 +46,6 @@ func (t Timings) Normalize() Timings {
 	}
 	if t.ProbeTimeout <= 0 {
 		t.ProbeTimeout = d.ProbeTimeout
-	}
-	if t.FallbackTimeout <= 0 {
-		t.FallbackTimeout = d.FallbackTimeout
-	}
-	if t.BeaconInterval <= 0 {
-		t.BeaconInterval = d.BeaconInterval
 	}
 	if t.RetryMinInterval <= 0 {
 		t.RetryMinInterval = d.RetryMinInterval
@@ -80,7 +68,6 @@ var (
 	DefaultSTUNServer = "stun.miwifi.com:3478,stun.easyvoip.com:3478,stun.qq.com:3478"
 	DefaultRoom       = "gtnh"
 	DefaultSecretKey  = ""
-	DefaultMOTD       = "Minecraft Server (P2P)"
 	// 皮肤站 API root 与 authbridge 地址：预拉取凭证（prefetch/authbridge）用。
 	// 注入后玩家侧 prefetch 无需 -authserver/-bridge。
 	DefaultAuthServer = ""
@@ -103,10 +90,8 @@ type Room struct {
 	SecretKey string
 }
 
-func (r Room) ProxyName() string        { return r.Name + "-p2p" }
-func (r Room) RelayProxyName() string   { return r.Name + "-relay" }
-func (r Room) VisitorName() string      { return r.Name + "-p2p-visitor" }
-func (r Room) RelayVisitorName() string { return r.Name + "-relay-visitor" }
+func (r Room) ProxyName() string   { return r.Name + "-p2p" }
+func (r Room) VisitorName() string { return r.Name + "-p2p-visitor" }
 
 func (r Room) Validate() error {
 	if r.Name == "" {

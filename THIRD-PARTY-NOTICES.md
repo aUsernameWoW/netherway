@@ -21,9 +21,8 @@ Apache-2.0 要求在分发衍生作品或包含作品时保留版权声明并附
 
 | 组件 | 版本 | 许可证 |
 |---|---|---|
+| github.com/fatedier/golib | v0.7.0 | Apache-2.0 |
 | github.com/samber/lo | v1.47.0 | MIT |
-| golang.org/x/net | v0.52.0 | BSD-3-Clause |
-| golang.org/x/sync | v0.20.0 | BSD-3-Clause |
 
 上述依赖各自的间接依赖（yamux、quic-go、pion/stun、go-toml 等）随 frp 一并引入，
 均为 MIT / BSD / Apache-2.0 等宽松许可。完整清单可用如下命令生成：

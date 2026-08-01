@@ -152,7 +152,7 @@ func run(ctx context.Context, common *v1.ClientCommonConfig,
 
 	// 提前校验，把配置错误变成启动时的明确报错，
 	// 而不是等玩家连不上再去翻日志。
-	// 末位 nil 表示不启用任何 unsafe 特性，本项目只用 xtcp/stcp，用不到。
+	// 末位 nil 表示不启用任何 unsafe 特性，本项目只用 xtcp，用不到。
 	warning, err := validation.ValidateAllClientConfig(common, proxies, visitors, nil)
 	if err != nil {
 		return fmt.Errorf("配置校验: %w", err)
@@ -181,15 +181,14 @@ type ServeOptions struct {
 	// ProxyProtocol 非空（"v1"/"v2"）时，frpc 在连本地 MC 端口前先发一个
 	// PROXY protocol 头，把来访连接的源地址告诉 MC 服务端。
 	//
-	// 现状（frp v0.70.0）：只有 stcp 中转路径会真的带头（frps 把 visitor
-	// 连接的公网地址填进 StartWorkConn.SrcAddr）；xtcp 的 P2P 流没有
-	// SrcAddr，配了也静默不发——等上游支持（fatedier/frp#2748）后自动生效。
-	// 因此 MC 侧的解析必须是嗅探式的，绝不能要求头必须存在。
+	// 现状（frp v0.70.0）：xtcp 的 P2P 流没有 SrcAddr，配了也静默不发——
+	// 等上游支持（fatedier/frp#2748）后自动生效。frp 里只有 stcp 中转路径
+	// 会真的带头，而本项目的 stcp 兜底已随独立 join 模式移除，因此现阶段
+	// 所有流量都无头；MC 侧的解析必须是嗅探式的，绝不能要求头必须存在。
 	ProxyProtocol string
 }
 
-// Serve 在 Minecraft 宿主机运行：把本地端口注册为 xtcp（P2P）代理，
-// 并同时注册一个 stcp 代理供打洞失败时兜底。
+// Serve 在 Minecraft 宿主机运行：把本地端口注册为 xtcp（P2P）代理。
 func Serve(ctx context.Context, ep Endpoint, room config.Room, localPort int,
 	opts ServeOptions, log LogOptions) error {
 	common, err := commonConfig(ep, log)
@@ -215,44 +214,24 @@ func Serve(ctx context.Context, ep Endpoint, room config.Room, localPort int,
 	}
 	xtcp.Complete()
 
-	stcp := &v1.STCPProxyConfig{
-		ProxyBaseConfig: v1.ProxyBaseConfig{
-			Name: room.RelayProxyName(),
-			Type: string(v1.ProxyTypeSTCP),
-			Transport: v1.ProxyTransport{
-				ProxyProtocolVersion: opts.ProxyProtocol,
-			},
-			ProxyBackend: v1.ProxyBackend{
-				LocalIP:   "127.0.0.1",
-				LocalPort: localPort,
-			},
-		},
-		Secretkey: room.SecretKey,
-	}
-	stcp.Complete()
-
-	return run(ctx, common, []v1.ProxyConfigurer{xtcp, stcp}, nil)
+	return run(ctx, common, []v1.ProxyConfigurer{xtcp}, nil)
 }
 
-// JoinOptions 是玩家侧监听参数。
-type JoinOptions struct {
-	// BindAddr 若要配合局域网广播，必须是 0.0.0.0：
-	// Minecraft 用广播包的源 IP（网卡地址）去连，而不是 127.0.0.1。
+// VisitorOptions 是玩家侧监听参数。
+type VisitorOptions struct {
+	// BindAddr 通常是 127.0.0.1：隧道只服务本机的 Minecraft 客户端。
 	BindAddr string
 	BindPort int
-	// NoFallback 关闭 stcp 兜底，只走 P2P。
-	//
-	// mod 场景下玩家已经通过既有的中转隧道连上服务器了，打洞失败就留在
-	// 那条连接上即可，再让 agent 自己开一条中转纯属浪费；而且 stcp 通道
-	// 会让「隧道可用」的探测始终成功，反而分不清到底有没有打通。
-	NoFallback bool
 	// Timings 为零值时使用实测得出的默认值。
 	Timings config.Timings
 }
 
-// Join 在玩家机器运行：监听本地端口，打洞直连宿主机，
-// 打洞未成功时先经 frps 中转，后台继续打洞并在成功后自动升级。
-func Join(ctx context.Context, ep Endpoint, room config.Room, opts JoinOptions, log LogOptions) error {
+// Visit 在玩家机器运行：监听本地端口，打洞直连宿主机。
+//
+// 刻意没有中转兜底：玩家此刻本来就经既有中转连着服务器，打洞失败留在
+// 那条连接上即可；而且有兜底通道的话「隧道可用」的探测会永远成功，
+// 反而分不清到底有没有打通——这条是 backend 接口的契约。
+func Visit(ctx context.Context, ep Endpoint, room config.Room, opts VisitorOptions, log LogOptions) error {
 	common, err := commonConfig(ep, log)
 	if err != nil {
 		return err
@@ -273,26 +252,7 @@ func Join(ctx context.Context, ep Endpoint, room config.Room, opts JoinOptions, 
 		MaxRetriesAnHour: t.MaxRetriesAnHour,
 		MinRetryInterval: int(t.RetryMinInterval.Seconds()),
 	}
-
-	visitors := []v1.VisitorConfigurer{xtcp}
-	if !opts.NoFallback {
-		relay := &v1.STCPVisitorConfig{
-			VisitorBaseConfig: v1.VisitorBaseConfig{
-				Name:       room.RelayVisitorName(),
-				Type:       string(v1.VisitorTypeSTCP),
-				ServerName: room.RelayProxyName(),
-				SecretKey:  room.SecretKey,
-				BindAddr:   "127.0.0.1",
-				BindPort:   -1, // 不单独监听，仅供 xtcp 回落时内部使用
-			},
-		}
-		relay.Complete()
-		// 打洞未在此时限内成功就先走中转，后台继续打洞，成功后下条连接自动升级
-		xtcp.FallbackTo = room.RelayVisitorName()
-		xtcp.FallbackTimeoutMs = int(t.FallbackTimeout.Milliseconds())
-		visitors = append(visitors, relay)
-	}
 	xtcp.Complete()
 
-	return run(ctx, common, nil, visitors)
+	return run(ctx, common, nil, []v1.VisitorConfigurer{xtcp})
 }

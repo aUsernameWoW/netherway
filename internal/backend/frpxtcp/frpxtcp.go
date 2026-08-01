@@ -99,12 +99,12 @@ func (impl) Run(ctx context.Context, params map[string]string, opts backend.Opti
 	}
 	ep.STUNServer = picked
 
-	return tunnel.Join(ctx, ep, room, tunnel.JoinOptions{
+	// 接口契约：backend 不得自带兜底，否则就绪探测分不清打没打通；
+	// tunnel.Visit 本身就不提供兜底。
+	return tunnel.Visit(ctx, ep, room, tunnel.VisitorOptions{
 		BindAddr: opts.BindAddr,
 		BindPort: opts.BindPort,
-		// 接口契约：backend 不得自带兜底，否则就绪探测分不清打没打通
-		NoFallback: true,
-		Timings:    opts.Timings,
+		Timings:  opts.Timings,
 	}, tunnel.LogOptions{Level: opts.LogLevel, To: opts.LogTo, Echo: opts.LogEcho})
 }
 

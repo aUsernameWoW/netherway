@@ -20,9 +20,6 @@ P2P 凭证，客户端后台打洞，成功了自动切换连接，失败就安�
 从第二次启动起，缓存的凭证会在游戏加载期间提前打洞，并在服务器列表里维护
 一个直连条目——配合预拉取凭证（见下），首次进服就能直连。
 
-仓库还带一个独立运行的玩家侧 agent（`join` 子命令，局域网广播那套），属于
-早期的 legacy 路径，未在生产中使用过，本文不展开。
-
 ## 工作原理
 
 服务器端口固定（专用服务器，非「对局域网开放」的单人世界），服务端不需要
@@ -185,7 +182,7 @@ prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家�
 ## 代码结构
 
 ```
-cmd/netherway/        CLI 入口；daemon_{unix,windows}.go 处理平台差异
+cmd/netherway/       CLI 入口（serve / tunnel / authplugin / authbridge / prefetch）
 internal/backend/    隧道方案的统一接口与注册表；frp xtcp 是首个实现
 internal/tunnel/     以库的方式嵌入 frpc，无独立进程、无 toml
 internal/authplugin/ frps 的 HTTP server plugin：每玩家令牌校验（authplugin 子命令）
@@ -193,7 +190,6 @@ internal/authbridge/ 预认证服务：hasJoined 撮合验证，提前签发令�
 internal/credfile/   凭证缓存文件编解码，与 Java 侧 CredentialCache 兼容（prefetch 子命令用）
 internal/mcping/     Minecraft Server List Ping，用游戏握手判定隧道就绪
 internal/stunpick/   启动前并行探测候选，挑一个当场验证过的 STUN
-internal/lanbeacon/  组播广播，含多网卡枚举（legacy 独立 join 模式用）
 internal/config/     房间标识与构建期注入的默认值
 mod/                 Minecraft mod 侧：Java core 驱动 agent 的 tunnel 子命令，
                      打洞成功后游戏内自动切换连接（详见 mod/README.md）
@@ -205,5 +201,4 @@ mod/                 Minecraft mod 侧：Java core 驱动 agent 的 tunnel 子�
   数字的出处，含 STUN 选型、组播出接口、bindAddr 三个必踩的坑
 - [XTCP | frp 官方文档](https://gofrp.org/zh-cn/docs/features/xtcp/)
 - [frp client/service.go](https://github.com/fatedier/frp/blob/dev/client/service.go) — 嵌入 frpc 的 API
-- [LAN Server Discovery](https://github.com/tomsik68/mclauncher-api/wiki/LAN-Server-Discovery) — 组播包格式
 - [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)

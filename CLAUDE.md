@@ -131,8 +131,7 @@ core 与平台适配层不解释参数，无需改动。约束：**backend 实�
 
 | 子命令 | 用途 | 关键差异 |
 |---|---|---|
-| `serve` | 服务器宿主机 | 注册 xtcp + stcp 两个代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand`；`-meta-token` 向 authplugin 表明身份 |
-| `join` | 独立运行的玩家侧 | 带 stcp 兜底，并做局域网广播；无每玩家令牌（legacy 路径） |
+| `serve` | 服务器宿主机 | 注册 xtcp 代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand`；`-meta-token` 向 authplugin 表明身份 |
 | `tunnel` | 供 mod 调用 | **经 backend 抽象、无兜底**，超时即退出，stdout 输出 JSON |
 | `authplugin` | frps 宿主机 | frps 的 HTTP server plugin：Login 校验每玩家令牌，NewProxy 只放行静态令牌（serve）；`-allow-legacy` 是迁移开关 |
 | `authbridge` | 服务端宿主机 | 预认证 HTTP 服务：hasJoined 撮合验证 accessToken 后提前签发令牌与凭证；须经 TLS 反代暴露；`secret=auto` 时要随服务端一起重启 |
@@ -141,7 +140,9 @@ core 与平台适配层不解释参数，无需改动。约束：**backend 实�
 `tunnel` 刻意不带兜底：mod 场景下玩家此刻已通过既有中转隧道连着服务器，
 建链失败就该留在那条连接上。更重要的是，有了兜底通道后「隧道可用」的探测会
 永远成功，反而分不清到底有没有打通——这条已上升为 backend 接口的契约。
-`serve`/`join` 是独立运行的 frp 工具，不走 backend 抽象。
+整个项目已无 stcp 兜底（独立 join/start/stop 模式与 relay 代理、`lanbeacon`
+组播广播于 2026-08 一并移除，实测留档在 docs/field-notes.md）。
+`serve` 是独立运行的 frp 工具，不走 backend 抽象。
 
 ### 就绪判断靠主动探测
 
@@ -193,8 +194,8 @@ authplugin 无状态校验（HMAC-SHA256，过期时间明文在令牌里）。
 才放行。`NewProxy` 只放行静态令牌（serve 经 `-meta-token` 携带）——玩家侧
 只有 visitor，任何注册代理的企图都不是正常流量。
 
-迁移路径：未带令牌的登录（老 mod agent、独立 join、未配 `serveAuthToken` 的
-serve）走 `-allow-legacy` 开关；老 agent 收到含 `user`/`userToken` 的凭证会
+迁移路径：未带令牌的登录（老 mod agent、未配 `serveAuthToken` 的 serve）
+走 `-allow-legacy` 开关；老 agent 收到含 `user`/`userToken` 的凭证会
 按契约忽略未知键、以 legacy 身份登录，因此服务端可以先于客户端升级。
 吊销刻意无状态：全局作废 = 换签发密钥；按玩家即刻吊销不做（白名单已挡住
 MC 登录，隧道只通向 MC 端口）。
@@ -250,19 +251,12 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 **预热与升级的 agent 各写各的日志文件**（`tunnel-warmup.log` / `tunnel.log`）。
 预热未出结果时玩家就经中转进服的话，两个 agent 会同时在跑，共用文件会互相踩踏。
 
-**组播必须显式设置 `IP_MULTICAST_IF`。** 玩家机器上常有 VPN、VMware、WSL 等
-虚拟网卡，不指定接口时包会走默认路由（往往是隧道接口），Minecraft 一个包都收不到。
-`lanbeacon` 因此向所有候选网卡都发一遍。
-
-**开启局域网广播时 visitor 必须绑 `0.0.0.0`。** Minecraft 用广播包的**源 IP**
-（网卡地址，非 `127.0.0.1`）去连；绑回环会导致列表里出现但连不上。
-
 **PROXY protocol 头必须嗅探式解析，绝不能要求存在。** serve 的
 `-proxy-protocol`（服务端 cfg `server.proxyProtocol`）开启后，当前 frp
-（v0.70.0）只有 stcp 中转路径真的带头——frps 把 visitor 连接的公网地址填进
-`StartWorkConn.SrcAddr`；xtcp 的 P2P 流没有 SrcAddr，配了也静默无头，等
-上游支持（fatedier/frp#2748，PR #5122 已 stale 关闭且其 visitor 侧 meta 帧
-的线上格式不可依赖）。老 agent 与直连预热流量也永远无头。因此 MC 侧剥头
+（v0.70.0）下 xtcp 的 P2P 流没有 SrcAddr，配了也静默无头，等上游支持
+（fatedier/frp#2748，PR #5122 已 stale 关闭且其 visitor 侧 meta 帧的线上
+格式不可依赖）；frp 里只有 stcp 中转路径真的带头，而本项目的 stcp 兜底已
+随独立 join 模式移除——因此现阶段所有流量都无头。MC 侧剥头
 （core `ProxyProtocol` + 平台层 `ProxyProtocolInjector`）按首字节分叉嗅探，
 且只信来自回环的连接（frp 从本机拨入；局域网邻居可伪造头）。这是纯 serve
 侧配置，不进凭证参数表，客户端 mod 无需同步改动。
@@ -282,7 +276,7 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 
 **版本库为「可随时转公开」标准维护**：文档、模板与测试中的示例地址一律用
 文档专用段（`203.0.113.x`，不可路由）与 `example.com`；真实部署参数（frps
-地址、皮肤站域名、MOTD）只存在于 gitignore 的 `build.env`。README 不写指向
+地址、皮肤站域名）只存在于 gitignore 的 `build.env`。README 不写指向
 具体机器的运维细节（宿主机上跑着什么、真实端口表）。提交用 GitHub noreply
 邮箱（repo 本地 git config 已设）。内嵌密钥的 `build.sh` 产物绝不上公开
 Release，公开渠道只发 mod jar（natives 无密钥）。

@@ -6,8 +6,6 @@ require (
 	github.com/fatedier/frp v0.70.0
 	github.com/fatedier/golib v0.7.0
 	github.com/samber/lo v1.47.0
-	golang.org/x/net v0.52.0
-	golang.org/x/sync v0.20.0
 )
 
 require (
@@ -42,7 +40,9 @@ require (
 	github.com/xtaci/kcp-go/v5 v5.6.13 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/mod v0.33.0 // indirect
+	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/oauth2 v0.28.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/time v0.10.0 // indirect
