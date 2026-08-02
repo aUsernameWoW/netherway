@@ -1,8 +1,8 @@
 package cn.ripplecraft.netherway.forge;
 
-import cn.ripplecraft.netherway.core.BridgeDiscovery;
 import cn.ripplecraft.netherway.core.CredentialCache;
 import cn.ripplecraft.netherway.core.Prefetcher;
+import cn.ripplecraft.netherway.core.ServerCandidates;
 import cn.ripplecraft.netherway.core.SessionIdentity;
 import cn.ripplecraft.netherway.core.UpgradeController;
 import cn.ripplecraft.netherway.core.WarmupController;
@@ -32,7 +32,7 @@ public final class ClientProxy extends CommonProxy {
                 config.prewarmPort(), buildPrefetcher(bridge, config));
         UpgradeController controller = new UpgradeController(
                 bridge, config.clientTimings(), cache, warmup);
-        ClientEvents events = new ClientEvents(controller, warmup, bridge);
+        ClientEvents events = new ClientEvents(controller, warmup, bridge, config);
 
         // 凭证包走频道自己的事件总线，tick 与连接事件走 FML 总线
         channel.register(events);
@@ -46,7 +46,7 @@ public final class ClientProxy extends CommonProxy {
     }
 
     /**
-     * 组装凭证预取器；缺任何前提（关了开关、离线会话、推不出候选地址）
+     * 组装凭证预取器；缺任何前提（关了开关、离线会话、没有候选地址）
      * 返回 null，预热退回「只用缓存凭证」的路径。
      */
     private static Prefetcher buildPrefetcher(ForgeClientBridge bridge, ModConfig config) {
@@ -57,18 +57,29 @@ public final class ClientProxy extends CommonProxy {
         SessionIdentity id = session == null ? SessionIdentity.of("", "", "")
                 : SessionIdentity.of(session.getUsername(),
                         session.getPlayerID(), session.getToken());
-        if (!id.usable()) {
-            bridge.debug("游戏会话不是有效的正版登录（离线/演示模式），跳过凭证预取");
+        // 离线会话仍然可以预取：online-mode=false 的服务器不查证身份。
+        // 但会话得有个像样的用户名，否则连 CONFIRM 的字段校验都过不了。
+        if (id.username().isEmpty()) {
+            bridge.debug("游戏会话没有用户名，跳过凭证预取");
             return null;
         }
-        List<String> candidates = BridgeDiscovery.candidates(
-                config.prefetchBridge(), serverListAddresses(bridge));
+        // 默认只问 cfg 里写明的地址。扫描服务器列表是实验性行为，要么玩家
+        // 自己开了 experimental.zeroConfigPrefetch，要么某台服务器在玩家
+        // 登录后授权过（见 ModConfig 里那一项的说明）。
+        String[] configured = config.prefetchServers();
+        List<String> fromServerList = config.zeroConfigPrefetch()
+                ? serverListAddresses(bridge) : null;
+        if (configured.length == 0 && fromServerList == null) {
+            bridge.debug("client.prefetchServers 为空，且未开启零配置预取，跳过凭证预取");
+            return null;
+        }
+        List<ServerCandidates.Address> candidates =
+                ServerCandidates.build(configured, fromServerList);
         if (candidates.isEmpty()) {
-            bridge.debug("没有 authbridge 候选（未配置 client.prefetchBridge，"
-                    + "服务器列表也推导不出），跳过凭证预取");
+            bridge.debug("没有可预取的服务器地址，跳过凭证预取");
             return null;
         }
-        bridge.debug("authbridge 候选（依次探测 /info）: " + candidates);
+        bridge.debug("预取候选（依次尝试）: " + candidates);
         return new Prefetcher(bridge, id, candidates, config.clientTimings());
     }
 

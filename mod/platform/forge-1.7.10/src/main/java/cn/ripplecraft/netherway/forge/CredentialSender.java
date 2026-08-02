@@ -59,10 +59,27 @@ public final class CredentialSender {
 
         EntityPlayerMP player = (EntityPlayerMP) event.player;
         cred = withPlayerToken(cred, player);
+        cred = withClientPolicy(cred);
         channel.sendTo(new FMLProxyPacket(
                 Unpooled.wrappedBuffer(cred.encode()), Netherway.CHANNEL), player);
         // Credentials.toString 刻意只列参数键名，不含 token 与密钥值
         LOG.info("已向 {} 下发直连凭证 {}", player.getCommandSenderName(), cred);
+    }
+
+    /**
+     * 附加客户端策略。目前只有一项：准许该客户端开启零配置预取。
+     *
+     * <p>下发的时机就是它的安全依据——能收到这个包的玩家刚刚登录了本服，
+     * 由本服来开这个开关，比让玩家去盲扫整个服务器列表可控得多。
+     * 老客户端读不到这段（凭证格式向前兼容），只是用不上，不会出错。
+     */
+    private Credentials withClientPolicy(Credentials cred) {
+        if (!config.grantZeroConfigPrefetch()) {
+            return cred;
+        }
+        Map<String, String> policy = new LinkedHashMap<String, String>();
+        policy.put(Credentials.POLICY_ZERO_CONFIG_PREFETCH, "1");
+        return cred.withPolicy(policy);
     }
 
     /**

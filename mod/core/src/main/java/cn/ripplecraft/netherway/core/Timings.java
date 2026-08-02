@@ -108,7 +108,7 @@ public final class Timings {
      * 预热第 {@code attempt} 次失败后的重试等待（attempt 从 0 起）：
      * 指数退避，封顶 {@link #warmupRetryMaxMs}。「打不通就一直打」的
      * 节流全在这里——失败的打洞本身要花十几秒，叠加退避后稳态大约
-     * 每两三分钟一轮，对 frps/STUN/authbridge 都只是零星流量。
+     * 每两三分钟一轮，对 frps/STUN/服务器都只是零星流量。
      */
     public long warmupRetryDelayMs(int attempt) {
         long d = warmupRetryInitialMs;

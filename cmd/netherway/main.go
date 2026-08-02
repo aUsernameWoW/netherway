@@ -3,8 +3,10 @@
 //	netherway serve    在服务器宿主机运行
 //	netherway tunnel   供 Minecraft mod 调用，打洞并输出逐行 JSON 状态
 //	netherway authplugin  在 frps 宿主机运行（每玩家令牌校验）
-//	netherway authbridge  在服务端运行预认证服务（玩家进服前提前下发凭证）
-//	netherway prefetch    在玩家机器预拉取凭证（启动器 Pre-launch 调用）
+//
+// 玩家进服前的凭证预取不在这里：它是 mod 与 MC 服务端之间在 Minecraft
+// 端口上的一次对话（core 的 PreauthClient/PreauthService），不经 agent，
+// 也不需要服务器多开任何监听端口。
 package main
 
 import (
@@ -34,10 +36,6 @@ func main() {
 		err = cmdTunnel(os.Args[2:])
 	case "authplugin":
 		err = cmdAuthPlugin(os.Args[2:])
-	case "authbridge":
-		err = cmdAuthBridge(os.Args[2:])
-	case "prefetch":
-		err = cmdPrefetch(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -59,8 +57,6 @@ func usage() {
   netherway serve [选项]    在服务器宿主机运行，把本地端口发布为 P2P 代理
   netherway tunnel [选项]   供 Minecraft mod 调用：纯 P2P，超时即放弃
   netherway authplugin [选项]  在 frps 宿主机运行：每玩家令牌校验（frps httpPlugins）
-  netherway authbridge [选项]  在服务端运行：预认证服务（玩家进服前提前下发凭证）
-  netherway prefetch  [选项]  在玩家机器运行：预拉取凭证（启动器 Pre-launch 用）
 
 公共选项:
   -server  frps 地址        -port    端口
@@ -82,19 +78,6 @@ authplugin 专有:
   -listen    监听地址，默认 127.0.0.1:7200    -path  HTTP 路径，默认 /handler
   -key       令牌签发密钥（或环境变量 NETHERWAY_AUTH_KEY）
   -static-token  静态令牌白名单，可重复      -allow-legacy  迁移期放行无令牌登录
-
-authbridge 专有:
-  -listen    监听地址，默认 127.0.0.1:7201    -authserver  皮肤站 API root
-  -key       令牌签发密钥（或环境变量 NETHERWAY_AUTH_KEY）
-  -punch-timeout  建议的打洞超时秒数          其余 -server/-room 等同 serve
-
-prefetch 专有:
-  -bridge    authbridge 地址，可重复给多个候选（逐个 GET /info 探测取第一个应答者）
-  -authserver 皮肤站 API root；留空用 authbridge /prefetch 响应里告知的
-  -token     accessToken（或环境变量 NETHERWAY_ACCESS_TOKEN）
-  -uuid      玩家 UUID                        -username  玩家名
-  -cache-dir 凭证缓存目录（mod 的 .minecraft/netherway/credentials）
-  -discover-timeout  单个候选的 /info 探测超时秒数，默认 5
 
 未指定的选项使用构建时注入的默认值。
 `)

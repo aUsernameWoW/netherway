@@ -30,9 +30,9 @@ mod；旧缓存目录成为孤儿（首次中转进服后在新目录自愈）�
 go build ./... && go vet ./... && go test ./...
 ```
 
-Go 测试目前有 `internal/authplugin`（含与 Java 侧的跨语言已知答案向量）、
-`internal/authbridge`（stub 皮肤站走通预认证全流程）与 `internal/credfile`
-（凭证字节布局黄金向量）。
+Go 测试目前只有 `internal/authplugin`（含与 Java 侧的跨语言已知答案向量）。
+预认证与凭证预取已整体搬进 mod（见「预认证」一节），agent 不再参与，
+原先的 `internal/authbridge` 与 `internal/credfile` 已删除。
 
 跨平台构建（Windows/macOS/Linux 五个目标），密钥经 `-ldflags` 注入而不进源码；
 真实部署参数（frps 地址、皮肤站等）放 gitignore 的 `build.env`（模板
@@ -101,9 +101,6 @@ Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者�
 `Credentials` 的对应工厂方法（如 `Credentials.frpXtcp`）。以及每玩家令牌的
 格式：Go 侧 `internal/authplugin`（校验）↔ Java 侧 `TokenIssuer`（签发）
 必须逐字节一致——两侧各有一个用同一组常量的已知答案测试钉住这一点。
-凭证的字节布局与缓存文件名派生也是跨语言契约：Go 侧 `internal/credfile`
-（prefetch 落盘）↔ Java 侧 `Credentials.encode()` + `CredentialCache`
-（读取预热），改动必须两边同步。
 
 agent 的 stderr 是诊断通道：backend 的参数快照、被忽略的未知键、frp 自身
 info 及以上的日志都会回显到这里，mod 逐行转进游戏日志（`bridge.debug`）。
@@ -134,8 +131,9 @@ core 与平台适配层不解释参数，无需改动。约束：**backend 实�
 | `serve` | 服务器宿主机 | 注册 xtcp 代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand`；`-meta-token` 向 authplugin 表明身份 |
 | `tunnel` | 供 mod 调用 | **经 backend 抽象、无兜底**，超时即退出，stdout 输出 JSON |
 | `authplugin` | frps 宿主机 | frps 的 HTTP server plugin：Login 校验每玩家令牌，NewProxy 只放行静态令牌（serve）；`-allow-legacy` 是迁移开关 |
-| `authbridge` | 服务端宿主机 | 预认证 HTTP 服务：hasJoined 撮合验证 accessToken 后提前签发令牌与凭证；`GET /info` 是发现信标（`{"service":"netherway-authbridge"}`），`/prefetch` 响应顺带告知皮肤站地址；须经 TLS 反代暴露；`secret=auto` 时要随服务端一起重启 |
-| `prefetch` | 玩家侧（mod 在 FML 加载期内建调用；启动器 Pre-launch 亦可） | `-bridge` 可重复给多个候选，多候选时逐个 `GET /info` 探测取第一个应答者 → 领 serverId → 皮肤站 join → authbridge confirm → 凭证写进 mod 缓存目录；失败不阻断游戏，退回缓存/中转路径 |
+
+凭证预取不在这张表里：它是 mod 与 MC 服务端之间在 Minecraft 端口上的一次
+对话，不经 agent（见下节）。
 
 `tunnel` 刻意不带兜底：mod 场景下玩家此刻已通过既有中转隧道连着服务器，
 建链失败就该留在那条连接上。更重要的是，有了兜底通道后「隧道可用」的探测会
@@ -169,15 +167,13 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 刻意无任何中转兜底），并经 `DirectServerEntry` 在服务器列表里维护一个直连
 条目（agent 的 STARTING 事件一报出端口就更新地址，重试每轮都会再报）。
 
-凭证来源除缓存外还有 mod 内建预取（`Prefetcher`，每轮预热前跑一次 agent 的
-`prefetch` 子命令）：平台层把游戏会话（`SessionIdentity`，离线会话跳过）与
-authbridge 候选交给 core，候选由 `BridgeDiscovery` 推导——客户端 cfg 的
-`client.prefetchBridge` 优先，否则扫服务器列表（server.dat）按约定
-`https://<主机>/netherway` 生成、由 Go 侧逐个 `GET /info` 探测识别。
-accessToken 经环境变量 `NETHERWAY_ACCESS_TOKEN` 传给子进程（Java 侧
-`Prefetcher.TOKEN_ENV` ↔ Go 侧 prefetch 旗标默认值，跨语言契约），绝不进
-命令行。部署 authbridge 后首次启动即可直连；密钥轮换后下一轮预取自动取到
-新密钥，无需先经中转。玩家可三种方式进服，互为兜底：
+凭证来源除缓存外还有 mod 内建预取（`Prefetcher`，每轮预热前跑一次）：
+平台层把游戏会话（`SessionIdentity`）与候选地址交给 core，候选由
+`ServerCandidates` 组装——客户端 cfg 的 `client.prefetchServers` 优先，
+其余来自服务器列表（server.dat，需开 `experimental.zeroConfigPrefetch`）。
+全程在 JVM 内完成，不起子进程，accessToken 从不离开进程。首次启动即可
+直连；密钥轮换后下一轮预取自动取到新密钥，无需先经中转。
+玩家可三种方式进服，互为兜底：
 
 - **直连条目**：进服后平台层按「回环地址 + 预热端口」识别（`ClientEvents.warmupMatch`），
   调 `adoptDirectConnection` 把状态机置为 UPGRADED——随后服务端照常下发的凭证
@@ -185,11 +181,39 @@ accessToken 经环境变量 `NETHERWAY_ACCESS_TOKEN` 传给子进程（Java 侧
 - **中转进服**：既有升级流程，但 `runUpgrade` 先查预热隧道，就绪则直接复用
   （`reuseWarmTunnel`），不再对同一房间起第二个 agent。
 - **预热失败/无缓存**：一切如旧。凭证轮换后优先由下一轮预取直接取回新
-  密钥；未部署 authbridge 时仍走「打洞失败→中转→新凭证覆盖」闭环恢复，
+  密钥；没有可预取的地址时仍走「打洞失败→中转→新凭证覆盖」闭环恢复，
   玩家与服主都无需操作。
 
 预热隧道生命周期是整个游戏进程（断开、回主菜单都不停，它承载着直连条目），
 退出由 `AgentProcess` 的 shutdown hook 兜底。
+
+### 预认证（在 MC 端口上换凭证）
+
+玩家第一次启动、或密钥轮换之后本地没有任何可用凭证，而预热打洞需要凭证
+才能开始。预认证解决这个先有鸡还是先有蛋：借皮肤站自己的 join/hasJoined，
+在**不登录游戏**的前提下证明「这是个真实账号」，换回一份凭证。
+
+**整个交换在 Minecraft 那一个端口上完成，服务器不多开任何监听端口。**
+帧靠首字节与 MC 流量分叉：预认证帧以 `NWAY` 开头，而 MC 现代握手第 2 字节
+是包 id `0x00`、legacy ping 以 `0xFE` 开头、PROXY protocol 以 `'P'` 或 `0x0D`
+开头，最迟第 2 字节就分得开。平台层的 `ConnectionSniffer` 是唯一的嗅探
+handler——预认证与 PROXY 剥头**必须合成一个**，它们抢的是同一批首字节。
+
+- 协议：core 的 `PreauthProtocol`（裸字节、版本化、有界），
+  服务端 `PreauthService` ↔ 客户端 `PreauthClient`，两侧都是 Java。
+- 流程：HELLO（自报身份，换 serverId 与皮肤站地址）→ 客户端拿
+  accessToken 去皮肤站 `/join` → CONFIRM（服务端查 hasJoined，签令牌、
+  下发凭证）。serverId 是**同一条连接**上签出并记住的，因此服务端零全局状态。
+- `online-mode=false` 时没有会话服务器可查证，交换退化为 `MODE_OFFLINE`：
+  跳过皮肤站那一跳，准入沿用服务器自己的名单（白名单开着就查白名单）。
+  这不是本 mod 放松了标准，而是服务器本身就不验证身份。
+- **帧不加密**，凭证以明文过网。这是刻意取舍，换取「只暴露一个端口」。
+  accessToken 不在此列：它只在玩家本机与皮肤站之间走 HTTPS，从不进入
+  任何一帧；且**皮肤站地址由客户端自己钉死**（`AuthlibInjector.detect()`），
+  服务端在 HELLO 里说的一律不采信——否则被问到的服务器就能把令牌骗走。
+
+信任边界与 PROXY 剥头刻意不同：**PROXY 头只信回环**（头谁都能伪造），
+**预认证帧接受任何来源**（它自带身份证明，且玩家本就从公网经隧道过来）。
 
 ### 每玩家令牌（分层鉴权）
 
@@ -297,10 +321,20 @@ mod 方案的核心安全价值在于：**凭证由服务端在玩家登录后�
 能拿到密钥的必然是通过了服务器既有正版验证/白名单的玩家，因此不需要另建鉴权系统。
 `Credentials.toString()` 刻意不输出任何参数值（token 与密钥都在其中），只列键名。
 
-部署 `authbridge`（预拉取凭证）后这条边界有意放宽为「皮肤站上任何有效账号」：
-hasJoined 只证明账号真实，不证明是本服玩家。这是刻意取舍——谁能进服由 MC
-服务端自己的验证决定，不属于本 mod 的职责范围；凭证换来的隧道也只通向 MC
-端口。皮肤站换成公共站点前需重新评估这一点。
+开启预认证（`server.preauth`）后这条边界放宽为「皮肤站上任何有效账号 +
+服务器自己的准入名单」：hasJoined 只证明账号真实，不证明是本服玩家，
+所以还叠了一层 `PreauthService.Host.allowsPlayer`（白名单开着就查白名单）。
+这是刻意取舍——谁能进服由 MC 服务端自己决定，不属于本 mod 的职责范围；
+凭证换来的隧道也只通向 MC 端口。皮肤站换成公共站点前需重新评估这一点。
+
+预认证的帧**明文**，凭证因此在网络路径上可见（见「预认证」一节）。这是为
+「只暴露一个端口」付出的代价，已知且刻意。止损同样是服务端轮换密钥。
+
+零配置预取（`experimental.zeroConfigPrefetch`，默认关）会让客户端去问
+服务器列表里的每个地址，等于把玩家名/UUID 发给一批没打过交道的服务器，
+且应答者未经验证。默认关就是因为这个；服务端可在玩家登录后随凭证下发
+`POLICY_ZERO_CONFIG_PREFETCH` 把它打开并写回客户端 cfg——那条路径上的
+应答者是玩家确实登录过的服务器，比盲扫可控得多。
 
 客户端的凭证缓存（预热用）**刻意明文落盘、不加密**：解密密钥必须与密文同机，
 加密对玩家本人只是混淆；凭证本就完整出现在其内存与 agent 命令行里，落盘未增加

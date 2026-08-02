@@ -88,9 +88,8 @@ Minecraft 自己的握手（Server List Ping，`internal/mcping`）判断隧道�
 
 ### 独立 agent 二进制（build.sh）
 
-只有两个场景用得到：托管环境禁止子进程时独立运行 serve（见下），以及
-预拉取凭证的玩家侧 prefetch（见下节）。密钥经 `-ldflags` 在构建时注入，
-不进源码仓库，产出的二进制零配置可用：
+只有一个场景用得到：托管环境禁止子进程时独立运行 serve（见下）。
+密钥经 `-ldflags` 在构建时注入，不进源码仓库，产出的二进制零配置可用：
 
 ```bash
 cp build.env.example build.env   # 填入你的 frps 地址等部署参数
@@ -112,88 +111,63 @@ TOKEN=<frps的auth.token> SECRET=<房间密钥> ./build.sh
 MCSManager 等托管即可；参数构建时已注入，临时覆盖用 `-server` `-room` 等）。
 两种方式**只能开一个**——同名代理会在 frps 上注册冲突。
 
-## 预拉取凭证（authbridge，可选；尚未在生产部署）
+## 预取凭证（预认证，可选）
 
-已实现、有端到端测试（stub 皮肤站走通全流程），但**尚未在任何生产环境
-部署过**——以下是设计与部署方式，供需要时取用。
+不开预认证时，玩家首次进服要先走中转、登录后拿凭证、打洞、重连切换——会
+看到「进去几秒后自动退出重连」；之后的启动靠缓存凭证预热直连。开启后，
+mod 在游戏加载期就自动预取凭证并后台打洞（打不通按退避周期一直重试，
+就绪后守望隧道、断了再打），首次启动、密钥轮换后都无需先经中转：玩家点开
+服务器列表时直连条目已经就绪，中转条目只是列表里备用的另一行。
 
-不部署 authbridge 时，玩家首次进服要先走中转、登录后拿凭证、打洞、重连
-切换——会看到「进去几秒后自动退出重连」；之后的启动靠缓存凭证预热直连。
-部署后，mod 在游戏加载期就自动预取凭证并后台打洞（打不通按退避周期一直
-重试，就绪后守望隧道、断了再打），首次启动、密钥轮换后都无需先经中转：
-玩家点开服务器列表时直连条目已经就绪，玩家视角里与中转再无关联——中转
-条目只是列表里备用的另一行。
+**服务器不需要多开任何端口。** 交换就在 Minecraft 自己那一个端口上完成，
+靠首字节与游戏流量分辨（预认证帧以 `NWAY` 开头，MC 握手第 2 字节是包 id
+`0x00`）。没开预认证的服务器会把这个帧当坏包直接断开，客户端跳过即可。
 
-**玩家侧零配置。** mod 用游戏会话自动完成下述全部流程，无需改启动器。
-authbridge 地址优先取客户端 cfg 的 `client.prefetchBridge`；留空则扫描
-服务器列表（server.dat），对每个条目主机按约定 `https://<主机>/netherway`
-发 `GET /info` 探测，认下第一个自报 `netherway-authbridge` 的应答者——
-服主把 authbridge 经 TLS 反代挂在主域名的 `/netherway` 路径下，玩家列表里
-有服务器地址即可自动发现。离线/演示会话自动跳过；accessToken 经环境变量
-传给 prefetch 子进程，绝不进命令行。
-
-安全模型复现 MC 原生进服验证的 hasJoined 撮合：accessToken 全程只在「玩家
-本机 prefetch 程序 ↔ 皮肤站」之间，authbridge 碰不到 token。authbridge
-无状态，serverId 是随机串，状态全在皮肤站。
+服务端 cfg：
 
 ```
-⓪ prefetch → 候选主机 GET /info       多候选时逐个探测，认第一个 authbridge（发现）
-① prefetch → authbridge /prefetch     领取随机 serverId（不带 token；响应顺带告知皮肤站地址）
-② prefetch → 皮肤站 /join             带 accessToken + serverId 报到（token 只到这步）
-③ prefetch → authbridge /confirm      authbridge 调皮肤站 /hasJoined 查证
-   ↳ 通过 → 签发玩家令牌 + 组装凭证 → base64 返回
-④ prefetch 把凭证写进 .minecraft/netherway/credentials/
+server {
+    B:preauth=true
+    S:authServer=https://skin.example.com/api/yggdrasil
+}
+```
+
+`authServer` 留空时会自动从 authlib-injector 的 `-javaagent` 参数里读出来，
+所以挂了 injector 的服务端通常什么都不用填。`online-mode=false` 的服务器
+没有会话服务器可查证，此项无用——那种情况下准入沿用服务器自己的名单
+（白名单开着就查白名单，没开就一律放行）。
+
+客户端 cfg 里写明要问哪些服务器：
+
+```
+client {
+    S:prefetchServers <
+        play.example.com:25565
+     >
+}
+```
+
+整合包预置这一行，玩家就零配置。留空时默认**不**预取；要让它自动扫描
+服务器列表，得开 `experimental.zeroConfigPrefetch`（默认关，风险见 cfg
+里那一项的注释），或者由服务端在玩家登录后下发策略替他打开
+（`experimental.grantZeroConfigPrefetch`）——后者的应答者是玩家确实登录过
+的服务器，比盲扫整个列表可控得多。
+
+流程复现 MC 原生进服验证的 hasJoined 撮合。accessToken 全程只在「玩家本机
+↔ 皮肤站」之间，服务端碰不到它；serverId 是随机串，且只在**那一条连接**上
+有效，所以服务端不存任何状态：
+
+```
+① 客户端 → MC 端口   HELLO：自报玩家名/UUID，换回 serverId
+② 客户端 → 皮肤站    /join 带 accessToken + serverId 报到（token 只到这步）
+③ 客户端 → MC 端口   CONFIRM：服务端调皮肤站 /hasJoined 查证
+   ↳ 通过 → 签发玩家令牌 + 组装凭证 → 随响应返回
+④ 凭证写进 .minecraft/netherway/credentials/
    ↳ mod 的预热循环随即用它打洞 → 首次进服即直连
 ```
 
-**服务端**（与 authplugin 并列，独立进程）：
-
-```bash
-netherway authbridge \
-  -listen 127.0.0.1:7201 \
-  -key <签发密钥，与authplugin -key同值> \
-  -authserver https://skin.example.com/api/yggdrasil \
-  -server <frps地址> -room <房间名> -secret <房间密钥> \
-  -token <frps全局token> -stun <STUN> -server-port <端口>
-```
-
-部署要点：
-
-- 房间参数必须与 `serve` 同源，否则打洞时密钥不匹配。
-- **必须经 TLS 反代暴露**：`/confirm` 的响应里带着完整凭证（房间密钥 +
-  frps 全局 token），明文 HTTP 等于把它们交给路径上的任何人。
-- 反代之后要加 `-trust-proxy-header`，限流与日志改用 `X-Forwarded-For`
-  的首跳——否则所有请求都被算作来自反代自己；反之**直接暴露时绝不能开**，
-  伪造的头能绕过限流。
-- 自带面向公网的加固：HTTP 超时、4 KiB 请求体上限、参数形状校验、每来源
-  IP 限流（`-rate-per-ip`）与 hasJoined 外呼并发上限。
-- `secret=auto`（房间密钥随服务端重启轮换）场景下，服务端重启后要**随之
-  重启 authbridge**，否则它下发的凭证一直打不通——玩家会退回中转进服后
-  自愈，不致不可用，但预拉取就白做了。
-
-**玩家端（备选：启动器 Pre-launch 调用）**——mod 内建预取已覆盖装 mod 的
-常规场景，这条路径留给独立 `join` 用户或想在游戏进程之外预取的情况
-（PrismLauncher 变量示例）：
-
-```
-netherway prefetch \
-  -bridge https://authbridge.example.com \
-  -token ${auth_access_token} \
-  -uuid ${auth_uuid} \
-  -username ${auth_player_name} \
-  -cache-dir .minecraft/netherway/credentials
-```
-
-`-bridge` 可重复给出多个候选（逐个 `GET /info` 探测，用第一个应答者）；
-`-authserver` 通常可省——authbridge 会在 `/prefetch` 响应里告知皮肤站
-地址，显式给出时以旗标为准。accessToken 也可经环境变量
-`NETHERWAY_ACCESS_TOKEN` 传入（避免出现在进程列表里）。`-bridge` 与
-`-authserver` 强制 https（回环地址豁免，本机调试与 SSH 端口转发不受影响；
-确要明文需显式 `-insecure-http`）。两个地址可经 `build.sh` 的
-`AUTHSERVER`/`AUTHBRIDGE` 注入为内置默认值，玩家侧命令即可再省旗标。
-
-prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家走原有中转进服
-流程，体验退化为原状而非不可用。
+预取失败（网络问题、token 过期、服务器没开预认证等）不阻断游戏——玩家走
+原有中转进服流程，体验退化为原状而非不可用。
 
 ## 安全
 
@@ -230,12 +204,10 @@ prefetch 失败（网络问题、token 过期等）不阻断游戏——玩家�
 ## 代码结构
 
 ```
-cmd/netherway/       CLI 入口（serve / tunnel / authplugin / authbridge / prefetch）
+cmd/netherway/       CLI 入口（serve / tunnel / authplugin）
 internal/backend/    隧道方案的统一接口与注册表；frp xtcp 是首个实现
 internal/tunnel/     以库的方式嵌入 frpc，无独立进程、无 toml
 internal/authplugin/ frps 的 HTTP server plugin：每玩家令牌校验（authplugin 子命令）
-internal/authbridge/ 预认证服务：hasJoined 撮合验证，提前签发令牌与凭证（authbridge 子命令）
-internal/credfile/   凭证缓存文件编解码，与 Java 侧 CredentialCache 兼容（prefetch 子命令用）
 internal/mcping/     Minecraft Server List Ping，用游戏握手判定隧道就绪
 internal/stunpick/   启动前并行探测候选，挑一个当场验证过的 STUN
 internal/config/     房间标识与构建期注入的默认值

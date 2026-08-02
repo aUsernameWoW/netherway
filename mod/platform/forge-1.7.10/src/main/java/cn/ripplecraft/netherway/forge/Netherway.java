@@ -61,16 +61,21 @@ public final class Netherway {
         proxy.initClient(channel, config);
     }
 
-    /** 服务器就绪后挂剥头组件、启动内置 serve：此时监听端点与端口都已确定。 */
+    /** 服务器就绪后挂嗅探器、启动内置 serve：此时监听端点与端口都已确定。 */
     @Mod.EventHandler
     public void serverStarted(FMLServerStartedEvent event) {
         if (!config.serverEnabled()) {
             return;
         }
-        // 剥头与 runAgent 无关：独立运行的 serve 开着 -proxy-protocol 时同样需要
-        if (!config.serveProxyProtocol().isEmpty()) {
-            ProxyProtocolInjector.install(MinecraftServer.getServer());
+        // 预认证与剥头共用一个嗅探 handler（它们抢的是同一批首字节）。
+        // 剥头与 runAgent 无关：独立运行的 serve 开着 -proxy-protocol 时同样需要。
+        PreauthHost host = config.serverPreauth() ? new PreauthHost(config) : null;
+        if (host != null) {
+            logPreauthConfig(host);
         }
+        ConnectionSniffer.install(MinecraftServer.getServer(),
+                host == null ? null : new cn.ripplecraft.netherway.core.PreauthService(host),
+                !config.serveProxyProtocol().isEmpty());
         if (!config.serverRunAgent()) {
             return;
         }
@@ -88,9 +93,31 @@ public final class Netherway {
 
     @Mod.EventHandler
     public void serverStopping(FMLServerStoppingEvent event) {
+        ConnectionSniffer.shutdown();
         if (serverAgent != null) {
             serverAgent.stop();
             serverAgent = null;
+        }
+    }
+
+    /**
+     * 把预认证的生效形态写进启动日志。这一条尤其值得打：能不能预认证、
+     * 拿什么查证、谁放得进来，三者都由运行环境决定，出问题时第一眼就要能看见。
+     */
+    private static void logPreauthConfig(PreauthHost host) {
+        if (host.onlineMode()) {
+            if (host.authServer().isEmpty()) {
+                LOG.warn("预认证已开启但不知道皮肤站地址：请填 server.authServer，"
+                        + "或用 -javaagent 挂 authlib-injector（会自动读出来）。"
+                        + "在此之前玩家仍须先经中转进服拿凭证");
+            } else {
+                LOG.info("预认证已开启：在线模式，经 {} 查证 hasJoined", host.authServer());
+            }
+        } else {
+            // online-mode=false 时没有会话服务器可查证。这不是本 mod 的选择，
+            // 而是服务器本身就不验证身份——照搬它的准入判断即可。
+            LOG.info("预认证已开启：服务器是 online-mode=false，无法查证正版身份，"
+                    + "准入沿用服务器自己的名单（白名单开着就查白名单，否则一律放行）");
         }
     }
 

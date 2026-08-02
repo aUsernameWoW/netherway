@@ -66,12 +66,8 @@ var (
 	// 逗号分隔的候选列表。默认就带冗余：实测 stun.miwifi.com 会间歇性超时，
 	// 只配一台时那次打洞就直接失败了。启动前会并行探测并选用当场验证过的一台。
 	DefaultSTUNServer = "stun.miwifi.com:3478,stun.easyvoip.com:3478,stun.qq.com:3478"
-	DefaultRoom       = "gtnh"
-	DefaultSecretKey  = ""
-	// 皮肤站 API root 与 authbridge 地址：预拉取凭证（prefetch/authbridge）用。
-	// 注入后玩家侧 prefetch 无需 -authserver/-bridge。
-	DefaultAuthServer = ""
-	DefaultAuthBridge = ""
+	DefaultRoom      = "gtnh"
+	DefaultSecretKey = ""
 )
 
 // ServerPortDefault 把构建期注入的字符串端口转成 int，非法值回退到 7000。

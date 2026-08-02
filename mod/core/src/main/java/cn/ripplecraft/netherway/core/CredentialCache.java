@@ -42,7 +42,7 @@ public final class CredentialCache {
         this.dir = dir;
     }
 
-    /** 缓存目录本身：预取子进程（Go 侧 credfile）直接往这里写同格式文件。 */
+    /** 缓存目录本身。 */
     public Path directory() {
         return dir;
     }

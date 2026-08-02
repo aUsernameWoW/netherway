@@ -63,10 +63,17 @@ public final class SelfTest {
         testProxyProtocolSniff();
         testProxyProtocolInvalid();
         testSessionIdentityUsable();
-        testBridgeCandidatesDerivation();
-        testBridgeCandidatesConfigFirst();
-        testBridgeCandidatesCap();
-        testPrefetcherCommandKeepsTokenOut();
+        testServerCandidatesFromServerList();
+        testServerCandidatesConfigFirst();
+        testServerCandidatesCap();
+        testPreauthFrameRoundTrip();
+        testPreauthFrameSniff();
+        testPreauthFrameIncremental();
+        testPreauthFrameRejects();
+        testPreauthIdentityValidation();
+        testPreauthJsonEscaping();
+        testCredentialPolicyRoundTrip();
+        testCredentialV2StillDecodes();
         testWarmupRetryBackoff();
 
         System.out.println();
@@ -1074,72 +1081,243 @@ public final class SelfTest {
                 .contains("hush-secret"));
     }
 
-    private static void testBridgeCandidatesDerivation() {
-        List<String> got = BridgeDiscovery.candidates("", java.util.Arrays.asList(
-                "Play.Example.COM:25565",   // 大小写归一、去端口
-                "play.example.com",         // 与上一条推出同一候选，去重
-                "127.0.0.1:25595",          // 回环（本 mod 的直连条目）跳过
-                "localhost",                // 回环别名跳过
-                "[2001:db8::1]:25565",      // 带方括号的 IPv6 跳过
-                "2001:db8::7",              // 裸 IPv6 跳过
-                "  ",                       // 空白跳过
-                "relay.example.net:20001"));
-        check("推导出两个候选", got.size() == 2);
-        check("候选按约定路径拼装",
-                got.contains("https://play.example.com" + BridgeDiscovery.WELL_KNOWN_PATH));
-        check("保持 server.dat 顺序", got.get(0).contains("play.example.com")
-                && got.get(1).contains("relay.example.net"));
+    private static void testServerCandidatesFromServerList() {
+        List<ServerCandidates.Address> got = ServerCandidates.build(null,
+                java.util.Arrays.asList(
+                        "Play.Example.COM:25565",   // 大小写归一
+                        "play.example.com",         // 补默认端口后与上一条相同，去重
+                        "127.0.0.1:25595",          // 回环（本 mod 的直连条目）跳过
+                        "localhost",                // 回环别名跳过
+                        "[2001:db8::1]:25565",      // 带方括号的 IPv6 跳过
+                        "2001:db8::7",              // 裸 IPv6 跳过
+                        "  ",                       // 空白跳过
+                        "bad.example.com:70000",    // 端口越界跳过
+                        "relay.example.net:20001"));
+        check("列表里筛出两个候选", got.size() == 2);
+        check("主机名归一为小写", got.get(0).host.equals("play.example.com"));
+        check("不写端口时补 25565", got.get(0).port == ServerCandidates.DEFAULT_PORT);
+        check("保持 server.dat 顺序并保留显式端口",
+                got.get(1).host.equals("relay.example.net") && got.get(1).port == 20001);
     }
 
-    private static void testBridgeCandidatesConfigFirst() {
-        List<String> got = BridgeDiscovery.candidates("https://bridge.example.com/nw/",
+    private static void testServerCandidatesConfigFirst() {
+        List<ServerCandidates.Address> got = ServerCandidates.build(
+                new String[] {"pack.example.com:25566"},
                 java.util.Arrays.asList("play.example.com:25565"));
-        check("配置的地址排第一且去掉尾斜杠",
-                got.get(0).equals("https://bridge.example.com/nw"));
-        check("server.dat 推导紧随其后", got.get(1).equals(
-                "https://play.example.com" + BridgeDiscovery.WELL_KNOWN_PATH));
-        check("无 scheme 的配置补 https",
-                BridgeDiscovery.candidates("bridge.example.com", null).get(0)
-                        .equals("https://bridge.example.com"));
+        check("cfg 预置的地址排第一", got.get(0).host.equals("pack.example.com")
+                && got.get(0).port == 25566);
+        check("server.dat 条目紧随其后", got.get(1).host.equals("play.example.com"));
+        check("cfg 地址可以不写端口", ServerCandidates.build(
+                new String[] {"pack.example.com"}, null).get(0).port == 25565);
     }
 
-    private static void testBridgeCandidatesCap() {
+    private static void testServerCandidatesCap() {
         List<String> many = new ArrayList<String>();
         for (int i = 0; i < 20; i++) {
             many.add("host" + i + ".example.com:25565");
         }
-        List<String> got = BridgeDiscovery.candidates("", many);
-        check("候选数量有上限", got.size() == 8);
-        List<String> withCfg = BridgeDiscovery.candidates("https://cfg.example.com", many);
-        check("配置地址不占推导名额之外仍保留", withCfg.get(0).equals("https://cfg.example.com")
-                && withCfg.size() == 8);
+        check("候选数量有上限", ServerCandidates.build(null, many).size() == 8);
+        // 上限是总数：cfg 地址排在前面，挤掉的是 server.dat 里靠后的猜测
+        List<ServerCandidates.Address> withCfg = ServerCandidates.build(
+                new String[] {"cfg.example.com"}, many);
+        check("cfg 地址排第一", withCfg.get(0).host.equals("cfg.example.com"));
+        check("cfg 地址计入总上限", withCfg.size() == 8);
+        // cfg 自己就超过上限时一条都不能丢：那是整合包作者的明确指定
+        String[] manyCfg = new String[12];
+        for (int i = 0; i < manyCfg.length; i++) {
+            manyCfg[i] = "cfg" + i + ".example.com";
+        }
+        check("cfg 地址永不被上限截断",
+                ServerCandidates.build(manyCfg, many).size() == 12);
     }
 
-    private static void testPrefetcherCommandKeepsTokenOut() {
-        SessionIdentity id = SessionIdentity.of("Alice",
-                "069a79f4-44e9-4726-a5be-fca90e38aaf5", "hush-secret");
-        List<String> cmd = Prefetcher.command(Paths.get("agent"),
-                java.util.Arrays.asList("https://a.example.com", "https://b.example.com"),
-                id, Paths.get("credentials"));
-        check("子命令是 prefetch", cmd.get(1).equals("prefetch"));
-        int bridges = 0;
-        for (String c : cmd) {
-            if ("-bridge".equals(c)) {
-                bridges++;
-            }
+    private static void testPreauthFrameRoundTrip() throws Exception {
+        byte[] payload = PreauthProtocol.encodeHello("Alice",
+                "069a79f4-44e9-4726-a5be-fca90e38aaf5");
+        byte[] frame = PreauthProtocol.encodeRequest(PreauthProtocol.OP_HELLO, payload);
+        // 帧头布局是 mod 新旧版本之间的线上契约，逐字节钉住
+        check("帧以 NWAY 开头", frame[0] == 'N' && frame[1] == 'W'
+                && frame[2] == 'A' && frame[3] == 'Y');
+        check("第 5 字节是协议版本", (frame[4] & 0xFF) == PreauthProtocol.VERSION);
+        check("第 6 字节是操作码", (frame[5] & 0xFF) == PreauthProtocol.OP_HELLO);
+        check("payload 长度大端写在第 7-8 字节",
+                (((frame[6] & 0xFF) << 8) | (frame[7] & 0xFF)) == payload.length);
+
+        PreauthProtocol.Request req = PreauthProtocol.readRequest(frame, frame.length);
+        check("解出的帧长度与原帧一致", req.frameLength() == frame.length);
+        String[] hello = PreauthProtocol.decodeHello(req.payload);
+        check("HELLO 往返保真", hello[0].equals("Alice")
+                && hello[1].equals("069a79f4-44e9-4726-a5be-fca90e38aaf5"));
+
+        String[] confirm = PreauthProtocol.decodeConfirm(
+                PreauthProtocol.encodeConfirm("abc123", "Alice", "069a79f4"));
+        check("CONFIRM 往返保真", confirm[0].equals("abc123")
+                && confirm[1].equals("Alice") && confirm[2].equals("069a79f4"));
+    }
+
+    private static void testPreauthFrameSniff() {
+        // MC 现代握手：首字节是包长 VarInt，第 2 字节是包 id 0x00
+        byte[] mcHandshake = {0x10, 0x00, 0x2F, 0x09};
+        check("MC 握手不被当成预认证帧", Boolean.FALSE.equals(
+                PreauthProtocol.looksLikeFrame(mcHandshake, mcHandshake.length)));
+        byte[] legacyPing = {(byte) 0xFE, 0x01};
+        check("legacy ping 不被当成预认证帧", Boolean.FALSE.equals(
+                PreauthProtocol.looksLikeFrame(legacyPing, legacyPing.length)));
+        byte[] proxyV1 = {'P', 'R', 'O', 'X'};
+        check("PROXY v1 不被当成预认证帧", Boolean.FALSE.equals(
+                PreauthProtocol.looksLikeFrame(proxyV1, proxyV1.length)));
+        byte[] proxyV2 = {0x0D, 0x0A, 0x0D, 0x0A};
+        check("PROXY v2 不被当成预认证帧", Boolean.FALSE.equals(
+                PreauthProtocol.looksLikeFrame(proxyV2, proxyV2.length)));
+        // 首字节相同、第 2 字节才分叉的情况：必须等到第 2 字节才下定论
+        byte[] justN = {'N'};
+        check("只有 1 个字节时不下定论",
+                PreauthProtocol.looksLikeFrame(justN, justN.length) == null);
+        byte[] nButNotW = {'N', 0x00};
+        check("第 2 字节不符即判定不是", Boolean.FALSE.equals(
+                PreauthProtocol.looksLikeFrame(nButNotW, nButNotW.length)));
+        check("魔数齐了即判定是", Boolean.TRUE.equals(
+                PreauthProtocol.looksLikeFrame(PreauthProtocol.MAGIC,
+                        PreauthProtocol.MAGIC.length)));
+    }
+
+    private static void testPreauthFrameIncremental() throws Exception {
+        byte[] frame = PreauthProtocol.encodeRequest(PreauthProtocol.OP_HELLO,
+                PreauthProtocol.encodeHello("Bob", "069a79f444e94726a5befca90e38aaf5"));
+        // 嗅探器是一个字节一个字节攒的：收全之前必须一直说「还不够」
+        for (int n = 0; n < frame.length; n++) {
+            check("收到 " + n + " 字节时还不成帧",
+                    PreauthProtocol.readRequest(frame, n) == null);
         }
-        check("每个候选一个 -bridge", bridges == 2);
-        check("带玩家名与 uuid", cmd.contains("Alice")
-                && cmd.contains("069a79f4-44e9-4726-a5be-fca90e38aaf5"));
-        // accessToken 走环境变量，绝不能出现在命令行（进程列表对同机用户可见）
-        boolean leaked = false;
-        for (String c : cmd) {
-            if (c.contains("hush-secret") || "-token".equals(c)) {
-                leaked = true;
-            }
+        check("收全即成帧", PreauthProtocol.readRequest(frame, frame.length) != null);
+        // 粘包：后面跟着下一帧的字节不影响本帧解析
+        byte[] withTail = new byte[frame.length + 5];
+        System.arraycopy(frame, 0, withTail, 0, frame.length);
+        PreauthProtocol.Request req = PreauthProtocol.readRequest(withTail, withTail.length);
+        check("粘包时只吃掉本帧", req != null && req.frameLength() == frame.length);
+    }
+
+    private static void testPreauthFrameRejects() {
+        boolean threw = false;
+        try {
+            byte[] notOurs = {'H', 'T', 'T', 'P', '/', '1', '.', '1'};
+            PreauthProtocol.readRequest(notOurs, notOurs.length);
+        } catch (java.io.IOException e) {
+            threw = true;
         }
-        check("accessToken 不进命令行", !leaked);
-        check("不传 -authserver（由 authbridge 告知）", !cmd.contains("-authserver"));
+        check("非预认证帧直接报错", threw);
+
+        // 声称的 payload 超限：必须在分配缓冲之前就拒绝
+        byte[] huge = new byte[PreauthProtocol.REQUEST_HEADER_LEN];
+        System.arraycopy(PreauthProtocol.MAGIC, 0, huge, 0, 4);
+        huge[4] = (byte) PreauthProtocol.VERSION;
+        huge[5] = (byte) PreauthProtocol.OP_HELLO;
+        huge[6] = (byte) 0xFF;
+        huge[7] = (byte) 0xFF;
+        boolean rejected = false;
+        try {
+            PreauthProtocol.readRequest(huge, huge.length);
+        } catch (java.io.IOException e) {
+            rejected = true;
+        }
+        check("payload 声称超限即拒绝", rejected);
+
+        boolean tooBig = false;
+        try {
+            PreauthProtocol.encodeRequest(PreauthProtocol.OP_HELLO,
+                    new byte[PreauthProtocol.MAX_PAYLOAD + 1]);
+        } catch (IllegalArgumentException e) {
+            tooBig = true;
+        }
+        check("编码超限 payload 即拒绝", tooBig);
+    }
+
+    private static void testPreauthIdentityValidation() {
+        check("正常身份通过", PreauthProtocol.validateIdentity("Alice",
+                "069a79f4-44e9-4726-a5be-fca90e38aaf5").isEmpty());
+        check("不带连字符的 uuid 也通过", PreauthProtocol.validateIdentity("Alice",
+                "069a79f444e94726a5befca90e38aaf5").isEmpty());
+        check("空用户名被拒", !PreauthProtocol.validateIdentity("",
+                "069a79f444e94726a5befca90e38aaf5").isEmpty());
+        // 换行会伪造日志行，必须从源头掐死
+        check("含换行的用户名被拒", !PreauthProtocol.validateIdentity("Al\nice",
+                "069a79f444e94726a5befca90e38aaf5").isEmpty());
+        check("超长用户名被拒", !PreauthProtocol.validateIdentity(
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "069a79f444e94726a5befca90e38aaf5").isEmpty());
+        check("非 hex uuid 被拒",
+                !PreauthProtocol.validateIdentity("Alice", "not-a-uuid").isEmpty());
+        check("serverId 接受 hex", PreauthProtocol.validServerId("a1b2c3d4"));
+        check("serverId 拒绝非 hex", !PreauthProtocol.validServerId("hello!"));
+        check("serverId 拒绝空", !PreauthProtocol.validServerId(""));
+        check("serverId 拒绝超长", !PreauthProtocol.validServerId(
+                "0123456789012345678901234567890123456789012345678901234567890123456789"));
+        check("uuid 归一去连字符", PreauthProtocol.normalizeUuid(
+                "069a79f4-44e9-4726-a5be-fca90e38aaf5")
+                .equals("069a79f444e94726a5befca90e38aaf5"));
+    }
+
+    private static void testPreauthJsonEscaping() {
+        StringBuilder sb = new StringBuilder();
+        PreauthClient.escape(sb, "a\"b\\c\nd");
+        check("join 请求体转义引号与反斜杠",
+                sb.toString().equals("a\\\"b\\\\c\\nd"));
+        StringBuilder ctrl = new StringBuilder();
+        PreauthClient.escape(ctrl, "x" + ((char) 1) + "y");
+        check("控制字符转成转义序列", ctrl.toString().equals("x\\u0001y"));
+    }
+
+    private static void testCredentialPolicyRoundTrip() throws Exception {
+        Credentials base = Credentials.frpXtcp("203.0.113.7", 7000, "tok",
+                "stun.example.com:3478", "gtnh", "s3cret", 15_000);
+        check("默认没有策略", base.policy().isEmpty());
+        check("未下发时策略为关",
+                !base.policyEnabled(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
+
+        java.util.Map<String, String> policy = new java.util.LinkedHashMap<String, String>();
+        policy.put(Credentials.POLICY_ZERO_CONFIG_PREFETCH, "1");
+        Credentials granted = base.withPolicy(policy);
+        check("withPolicy 不改原对象", base.policy().isEmpty());
+        check("策略已置位",
+                granted.policyEnabled(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
+
+        Credentials decoded = Credentials.decode(granted.encode());
+        check("策略经编解码保真",
+                decoded.policyEnabled(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
+        check("参数不受策略影响", decoded.param("secret").equals("s3cret"));
+        // 策略变化不能让同一房间的凭证被当成新凭证，否则会触发重复升级
+        check("策略不进 dedupKey", granted.dedupKey().equals(base.dedupKey()));
+        // 策略是服务端对客户端行为的授权，绝不能混进 agent 的参数表
+        check("策略不进 params",
+                !decoded.params().containsKey(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
+
+        java.util.Map<String, String> extra = new java.util.LinkedHashMap<String, String>();
+        extra.put(Credentials.PARAM_USER, "abc");
+        check("withExtraParams 保留策略", granted.withExtraParams(extra)
+                .policyEnabled(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
+    }
+
+    private static void testCredentialV2StillDecodes() throws Exception {
+        // 手工拼一份 v2 凭证：老服务端仍会下发，玩家缓存目录里也躺着这种。
+        // 本侧升到 v3 之后绝不能把它们当成损坏数据。
+        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+        java.io.DataOutputStream out = new java.io.DataOutputStream(buf);
+        out.writeByte(2);
+        out.writeUTF(Credentials.BACKEND_FRP_XTCP);
+        out.writeInt(15_000);
+        out.writeShort(2);
+        out.writeUTF(Credentials.PARAM_ROOM);
+        out.writeUTF("gtnh");
+        out.writeUTF("secret");
+        out.writeUTF("s3cret");
+        out.flush();
+
+        Credentials v2 = Credentials.decode(buf.toByteArray());
+        check("v2 凭证仍能解码", v2.room().equals("gtnh"));
+        check("v2 参数完整", v2.param("secret").equals("s3cret"));
+        check("v2 没有策略段时策略为空", v2.policy().isEmpty());
+        check("v2 解出的策略默认为关",
+                !v2.policyEnabled(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
     }
 
     private static void testWarmupRetryBackoff() {

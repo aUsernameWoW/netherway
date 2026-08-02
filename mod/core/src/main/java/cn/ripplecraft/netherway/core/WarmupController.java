@@ -6,8 +6,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 启动期预热：游戏加载时就提前打洞，玩家在服务器列表里直接选直连条目
  * 进服，不必先经中转等凭证下发。凭证来源有二：上次进服落下的缓存，以及
- * {@link Prefetcher}（配置了 authbridge 或能从服务器列表推导出来时）在
- * 每轮开始前的预取——首次启动、密钥轮换后都无需先走中转。
+ * {@link Prefetcher}（有可问的服务器地址时）在每轮开始前的预取——
+ * 首次启动、密钥轮换后都无需先走中转。
  *
  * <p><b>打不通就一直打。</b>预热是无限重试的循环：失败按
  * {@link Timings#warmupRetryDelayMs} 指数退避后重来，就绪后守望 agent
@@ -56,7 +56,7 @@ public final class WarmupController {
     private final Listener listener;
     /** 期望的本地端口；0 表示随机。被占用时 agent 自动回落到空闲端口。 */
     private final int bindPort;
-    /** 每轮开始前预取凭证；null 表示没有可用的 authbridge 候选。 */
+    /** 每轮开始前预取凭证；null 表示没有可问的服务器地址。 */
     private final Prefetcher prefetcher;
 
     private final AtomicBoolean started = new AtomicBoolean(false);
@@ -121,12 +121,12 @@ public final class WarmupController {
                 if (prefetcher != null) {
                     // 每轮都预取：密钥轮换（如服务端重启）后这里拿到新凭证，
                     // 下一跳打洞就直接成功，玩家中途无需走任何中转
-                    prefetcher.refresh(exe, cache.directory());
+                    prefetcher.refresh(cache);
                 }
                 Credentials cred = cache.loadMostRecent();
                 if (cred == null) {
                     if (prefetcher == null) {
-                        bridge.debug("没有缓存凭证也没有 authbridge 候选，跳过预热"
+                        bridge.debug("没有缓存凭证，也没有可预取的服务器地址，跳过预热"
                                 + "（首次进服后会自动缓存）");
                         return;
                     }
