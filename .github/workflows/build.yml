@@ -96,12 +96,12 @@ jobs:
       # 先装 8 再装运行版本：每次 setup-java 都会覆盖默认 JAVA_HOME，
       # 于是编译固定走 JAVA_HOME_8_X64，运行走默认的 java
       - name: 安装 JDK 8（编译用）
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5.6.0
         with:
           distribution: zulu
           java-version: 8
       - name: 安装 JDK ${{ matrix.java }}（运行用）
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5.6.0
         with:
           distribution: zulu
           java-version: ${{ matrix.java }}
@@ -123,12 +123,12 @@ jobs:
           go-version-file: go.mod
       # JDK 8 给编译 toolchain，JDK 21 给 Gradle/RFG 自己；顺序决定默认值
       - name: 安装 JDK 8（编译 toolchain）
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5.6.0
         with:
           distribution: zulu
           java-version: 8
       - name: 安装 JDK 21（运行 Gradle）
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5.6.0
         with:
           distribution: zulu
           java-version: 21
