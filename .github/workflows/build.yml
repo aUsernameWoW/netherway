@@ -141,7 +141,7 @@ jobs:
         working-directory: mod/platform/forge-1.7.10
         # fromEnv 让 Gradle 的 toolchain 探测认到 setup-java 装的 JDK 8
         run: ./gradlew build -Dorg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64 --console=plain
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: netherway-forge-1.7.10
           path: mod/platform/forge-1.7.10/build/libs/*.jar
