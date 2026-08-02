@@ -37,7 +37,7 @@ jobs:
           go-version-file: go.mod
       - run: go build ./...
       - run: go vet ./...
-      # 跨语言契约测试（authplugin/credfile 的已知答案向量）在这里守门：
+      # 跨语言契约测试（authplugin 的已知答案向量）在这里守门：
       # 只 build 不 test 的话，契约被改坏要到 Java 侧 SelfTest 才炸，甚至漏网
       - run: go test ./...
       # build.sh 的 -X symbol 名与 internal/config 的变量名是逐字契约，
@@ -49,12 +49,9 @@ jobs:
           ONLY=linux/amd64 \
           SERVER_ADDR=203.0.113.99 SERVER_PORT=7391 ROOM=ci-smoke-room \
           TOKEN=ci-dummy-token SECRET=ci-dummy-secret \
-          AUTHSERVER=https://ci-authserver.example.com \
-          AUTHBRIDGE=https://ci-authbridge.example.com \
             ./build.sh
           for v in 203.0.113.99 7391 ci-smoke-room \
-                   ci-dummy-token ci-dummy-secret \
-                   ci-authserver.example.com ci-authbridge.example.com; do
+                   ci-dummy-token ci-dummy-secret; do
             grep -aq "$v" bin/netherway-linux-amd64 || {
               echo "注入值 $v 未落进二进制：-X symbol 名与 internal/config 失配？"
               exit 1
