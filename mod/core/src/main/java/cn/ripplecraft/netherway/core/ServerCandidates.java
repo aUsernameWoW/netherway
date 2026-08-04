@@ -44,6 +44,23 @@ public final class ServerCandidates {
             this.port = port;
         }
 
+        /**
+         * 构造一个地址；主机为空或端口越界时返回 null。
+         *
+         * <p>给平台适配层用：它知道玩家正连着哪台服务器，但拿到的值来自
+         * 游戏内部结构，不保证合法，所以这里代为把关而不是让每个实现自己判。
+         */
+        public static Address of(String host, int port) {
+            if (host == null) {
+                return null;
+            }
+            String h = host.trim();
+            if (h.isEmpty() || port <= 0 || port > 65535) {
+                return null;
+            }
+            return new Address(h, port);
+        }
+
         @Override
         public String toString() {
             return host + ":" + port;

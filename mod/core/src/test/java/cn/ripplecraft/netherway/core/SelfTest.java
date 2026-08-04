@@ -43,6 +43,7 @@ public final class SelfTest {
         testBuildCommand();
         testDescribeCommandMasksValues();
         testServeCommand();
+        testCredentialsRendezvousAddress();
         testServeCommandRendezvous();
         testTlsRecordDetection();
         testTimingsNormalization();
@@ -476,6 +477,59 @@ public final class SelfTest {
         check("serve 描述保留房间名", desc.contains("-room test"));
     }
 
+    private static void testCredentialsRendezvousAddress() throws Exception {
+        Credentials viaRz = Credentials.frpXtcpViaRendezvous(
+                "TOKEN", "stun.example.com:3478", "gtnh", "SECRET", 15000);
+        check("会合点凭证不含 server", !viaRz.params().containsKey("server"));
+        check("会合点凭证不含 serverPort", !viaRz.params().containsKey("serverPort"));
+        check("会合点凭证自报缺地址", viaRz.needsRendezvousAddress());
+
+        Credentials filled = viaRz.rendezvousAt("mc.example.com", 25565);
+        check("补齐后 server 生效", "mc.example.com".equals(filled.params().get("server")));
+        check("补齐后 serverPort 生效", "25565".equals(filled.params().get("serverPort")));
+        check("补齐后不再缺地址", !filled.needsRendezvousAddress());
+        check("补齐不影响其它参数", "SECRET".equals(filled.params().get("secret")));
+        check("原对象不变（缺地址）", viaRz.needsRendezvousAddress());
+
+        // 服务端明确指定了地址就以服务端为准——它可能有意指向别的入口
+        Credentials explicit = Credentials.frpXtcp("frps.example.com", 7000, "T",
+                "stun.example.com:3478", "gtnh", "S", 15000);
+        check("经典凭证不缺地址", !explicit.needsRendezvousAddress());
+        Credentials untouched = explicit.rendezvousAt("mc.example.com", 25565);
+        check("已有地址不被覆盖",
+                "frps.example.com".equals(untouched.params().get("server")));
+        check("已有端口不被覆盖", "7000".equals(untouched.params().get("serverPort")));
+
+        // 非法地址不该把凭证改坏
+        check("空主机名不改动凭证", viaRz.rendezvousAt("", 25565).needsRendezvousAddress());
+        check("越界端口不改动凭证",
+                viaRz.rendezvousAt("mc.example.com", 70000).needsRendezvousAddress());
+        check("零端口不改动凭证",
+                viaRz.rendezvousAt("mc.example.com", 0).needsRendezvousAddress());
+
+        // 别的 backend 的地址键名由它们自己的契约决定，这里不该乱猜
+        java.util.Map<String, String> other = new java.util.LinkedHashMap<String, String>();
+        other.put(Credentials.PARAM_ROOM, "gtnh");
+        Credentials generic = new Credentials("some-other-backend", other, 15000);
+        check("非 frp-xtcp 不报缺地址", !generic.needsRendezvousAddress());
+        check("非 frp-xtcp 不被塞入 server",
+                !generic.rendezvousAt("mc.example.com", 25565).params().containsKey("server"));
+
+        // 编解码要能原样往返（少两个键不影响格式）
+        Credentials back = Credentials.decode(viaRz.encode());
+        check("会合点凭证编解码往返", back.needsRendezvousAddress()
+                && "gtnh".equals(back.params().get(Credentials.PARAM_ROOM)));
+
+        // withDefaultParams 的语义：只补空缺，不覆盖
+        java.util.Map<String, String> d = new java.util.LinkedHashMap<String, String>();
+        d.put("secret", "别的密钥");
+        d.put("新键", "新值");
+        Credentials merged = viaRz.withDefaultParams(d);
+        check("withDefaultParams 不覆盖已有值",
+                "SECRET".equals(merged.params().get("secret")));
+        check("withDefaultParams 补上缺失键", "新值".equals(merged.params().get("新键")));
+    }
+
     private static void testServeCommandRendezvous() {
         java.util.Map<String, String> params = new java.util.LinkedHashMap<String, String>();
         params.put("server", "frps.example.com");
@@ -573,9 +627,17 @@ public final class SelfTest {
         final CountDownLatch settled = new CountDownLatch(1);
         final CountDownLatch reportSent = new CountDownLatch(1);
         private final Path dir;
+        /** 测试可改：模拟「玩家正连着哪台服务器」，null 表示推导不出来。 */
+        ServerCandidates.Address currentServer =
+                ServerCandidates.Address.of("mc.example.com", 25565);
 
         FakeBridge(Path dir) {
             this.dir = dir;
+        }
+
+        @Override
+        public ServerCandidates.Address currentServerAddress() {
+            return currentServer;
         }
 
         @Override

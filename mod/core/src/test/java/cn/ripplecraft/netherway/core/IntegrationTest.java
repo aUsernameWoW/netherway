@@ -50,6 +50,12 @@ public final class IntegrationTest {
             }
 
             @Override
+            public ServerCandidates.Address currentServerAddress() {
+                // 端到端测试里凭证由命令行给全，不需要补地址
+                return null;
+            }
+
+            @Override
             public void notifyPlayer(String message) {
                 System.out.println("  [玩家提示] " + message);
             }

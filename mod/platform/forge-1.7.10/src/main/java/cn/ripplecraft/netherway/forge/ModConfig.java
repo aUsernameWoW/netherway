@@ -298,7 +298,17 @@ public final class ModConfig {
      */
     public Credentials serverCredentials() {
         try {
-            return new Credentials(backendId, serverParams, serverPunchTimeoutSeconds * 1000);
+            Map<String, String> p = serverParams;
+            if (serverRendezvous) {
+                // 内嵌会合点模式下地址由客户端自己补：会合点就在这台服务器的
+                // Minecraft 端口后面，玩家知道自己连的是哪；服务端反而未必知道
+                // 自己的公网入口（NAT 后、多入口、域名与实际入口不一致都常见），
+                // 把配置里可能陈旧的地址发下去只会让客户端连错地方。
+                p = new java.util.LinkedHashMap<String, String>(p);
+                p.remove("server");
+                p.remove("serverPort");
+            }
+            return new Credentials(backendId, p, serverPunchTimeoutSeconds * 1000);
         } catch (IllegalArgumentException e) {
             LOG.warn("凭证配置不完整: {}", e.getMessage());
             return null;

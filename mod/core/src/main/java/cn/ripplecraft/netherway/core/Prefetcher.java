@@ -45,6 +45,14 @@ public final class Prefetcher {
         for (ServerCandidates.Address addr : candidates) {
             try {
                 Credentials cred = client.fetch(addr, session, perCandidate);
+                // 预取是全流程里唯一确切知道「这份凭证来自哪台服务器」的地方：
+                // 内嵌会合点模式下服务端不写地址，就在这里替它补上再落盘，
+                // 之后预热直接拿来用即可（预热跑在玩家还没连服务器的时候，
+                // 那时已经无从得知来源了）。
+                if (cred.needsRendezvousAddress()) {
+                    bridge.debug("预取到的凭证未带会合点地址，按来源补为 " + addr);
+                    cred = cred.rendezvousAt(addr.host, addr.port);
+                }
                 cache.store(cred);
                 bridge.info("已从 " + addr + " 预取到房间 " + cred.room() + " 的凭证");
                 return true;

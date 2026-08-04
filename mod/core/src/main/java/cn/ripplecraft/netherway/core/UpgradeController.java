@@ -79,10 +79,14 @@ public final class UpgradeController {
      *
      * @return true 表示本次调用启动了升级流程
      */
-    public boolean onCredentials(final Credentials cred) {
-        if (cred == null) {
+    public boolean onCredentials(final Credentials raw) {
+        if (raw == null) {
             return false;
         }
+        // 内嵌会合点模式下服务端不写地址（它未必知道自己的公网入口），
+        // 由这里用玩家正连着的地址补齐。必须赶在落盘之前：缓存里那份将来
+        // 要供预热直接使用，而预热跑在玩家还没连任何服务器的时候。
+        final Credentials cred = withRendezvousAddress(raw);
 
         // 每次下发（含重复下发）都刷新缓存：参数可能轮换过，文件修改时间
         // 也用作「最近用过的房间」排序。写盘在后台线程做，netty 线程不碰磁盘。
@@ -318,6 +322,34 @@ public final class UpgradeController {
     }
 
     /** 后台把凭证写进缓存；缓存是尽力而为的优化，失败绝不影响升级流程。 */
+    /**
+     * 凭证缺会合点地址时，用玩家正连着的服务器地址补齐。
+     *
+     * <p>地址取自平台层的「玩家选中的那台服务器」而不是当前 socket 的对端：
+     * 升级成功后玩家会重连到本机直连条目，那时对端是回环地址，服务端此刻
+     * 还会再下发一次凭证（重复分支），用对端地址补就会把回环写进缓存，
+     * 下一轮预热便会让 agent 去连自己的回环。{@link ClientBridge#currentServerAddress}
+     * 的契约要求实现返回原始服务器，拿不准时返回 null。
+     *
+     * <p>补不上也照常往下走：agent 那边缺 {@code server} 会响亮报错，
+     * 比在这里悄悄拦下更好排查——而缺 {@code serverPort} 反而会静默落到
+     * frp 的默认 7000，所以两个键必须一起补，绝不能只补一个。
+     */
+    private Credentials withRendezvousAddress(Credentials cred) {
+        if (!cred.needsRendezvousAddress()) {
+            return cred;
+        }
+        ServerCandidates.Address at = bridge.currentServerAddress();
+        if (at == null) {
+            bridge.warn("凭证未带会合点地址，而当前连接的服务器地址也推导不出来，"
+                    + "直连多半会失败（服务端若开着 server.rendezvous，"
+                    + "请确认玩家是从服务器列表进服的）", null);
+            return cred;
+        }
+        bridge.debug("凭证未带会合点地址，按当前连接补为 " + at);
+        return cred.rendezvousAt(at.host, at.port);
+    }
+
     private void rememberAsync(final Credentials cred) {
         if (cache == null) {
             return;

@@ -134,6 +134,16 @@ public final class WarmupController {
                         bridge.info("暂无可用凭证（预取未成功且无缓存），将按退避周期持续重试");
                         loggedIdle = true;
                     }
+                } else if (cred.needsRendezvousAddress()) {
+                    // 缓存里的凭证没带会合点地址就没法用：预热跑在玩家还没连
+                    // 任何服务器的时候，此刻无从推导来源。正常路径上预取与升级
+                    // 都会在落盘前补好，走到这里说明缓存是更早的版本或被改过。
+                    // 硬拦下来而不是照跑——agent 缺 serverPort 会静默用 frp 的
+                    // 默认 7000，那种失败查起来毫无线索。
+                    if (!loggedIdle) {
+                        bridge.info("缓存凭证未带会合点地址，无法预热（进服一次即会重新缓存）");
+                        loggedIdle = true;
+                    }
                 } else if (runAttempt(cred, exe, cacheDir, agentLog)) {
                     // 就绪过又退出：清零退避，尽快恢复直连条目
                     attempt = 0;

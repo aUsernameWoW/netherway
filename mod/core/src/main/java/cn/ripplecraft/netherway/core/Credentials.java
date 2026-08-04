@@ -136,6 +136,25 @@ public final class Credentials {
         return new Credentials(BACKEND_FRP_XTCP, p, punchTimeoutMs);
     }
 
+    /**
+     * 构造走内嵌会合点的 frp xtcp 凭证：不含 {@code server}/{@code serverPort}。
+     *
+     * <p>会合点就在玩家正连着的那台服务器的 Minecraft 端口后面，客户端自己
+     * 知道该连哪；服务端反而未必知道自己的公网地址（NAT 后、多入口、
+     * 域名与实际入口不一致都很常见），让它填只会填错。客户端用
+     * {@link #rendezvousAt} 在启动 agent 前补上。
+     */
+    public static Credentials frpXtcpViaRendezvous(String token, String stunServer,
+                                                   String roomName, String secretKey,
+                                                   int punchTimeoutMs) {
+        Map<String, String> p = new LinkedHashMap<String, String>();
+        p.put("token", require(token, "token"));
+        p.put("stun", require(stunServer, "stunServer"));
+        p.put(PARAM_ROOM, require(roomName, "roomName"));
+        p.put("secret", require(secretKey, "secretKey"));
+        return new Credentials(BACKEND_FRP_XTCP, p, punchTimeoutMs);
+    }
+
     /** 从工厂产物提取键集，保证与上面的键名字面量永远一致、不会改岔。 */
     private static final java.util.Set<String> FRP_XTCP_PARAM_KEYS =
             frpXtcp("_", 1, "_", "_", "_", "_", 0).params().keySet();
@@ -258,6 +277,62 @@ public final class Credentials {
         Map<String, String> merged = new LinkedHashMap<String, String>(params);
         merged.putAll(extra);
         return new Credentials(backendId, merged, punchTimeoutMs, policy);
+    }
+
+    /**
+     * 返回补齐了缺失参数的新凭证（原对象不变）；已有的键<b>不会</b>被覆盖。
+     *
+     * <p>与 {@link #withExtraParams} 相反的优先级，用途也相反：那个是服务端
+     * 往凭证里塞东西（该覆盖），这个是客户端在用凭证前补上服务端没说的部分
+     * （服务端说了就以服务端为准）。
+     *
+     * <p>典型用途是会合点地址：内嵌会合点模式下服务端不必再在凭证里写
+     * {@code server}/{@code serverPort}——会合点就在玩家正连着的那台服务器的
+     * Minecraft 端口后面，客户端自己知道该连哪，服务端反而未必知道自己的
+     * 公网地址。见 {@link #rendezvousAt}。
+     */
+    public Credentials withDefaultParams(Map<String, String> defaults) {
+        Map<String, String> merged = new LinkedHashMap<String, String>(params);
+        for (Map.Entry<String, String> e : defaults.entrySet()) {
+            String existing = merged.get(e.getKey());
+            if (existing == null || existing.isEmpty()) {
+                merged.put(e.getKey(), e.getValue());
+            }
+        }
+        return new Credentials(backendId, merged, punchTimeoutMs, policy);
+    }
+
+    /**
+     * 把「会合点在哪」补进凭证：缺 {@code server}/{@code serverPort} 时填成
+     * 给定地址，服务端已经指定的一律不动。
+     *
+     * <p>只对 {@link #BACKEND_FRP_XTCP} 有意义；其它 backend 的地址键名由
+     * 它们自己的契约决定，这里不猜。
+     */
+    public Credentials rendezvousAt(String host, int port) {
+        if (!BACKEND_FRP_XTCP.equals(backendId)) {
+            return this;
+        }
+        if (host == null || host.isEmpty() || port <= 0 || port > 65535) {
+            return this;
+        }
+        Map<String, String> d = new LinkedHashMap<String, String>();
+        d.put("server", host);
+        d.put("serverPort", Integer.toString(port));
+        return withDefaultParams(d);
+    }
+
+    /**
+     * 凭证是否还缺会合点地址——缺就必须由调用方用 {@link #rendezvousAt}
+     * 补上，否则 agent 会落回构建期注入的默认值（mod 分发的二进制里是空的），
+     * 表现为「未指定 frps 地址」。
+     */
+    public boolean needsRendezvousAddress() {
+        if (!BACKEND_FRP_XTCP.equals(backendId)) {
+            return false;
+        }
+        String s = params.get("server");
+        return s == null || s.isEmpty();
     }
 
     /** 返回附加了客户端策略的新凭证（原对象不变），同名键被覆盖。 */
