@@ -66,6 +66,15 @@ func (l LogOptions) orDefault() LogOptions {
 	return l
 }
 
+// InitLogger 初始化 frp 的全局日志器。
+//
+// frp 的日志器是进程级全局的，frps 与 frpc 共用。同进程里两者都要跑时
+// （serve 的内嵌会合点模式），调用方应在启动 frps 之前先调一次这个，
+// 否则会合点的日志会走 frp 自己的默认去向。
+func InitLogger(log LogOptions) {
+	initFrpLogger(log.orDefault())
+}
+
 // initFrpLogger 初始化 frp 的全局日志器。
 //
 // 必须显式初始化：client.NewService 不会读 Log 配置去建日志器，

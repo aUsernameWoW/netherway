@@ -65,8 +65,12 @@ func usage() {
   -v       输出调试日志
 
 serve 专有:
-  -meta-token  向 frps 的 authplugin 表明身份的静态令牌（authplugin -static-token 同值）
+  -meta-token  向 authplugin 表明身份的静态令牌（authplugin -static-token 同值）
   -proxy-protocol  连本地 MC 端口前先发 PROXY protocol 头（v1/v2），MC 侧需能剥头
+  -rendezvous  内嵌会合点端口（回环）。非零即启用：不连公网 frps，改在本机起
+               会合点，玩家的控制连接由 MC 服务端从 Minecraft 端口转发进来。
+               公网侧因此只需要一条能到 Minecraft 端口的哑 TCP 隧道
+  -signing-key 每玩家令牌签发密钥（仅内嵌会合点模式）
 
 tunnel 专有:
   -backend   隧道方案，默认 frp-xtcp
@@ -129,17 +133,23 @@ func cmdServe(args []string) error {
 		"向 frps 的 authplugin 表明身份的静态令牌；frps 未部署 authplugin 时不需要")
 	proxyProtocol := fs.String("proxy-protocol", "",
 		"连本地 MC 端口前先发 PROXY protocol 头（v1 或 v2），MC 侧需能剥头；留空关闭")
+	rendezvousPort := fs.Int("rendezvous", 0,
+		"内嵌会合点端口（回环）；非零时不连公网 frps，改在本机起会合点，"+
+			"玩家的控制连接由 MC 服务端从 Minecraft 端口转发进来")
+	signingKey := fs.String("signing-key", "",
+		"每玩家令牌签发密钥，仅内嵌会合点模式下有意义（与服务端 mod 的 tokenSigningKey 同值）")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *rendezvousPort != 0 {
+		return serveEmbedded(ep, room, *localPort, *rendezvousPort,
+			*signingKey, *metaToken, *proxyProtocol, *verbose)
 	}
 	if err := validate(ep, room); err != nil {
 		return err
 	}
-	// frp 的校验也会拦，但那条报错是英文且埋在配置校验里；这里先给句明白话。
-	switch *proxyProtocol {
-	case "", "v1", "v2":
-	default:
-		return fmt.Errorf("-proxy-protocol 只接受 v1 或 v2（收到 %q）", *proxyProtocol)
+	if err := checkProxyProtocol(*proxyProtocol); err != nil {
+		return err
 	}
 	if *metaToken != "" {
 		ep.Metas = map[string]string{"token": *metaToken}
