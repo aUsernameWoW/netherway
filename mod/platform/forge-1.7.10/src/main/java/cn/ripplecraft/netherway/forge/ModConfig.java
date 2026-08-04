@@ -96,6 +96,25 @@ public final class ModConfig {
                 "内置 serve 发布的 Minecraft 本地端口，0 表示使用服务器实际监听的端口");
         backendId = cfg.getString("backend", "server", Credentials.BACKEND_FRP_XTCP,
                 "隧道方案标识，与 agent 的 -backend 一致");
+        // 会合点开关必须先于 params 读出来：token=auto 只在会合点模式下成立
+        // （经典模式的 token 是公网 frps 的 auth.token，本机生成毫无意义）。
+        boolean rendezvousWanted = cfg.getBoolean("rendezvous", "server", false,
+                "内嵌会合点：不再连公网 frps，改在本机起一个只监听回环的会合点，\n"
+                + "玩家的 frp 控制连接由本 mod 从 Minecraft 端口转发进去。\n"
+                + "公网那台机器因此只需要把 TCP 转到 Minecraft 端口——不装插件、\n"
+                + "不必支持 xtcp、不必与本 mod 同版本，租来的隧道服务也能用。\n"
+                + "需要 runAgent=true。开启后 params 里的 server/serverPort 会被忽略：\n"
+                + "会合点就在本服 Minecraft 端口后面，客户端按自己正连着的地址补齐，\n"
+                + "服务端未必知道自己的公网入口。token 可填 auto 随重启轮换");
+        if (rendezvousWanted && !serverRunAgent) {
+            // 光警告不够：serverCredentials 会据此摘掉地址，若这里仍按开启处理，
+            // 就会下发「缺地址却没有会合点」的凭证，玩家全员打洞失败，
+            // 而服主看日志只会以为自己在经典模式。所以直接按关闭处理。
+            LOG.warn("server.rendezvous 需要 server.runAgent=true（会合点起在内置 serve "
+                    + "进程里，独立运行的 serve 不会开它）。本次按未启用处理");
+        }
+        serverRendezvous = rendezvousWanted && serverRunAgent;
+
         Map<String, String> params = parseParams(cfg.getStringList("params", "server",
                 new String[0], "backend 参数，每行一个 key=value"), backendId);
         // secret=auto：每次启动生成随机密钥，等于给玩家侧缓存的凭证上了
@@ -112,6 +131,22 @@ public final class ModConfig {
                         + "玩家侧无需任何操作");
             }
         }
+        // token=auto：同理，但只对内嵌会合点有意义——那个令牌只在服务端进程内
+        // 被校验，本机生成即可，重启轮换让旧凭证自然失效。经典模式下 token 是
+        // 公网 frps 的 auth.token，必须与那台机器一致，生成一个只会全员登录失败。
+        if ("auto".equals(params.get("token"))) {
+            if (serverRendezvous) {
+                params.put("token", randomSecret());
+                if (serverEnabled) {
+                    LOG.info("token=auto：本次启动已生成随机会合点令牌，服务端每次重启轮换，"
+                            + "玩家侧无需任何操作");
+                }
+            } else {
+                LOG.warn("token=auto 只在 server.rendezvous=true 时有意义（经典模式的 token "
+                        + "必须与公网 frps 的 auth.token 一致）。已按字面值 \"auto\" 使用，"
+                        + "这几乎肯定不是你想要的");
+            }
+        }
         serverParams = params;
         serverPunchTimeoutSeconds = cfg.getInt("punchTimeoutSeconds", "server", 0, 0, 3600,
                 "建议客户端使用的打洞超时秒数，0 表示由客户端自己配置");
@@ -120,13 +155,6 @@ public final class ModConfig {
                 + "启用后每次登录都为该玩家签发绑定其 UUID、带有效期的令牌（user/userToken 参数）");
         tokenTtlDays = cfg.getInt("tokenTtlDays", "server", 30, 1, 3650,
                 "每玩家令牌的有效天数；每次登录自动续签，只需覆盖玩家两次游玩的间隔");
-        serverRendezvous = cfg.getBoolean("rendezvous", "server", false,
-                "内嵌会合点：不再连公网 frps，改在本机起一个只监听回环的会合点，\n"
-                + "玩家的 frp 控制连接由本 mod 从 Minecraft 端口转发进去。\n"
-                + "公网那台机器因此只需要把 TCP 转到 Minecraft 端口——不装插件、\n"
-                + "不必支持 xtcp、不必与本 mod 同版本，租来的隧道服务也能用。\n"
-                + "需要 runAgent=true；开启后 params 里的 server/serverPort 应填\n"
-                + "玩家能连到的地址与端口（即 Minecraft 服务器的公网入口）");
         serveAuthToken = cfg.getString("serveAuthToken", "server", "",
                 "内置 serve 向 authplugin 表明身份的静态令牌（与 authplugin 的 -static-token 同值），\n"
                 + "刻意不放进 params——它只属于 serve，绝不能随凭证下发给玩家；\n"

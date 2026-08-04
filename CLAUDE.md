@@ -19,7 +19,8 @@ mod；旧缓存目录成为孤儿（首次中转进服后在新目录自愈）�
 
 仓库包含两个独立但配套的部分：
 
-- **Go agent**（仓库根目录）— 内嵌 frpc 作为库，负责打洞与隧道
+- **Go agent**（仓库根目录）— 内嵌 frpc 作为库，负责打洞与隧道；
+  开了内嵌会合点时还内嵌 frps（`internal/rendezvous`）
 - **Java mod core**（`mod/core`）— 供 Minecraft mod 使用，驱动 agent 并在打洞成功后切换连接
 
 ## 常用命令
@@ -30,7 +31,8 @@ mod；旧缓存目录成为孤儿（首次中转进服后在新目录自愈）�
 go build ./... && go vet ./... && go test ./...
 ```
 
-Go 测试目前只有 `internal/authplugin`（含与 Java 侧的跨语言已知答案向量）。
+Go 测试覆盖 `internal/authplugin`（含与 Java 侧的跨语言已知答案向量）与
+`internal/rendezvous`（会合点的绑定范围与令牌生成）。
 预认证与凭证预取已整体搬进 mod（见「预认证」一节），agent 不再参与，
 原先的 `internal/authbridge` 与 `internal/credfile` 已删除。
 
@@ -57,7 +59,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.nethe
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 212 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 370 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -128,9 +130,9 @@ core 与平台适配层不解释参数，无需改动。约束：**backend 实�
 
 | 子命令 | 用途 | 关键差异 |
 |---|---|---|
-| `serve` | 服务器宿主机 | 注册 xtcp 代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand`；`-meta-token` 向 authplugin 表明身份 |
+| `serve` | 服务器宿主机 | 注册 xtcp 代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand`；`-meta-token` 向 authplugin 表明身份；`-rendezvous` 启用内嵌会合点（见下节） |
 | `tunnel` | 供 mod 调用 | **经 backend 抽象、无兜底**，超时即退出，stdout 输出 JSON |
-| `authplugin` | frps 宿主机 | frps 的 HTTP server plugin：Login 校验每玩家令牌，NewProxy 只放行静态令牌（serve）；`-allow-legacy` 是迁移开关 |
+| `authplugin` | frps 宿主机 | frps 的 HTTP server plugin：Login 校验每玩家令牌，NewProxy 只放行静态令牌（serve）；`-allow-legacy` 是迁移开关。内嵌会合点模式下不必独立部署，`internal/rendezvous` 会在回环上自带一份 |
 
 凭证预取不在这张表里：它是 mod 与 MC 服务端之间在 Minecraft 端口上的一次
 对话，不经 agent（见下节）。
@@ -141,6 +143,69 @@ core 与平台适配层不解释参数，无需改动。约束：**backend 实�
 整个项目已无 stcp 兜底（独立 join/start/stop 模式与 relay 代理、`lanbeacon`
 组播广播于 2026-08 一并移除，实测留档在 docs/field-notes.md）。
 `serve` 是独立运行的 frp 工具，不走 backend 抽象。
+
+### 内嵌会合点（`server.rendezvous`，默认关）
+
+xtcp 打洞里 frps 只负责在两条控制连接之间转发信令：地址发现靠外部 STUN
+（`internal/stunpick`），打通后的数据流根本不经过它。既然会合点只需要收发
+TCP，就没有理由必须待在公网——`internal/rendezvous` 把 frps 作为库嵌进
+serve 进程，**只监听回环**，玩家的控制连接由平台层的 `ConnectionSniffer`
+从 Minecraft 端口转发进去（frp 控制通道是 TLS，首字节 `0x16 0x03`，判定在
+core 的 `TlsRecord`）。
+
+公网侧因此对本项目再无任何要求：不装插件、不必支持 xtcp、不必同版本，
+只要能把 TCP 转到 Minecraft 端口。租来的隧道服务、nginx stream、一条 NAT
+规则都可以，服主不必自建 frps。
+
+几条必须记住的约束：
+
+- **会合点只能绑回环**（`Options.Validate` 强制）。绑到别的地址就等于多开一个
+  公网口，而「服务器对外只剩那一个映射端口」是整个设计的立足点。这种回归从
+  功能上察觉不到，所以 `rendezvous_test.go` 用「同一端口在各非回环地址上还能
+  否被自己绑上」来钉住——**不要改成拨号探测**，开发机上的透明代理会接受任意
+  地址端口的连接，让这条测试假通过（第一版就是这么误报的）。
+- **监听面显式归零**：kcp/quic/vhost/dashboard/ssh 全部写成 0。零值本来就不开
+  监听，写出来是防 frp 改默认值。
+- **端口由平台层统一挑**（`Netherway.resolveRendezvousPort`），再分别传给嗅探器
+  与 `ServeCommand`，两边必须是同一个数。
+- **开了每玩家令牌校验时 serve 自己也得过这一关**：它未指定静态令牌时会本机
+  生成一个（`serveEmbedded`），否则会被自己的插件拒登、代理都注册不上。
+- **`token=auto` 才会轮换**，与 `secret=auto` 同构、同样在 `ModConfig` 里生成
+  （serve 与下发凭证同源）。写死的 token 就是钉死的；而 params 里完全不写
+  token 会让凭证缺令牌、客户端回落到构建期默认值（jar 里为空）导致全员失败——
+  所以 rendezvous 模式下 token 仍是必填项，只是填什么都行。
+  serve 自己那句「未指定即随机生成」只在手工跑 `netherway serve -rendezvous`
+  时才够得着。
+- 凭证因此**不带 `server`/`serverPort`**，见下节。
+
+### 凭证里的会合点地址由客户端补
+
+内嵌会合点就在这台服务器的 Minecraft 端口后面，客户端知道自己连的是哪；
+服务端反而未必知道自己的公网入口（NAT 后、多入口、域名与实际入口不一致）。
+所以 `rendezvous=true` 时 `ModConfig.serverCredentials` 会摘掉这两个键，
+由客户端在交给 agent 之前用 `Credentials.rendezvousAt` 补齐。
+
+补齐的优先级与 `withExtraParams` 刻意相反：`withDefaultParams` **只补空缺、
+不覆盖**。前者是服务端往凭证里塞东西（该覆盖），后者是客户端补服务端没说的
+部分（服务端说了就以服务端为准，服主仍可指定别的入口）。
+
+三条消费路径的地址来源各不相同，改动时三处都要想到：
+
+| 路径 | 地址来源 |
+|---|---|
+| 升级（`UpgradeController.onCredentials`） | `ClientBridge.currentServerAddress()`，补齐**发生在落盘之前** |
+| 预取（`Prefetcher.refresh`） | 循环里的候选 `addr`——全流程唯一确切知道凭证来自哪台服务器的地方 |
+| 预热（`WarmupController`） | 不推导，只使用；缓存里仍缺地址就硬拦下来并提示 |
+
+**`currentServerAddress()` 必须返回玩家最初选中的那台服务器，不是当前 socket
+的对端。** 升级成功后玩家会重连到本机直连条目，服务端此时还会再下发一次凭证
+（重复分支），用对端地址补就会把回环写进缓存，下一轮预热便让 agent 去连自己
+的回环。Forge 实现取 `Minecraft.currentServerData`——`connectTo` 用的恰好是
+**不设置 ServerData 的那个** `GuiConnecting` 构造函数，切换后它仍指向原服务器；
+仍额外挡掉回环，因为玩家也可能是从直连条目进服的。
+
+`server` 与 `serverPort` **必须一起补**：Go 侧缺 `server` 会响亮报错，而缺
+`serverPort` 会静默落到 frp 的默认 7000，只补一个的失败查不出所以然。
 
 ### 就绪判断靠主动探测
 
@@ -196,8 +261,9 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 **整个交换在 Minecraft 那一个端口上完成，服务器不多开任何监听端口。**
 帧靠首字节与 MC 流量分叉：预认证帧以 `NWAY` 开头，而 MC 现代握手第 2 字节
 是包 id `0x00`、legacy ping 以 `0xFE` 开头、PROXY protocol 以 `'P'` 或 `0x0D`
-开头，最迟第 2 字节就分得开。平台层的 `ConnectionSniffer` 是唯一的嗅探
-handler——预认证与 PROXY 剥头**必须合成一个**，它们抢的是同一批首字节。
+开头、frp 控制通道以 TLS 的 `0x16 0x03` 开头，最迟第 2 字节就分得开。
+平台层的 `ConnectionSniffer` 是唯一的嗅探 handler——预认证、frp 控制通道转发
+（内嵌会合点）与 PROXY 剥头**必须合成一个**，三者抢的是同一批首字节。
 
 - 协议：core 的 `PreauthProtocol`（裸字节、版本化、有界），
   服务端 `PreauthService` ↔ 客户端 `PreauthClient`，两侧都是 Java。
@@ -235,6 +301,12 @@ authplugin 无状态校验（HMAC-SHA256，过期时间明文在令牌里）。
 按契约忽略未知键、以 legacy 身份登录，因此服务端可以先于客户端升级。
 吊销刻意无状态：全局作废 = 换签发密钥；按玩家即刻吊销不做（白名单已挡住
 MC 登录，隧道只通向 MC 端口）。
+
+内嵌会合点模式下这一层原样保留，只是换了个落点：frps 的插件机制只有 HTTP
+一种形态（`server.Service` 没有导出进程内注册插件的口子），所以
+`internal/rendezvous` 在回环上起一个只服务本进程的 HTTP 端点承载同一个
+`authplugin.Handler`。**签发密钥因此不必再放到公网机器上**，经 serve 的
+`-signing-key` 从服务端 cfg 直接传入。
 
 ## 关键约束
 
@@ -287,13 +359,31 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 **预热与升级的 agent 各写各的日志文件**（`tunnel-warmup.log` / `tunnel.log`）。
 预热未出结果时玩家就经中转进服的话，两个 agent 会同时在跑，共用文件会互相踩踏。
 
+**独占连接后必须摘掉下游 handler。** MC 的接入链第一个是
+`ReadTimeoutHandler(FMLNetworkHandler.READ_TIMEOUT)`（默认 30 秒），而嗅探器
+`addFirst` 挂在它前面。一旦进入独占模式（预认证或中继）就不再 `fireChannelRead`，
+那个 handler 收不到读事件就永远不重置计时，30 秒一到把连接掐掉——对承载整场
+游戏的中继连接是致命的，对预认证则会让 40 秒宽限变成死代码。`Sniffer.takeover`
+从 pipeline 尾部逐个摘到自己为止（不按固定名字列表，其它 mod 可能加了自己的
+handler）。摘掉 `packet_handler` 后下游无人消化 IO 异常，所以独占模式还要自行
+`exceptionCaught` 收场。
+
+**中继的背压必须由对端可写性驱动。** Netty 官方 HexDumpProxy 那套
+「`autoRead=false` + 写完成回调里再 `read()`」在 1.7.10 的 Netty 4.0.10 上会
+死锁：回环上的写常常同步完成，那个 `read()` 正好落在读循环内部，被循环结尾的
+`removeReadOp` 吞掉，实测几百 KB 即卡死。正确写法是 `writeAndFlush` 后判
+`peer.isWritable()`，不可写就 `setAutoRead(false)`，在对端的
+`channelWritabilityChanged` 里恢复。另外拨号会合点是异步的，这期间到达的字节
+要继续攒进 `pending`（上限对中继单列，用预认证的帧长上限去卡会误杀正常连接），
+接上后连同嗅探时吃掉的首字节一并补送——少送几个字节 frp 的握手就断了头。
+
 **PROXY protocol 头必须嗅探式解析，绝不能要求存在。** serve 的
 `-proxy-protocol`（服务端 cfg `server.proxyProtocol`）开启后，当前 frp
 （v0.70.0）下 xtcp 的 P2P 流没有 SrcAddr，配了也静默无头，等上游支持
 （fatedier/frp#2748，PR #5122 已 stale 关闭且其 visitor 侧 meta 帧的线上
 格式不可依赖）；frp 里只有 stcp 中转路径真的带头，而本项目的 stcp 兜底已
 随独立 join 模式移除——因此现阶段所有流量都无头。MC 侧剥头
-（core `ProxyProtocol` + 平台层 `ProxyProtocolInjector`）按首字节分叉嗅探，
+（core `ProxyProtocol` + 平台层 `ConnectionSniffer`）按首字节分叉嗅探，
 且只信来自回环的连接（frp 从本机拨入；局域网邻居可伪造头）。这是纯 serve
 侧配置，不进凭证参数表，客户端 mod 无需同步改动。
 
@@ -347,3 +437,16 @@ frp 的全局 token 泄露的滥用面由 authplugin 收敛（见「每玩家令
 （客户端侧经缓存自愈闭环恢复，无需操作）。签发密钥与静态令牌都不落盘到
 版本库，走服务端 cfg 与 authplugin 的旗标/环境变量；两侧启动日志打印
 **密钥指纹**（SHA-256 前 4 字节）供核对，绝不打印密钥本身。
+
+**内嵌会合点把这条边界整个改写了。** 经典模式下凭证里的 `token` 就是公网
+frps 的全局准入令牌——分发给几十个玩家的东西正是那台机器的门禁，authplugin
+存在的意义就是替它兜底。开了 `server.rendezvous` 后，凭证里的 token 只对
+服务端进程内那个会合点有意义，拿到公网机器上什么都打不开，填 `token=auto`
+还能随每次重启轮换；服主与隧道提供商之间的凭据从此不经玩家的手。签发密钥也不再
+需要放到公网机器上（authplugin 改由服务端在回环上自带）。于是租用他人的
+隧道服务成为可行选项：提供商只看到一条普通 TCP 隧道里的不透明字节，
+既不需要支持 xtcp，也无从观察打洞信令。
+
+注意这不改变预认证那条边界：帧仍然明文，凭证在网络路径上仍可见。只是可见
+的东西贬值了——泄露的隧道凭证换来的仍旧只是一条通向 MC 端口的路，而那个
+端口本来就公网可达。

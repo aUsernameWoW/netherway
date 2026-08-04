@@ -102,13 +102,10 @@ public final class Netherway {
      * 竞态窗口，但回环上的端口分配不会立刻复用，实践中足够。
      */
     private int resolveRendezvousPort() {
+        // serverRendezvous() 已是生效值（ModConfig 里与 runAgent 一并判定并告警），
+        // 这里不再重复检查——两处各判一次的话，将来改了条件很容易只改一处，
+        // 而「凭证按会合点形态下发、会合点却没起」是全员打洞失败且极难看出的故障。
         if (!config.serverRendezvous()) {
-            return 0;
-        }
-        if (!config.serverRunAgent()) {
-            LOG.warn("server.rendezvous 需要 server.runAgent=true："
-                    + "会合点起在内置 serve 进程里，独立运行的 serve 不会开它。"
-                    + "本次按不启用处理");
             return 0;
         }
         try {

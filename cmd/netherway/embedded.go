@@ -47,6 +47,17 @@ func serveEmbedded(ep *tunnel.Endpoint, room *config.Room, localPort, rendezvous
 
 	say := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
 
+	// 没有签发密钥就没有每玩家令牌可校验，此时绝不能起鉴权端点：插件会
+	// 因为玩家凭证里没有 user/userToken 而拒绝所有登录（AllowLegacy 为假），
+	// 表现是全员打洞失败而服主完全想不到是这个开关造成的。
+	// 静态令牌单独存在没有意义——它的用途是向共享的公网 frps 表明身份，
+	// 而内嵌会合点本来就只服务这一个进程。
+	if signingKey == "" && staticToken != "" {
+		say("已忽略静态令牌：未配置签发密钥（服务端 cfg 的 tokenSigningKey）时" +
+			"没有每玩家令牌可校验，内嵌会合点不启用鉴权端点")
+		staticToken = ""
+	}
+
 	// 开了每玩家令牌校验，serve 自己也得过这一关：它没带令牌的话
 	// 会被自己的插件拒登，代理都注册不上。调用方没指定就本机生成一个——
 	// 这个令牌纯属进程内自证身份，不进凭证、不需要任何人知道。

@@ -59,6 +59,14 @@ server {
     # 内置 serve 发布的本地端口，0 表示用服务器实际监听的端口
     I:localPort=0
 
+    # 内嵌会合点：不再连公网 frps，改在本机起一个只监听回环的会合点，
+    # 玩家的 frp 控制连接由本 mod 从 Minecraft 端口转发进去。开启后公网那台
+    # 机器只需要把 TCP 转到 Minecraft 端口——不装插件、不必支持 xtcp、
+    # 不必与本 mod 同版本，租来的隧道服务也能用。需要 runAgent=true。
+    # 开启时下面 params 里的 server / serverPort 会被忽略（客户端自己推导）；
+    # token 不必是真的（只有内嵌会合点会校验它），写 auto 即每次启动随机轮换。
+    B:rendezvous=false
+
     # backend 参数，每行一个 key=value；# 开头的行会被忽略
     S:params <
         server=frps.example.com
@@ -111,6 +119,11 @@ backend 实现（如 `internal/backend/frpxtcp`）保持一致。
 不部署也一切照常（全局 token 分层的基础校验仍在）。部署后：泄露的全局 token
 连 frps 都登不上，注册代理只认 serve 的静态令牌，玩家令牌绑定 UUID、30 天
 过期、登录即续签。
+
+> **开了 `rendezvous=true` 就不必读这一节。** 内嵌会合点会在回环上自带一个
+> 只服务本进程的 authplugin 端点，填了 `tokenSigningKey` 即生效，签发密钥
+> 不必再放到公网机器上，`serveAuthToken` 也不必填（未填时 serve 会本机生成
+> 一个自用的）。下面的独立部署只对连公网 frps 的经典模式有意义。
 
 frps 宿主机上运行（密钥经环境变量传入，避免出现在进程列表）：
 
@@ -185,8 +198,9 @@ ops = ["Login", "NewProxy"]
 预热隧道本身不归 `UpgradeController` 管：它活到游戏进程结束（承载着服务器
 列表里的直连条目），断开、换服都不停，退出由 shutdown hook 兜底。
 
-**PROXY protocol 剥头挂在 accept 链上**（`ProxyProtocolInjector`，仅服务端、
-仅 `server.proxyProtocol` 非空时）：在监听端点的 server channel pipeline 里
+**PROXY protocol 剥头挂在 accept 链上**（`ConnectionSniffer`，仅服务端、
+仅 `server.proxyProtocol` 非空时；它同时也管预认证帧与内嵌会合点的中继，
+三者抢的是同一批首字节，必须合成一个 handler）：在监听端点的 server channel pipeline 里
 拦截 accept 出来的连接，抢在 MC 的 ChannelInitializer 之前往新连接头部塞
 剥头 handler。解析是嗅探式的（core 的 `ProxyProtocol`）——无头流量原样放行，
 所以 xtcp（上游尚未支持发头）、老 agent、直连预热的流量都不受影响；
