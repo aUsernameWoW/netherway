@@ -43,6 +43,8 @@ public final class SelfTest {
         testBuildCommand();
         testDescribeCommandMasksValues();
         testServeCommand();
+        testServeCommandRendezvous();
+        testTlsRecordDetection();
         testTimingsNormalization();
         testUpgradeGivesUpWithoutBinary();
         testUpgradeIgnoresDuplicateCredentials();
@@ -474,6 +476,81 @@ public final class SelfTest {
         check("serve 描述保留房间名", desc.contains("-room test"));
     }
 
+    private static void testServeCommandRendezvous() {
+        java.util.Map<String, String> params = new java.util.LinkedHashMap<String, String>();
+        params.put("server", "frps.example.com");
+        params.put("serverPort", "7000");
+        params.put("token", "ROOM_TOKEN");
+        params.put("room", "test");
+        params.put("secret", "SUPER_SECRET");
+
+        List<String> cmd = ServeCommand.build(Paths.get("/srv/netherway"), params, 25565,
+                new ServeCommand.Options().rendezvousPort(41234).signingKey("SIGNING"));
+
+        int rz = cmd.indexOf("-rendezvous");
+        check("会合点端口经 -rendezvous 传递", rz >= 0 && "41234".equals(cmd.get(rz + 1)));
+        // 会合点在本机回环上，agent 自己就知道地址，传公网 frps 的地址只会误导
+        check("内嵌会合点模式不传 -server", !cmd.contains("-server"));
+        check("内嵌会合点模式不传 -server-port", !cmd.contains("-server-port"));
+        // token 仍要传：它与下发凭证同源，玩家拿着它登录内嵌会合点
+        int token = cmd.indexOf("-token");
+        check("内嵌会合点模式仍传 token", token >= 0 && "ROOM_TOKEN".equals(cmd.get(token + 1)));
+        int key = cmd.indexOf("-signing-key");
+        check("签发密钥经 -signing-key 传递", key >= 0 && "SIGNING".equals(cmd.get(key + 1)));
+
+        String desc = ServeCommand.describe(cmd);
+        check("serve 描述不含签发密钥值", !desc.contains("SIGNING"));
+        check("serve 描述保留会合点端口", desc.contains("-rendezvous 41234"));
+
+        // 不启用时一切照旧
+        List<String> off = ServeCommand.build(Paths.get("/srv/netherway"), params, 25565,
+                new ServeCommand.Options().signingKey("SIGNING"));
+        check("未启用会合点时不传 -rendezvous", !off.contains("-rendezvous"));
+        check("未启用会合点时不传 -signing-key", !off.contains("-signing-key"));
+        check("未启用会合点时仍传 -server", off.contains("-server"));
+    }
+
+    private static void testTlsRecordDetection() {
+        // frp 控制通道实测首字节：16 03 01 ...（TLS ClientHello）
+        byte[] tls = {0x16, 0x03, 0x01, 0x00, 0x2f};
+        check("TLS 握手被认出", Boolean.TRUE.equals(TlsRecord.looksLikeHandshake(tls, tls.length)));
+
+        // 同一个端口上的其它流量都必须被排除，否则会被错误地转给会合点
+        byte[] mcModern = {0x10, 0x00, 0x2f};
+        check("MC 现代握手不被误判",
+                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(mcModern, mcModern.length)));
+        byte[] legacy = {(byte) 0xFE, 0x01};
+        check("MC legacy ping 不被误判",
+                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(legacy, legacy.length)));
+        byte[] proxyV1 = {'P', 'R', 'O', 'X', 'Y'};
+        check("PROXY v1 头不被误判",
+                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(proxyV1, proxyV1.length)));
+        byte[] proxyV2 = {0x0D, 0x0A, 0x0D, 0x0A};
+        check("PROXY v2 头不被误判",
+                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(proxyV2, proxyV2.length)));
+        byte[] nway = {'N', 'W', 'A', 'Y'};
+        check("预认证帧不被误判",
+                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(nway, nway.length)));
+
+        // 三态：字节不够时必须回 null，而不是猜
+        check("零字节时不下定论", TlsRecord.looksLikeHandshake(new byte[0], 0) == null);
+        byte[] one = {0x16};
+        check("只有首字节时不下定论", TlsRecord.looksLikeHandshake(one, 1) == null);
+        // 首字节就不对的话不必再等第二个字节
+        byte[] oneBad = {0x17};
+        check("首字节即可否定时立刻下定论",
+                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(oneBad, 1)));
+        // 记录类型对但主版本不对（比如 SSLv2 或畸形流量）
+        byte[] wrongVersion = {0x16, 0x02};
+        check("记录类型对但版本不对时否定",
+                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(wrongVersion, 2)));
+
+        // len 是有效长度，不是数组长度：缓冲区通常比已读字节大
+        byte[] over = new byte[16];
+        over[0] = 0x16;
+        check("只看 len 以内的字节", TlsRecord.looksLikeHandshake(over, 1) == null);
+    }
+
     private static void testTimingsNormalization() {
         Timings zeroed = new Timings(0, 0, 0, 0).normalized();
         check("零值回填打洞超时", zeroed.punchTimeoutMs() == 15000L);
@@ -900,7 +977,7 @@ public final class SelfTest {
         check("未配置静态令牌则不传旗标", !plain.contains("-meta-token"));
 
         List<String> cmd = ServeCommand.build(Paths.get("/srv/netherway"), params, 25570,
-                "SERVE_STATIC");
+                new ServeCommand.Options().metaToken("SERVE_STATIC"));
         int at = cmd.indexOf("-meta-token");
         check("静态令牌经 -meta-token 传递", at >= 0 && "SERVE_STATIC".equals(cmd.get(at + 1)));
         check("serve 描述抹掉静态令牌值",
@@ -912,17 +989,17 @@ public final class SelfTest {
         params.put("server", "frps.example.com");
         params.put("room", "test");
 
-        List<String> plain = ServeCommand.build(Paths.get("/srv/netherway"), params, 25570,
-                null, null);
+        List<String> plain = ServeCommand.build(Paths.get("/srv/netherway"), params, 25570);
         check("未配置 PROXY protocol 则不传旗标", !plain.contains("-proxy-protocol"));
 
         List<String> cmd = ServeCommand.build(Paths.get("/srv/netherway"), params, 25570,
-                null, "v2");
+                new ServeCommand.Options().proxyProtocol("v2"));
         int at = cmd.indexOf("-proxy-protocol");
         check("PROXY protocol 版本经 -proxy-protocol 传递",
                 at >= 0 && "v2".equals(cmd.get(at + 1)));
-        check("旧的四参 build 不受影响",
-                !ServeCommand.build(Paths.get("/srv/netherway"), params, 25570, "T")
+        check("只给静态令牌时不带出 PROXY 旗标",
+                !ServeCommand.build(Paths.get("/srv/netherway"), params, 25570,
+                        new ServeCommand.Options().metaToken("T"))
                         .contains("-proxy-protocol"));
     }
 

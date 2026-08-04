@@ -2,7 +2,9 @@ package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.PreauthProtocol;
 import cn.ripplecraft.netherway.core.PreauthService;
+import cn.ripplecraft.netherway.core.TlsRecord;
 import cpw.mods.fml.relauncher.ReflectionHelper;
+import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
@@ -11,6 +13,7 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -27,12 +30,17 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
- * 把首字节嗅探挂进服务端的 Netty 接入链，一个 handler 同时管两件事：
- * 预认证帧（{@link PreauthProtocol}）与 PROXY protocol 剥头
- * （{@link cn.ripplecraft.netherway.core.ProxyProtocol}）。
+ * 把首字节嗅探挂进服务端的 Netty 接入链，一个 handler 同时管三件事：
+ * 预认证帧（{@link PreauthProtocol}）、frp 控制通道转发（{@link TlsRecord}）
+ * 与 PROXY protocol 剥头（{@link cn.ripplecraft.netherway.core.ProxyProtocol}）。
  *
- * <p>两者必须合成一个 handler：它们抢的是同一批「连接最初的字节」，
+ * <p>三者必须合成一个 handler：它们抢的是同一批「连接最初的字节」，
  * 各挂各的会互相把对方的数据吃掉。
+ *
+ * <p>其中 frp 控制通道那一路是「会合点内嵌」的落地点：内嵌 frps 只监听回环，
+ * 玩家的控制连接靠这里从 Minecraft 端口转发进去。公网那台机器因此对本项目
+ * 再无任何要求——不装插件、不必支持 xtcp、不必同版本，能把 TCP 转到
+ * Minecraft 端口即可，于是租用他人的隧道服务成为可能。
  *
  * <p>挂载点是监听端点的 server channel：accept 出来的每个连接会以
  * {@link Channel} 消息的形式流过它的 pipeline（这正是 Netty 自己的
@@ -73,6 +81,16 @@ final class ConnectionSniffer {
      */
     private static final int MAX_CONCURRENT_CONFIRM = 8;
 
+    /**
+     * RELAY 模式下、会合点还没接上时允许攒的字节上限。
+     *
+     * <p>判定为 frp 控制通道后会立刻停读并去拨会合点，这期间只可能再收到
+     * 已经排队的那一两批读事件，正常量级是一个 TLS ClientHello（几百字节）。
+     * 给到 64 KB 是为了拨号卡住时也不会无界增长，而不是流控——真正的背压
+     * 在接上之后由对端可写性驱动。
+     */
+    private static final int RELAY_PENDING_MAX = 64 * 1024;
+
     private ConnectionSniffer() {
     }
 
@@ -80,12 +98,16 @@ final class ConnectionSniffer {
     static final class Context {
         final PreauthService preauth;
         final boolean proxyProtocol;
+        /** 内嵌会合点的回环端口；0 表示不启用，TLS 分叉整条路径都不生效。 */
+        final int rendezvousPort;
         final ExecutorService worker;
         final Semaphore confirmSlots = new Semaphore(MAX_CONCURRENT_CONFIRM);
 
-        Context(PreauthService preauth, boolean proxyProtocol, ExecutorService worker) {
+        Context(PreauthService preauth, boolean proxyProtocol, int rendezvousPort,
+                ExecutorService worker) {
             this.preauth = preauth;
             this.proxyProtocol = proxyProtocol;
+            this.rendezvousPort = rendezvousPort;
             this.worker = worker;
         }
     }
@@ -95,11 +117,13 @@ final class ConnectionSniffer {
     /**
      * 在 FMLServerStartedEvent 后调用（此时监听端点已绑定完毕）。
      *
-     * @param preauth       预认证服务；null 表示不接受预认证帧
-     * @param proxyProtocol 是否剥 PROXY 头
+     * @param preauth        预认证服务；null 表示不接受预认证帧
+     * @param proxyProtocol  是否剥 PROXY 头
+     * @param rendezvousPort 内嵌会合点的回环端口；0 表示不启用
      */
-    static void install(MinecraftServer server, PreauthService preauth, boolean proxyProtocol) {
-        if (preauth == null && !proxyProtocol) {
+    static void install(MinecraftServer server, PreauthService preauth, boolean proxyProtocol,
+                        int rendezvousPort) {
+        if (preauth == null && !proxyProtocol && rendezvousPort <= 0) {
             return;
         }
         ExecutorService worker = Executors.newFixedThreadPool(MAX_CONCURRENT_CONFIRM,
@@ -111,7 +135,7 @@ final class ConnectionSniffer {
                         return t;
                     }
                 });
-        final Context ctx = new Context(preauth, proxyProtocol, worker);
+        final Context ctx = new Context(preauth, proxyProtocol, rendezvousPort, worker);
         try {
             NetworkSystem system = server.func_147137_ag();
             List<?> endpoints = ReflectionHelper.getPrivateValue(
@@ -180,6 +204,8 @@ final class ConnectionSniffer {
         UNDECIDED,
         /** 是预认证帧，本连接由我们独占，永远不会交给 MC（进入时下游 handler 已全部摘掉）。 */
         PREAUTH,
+        /** 是 frp 控制通道，字节原样转发给内嵌会合点（同样已独占）。 */
+        RELAY,
     }
 
     /**
@@ -196,6 +222,8 @@ final class ConnectionSniffer {
         private final Context ctx;
         private ByteBuf pending;
         private Mode mode = Mode.UNDECIDED;
+        /** RELAY 模式下通往内嵌会合点的连接；未接上前为 null。 */
+        private Channel upstream;
         /** 本连接上签出的 serverId；CONFIRM 必须报同一个。 */
         private volatile String issuedServerId;
         /** 有请求正在工作线程上处理，此时不再解析新帧。 */
@@ -213,13 +241,23 @@ final class ConnectionSniffer {
                 return;
             }
             ByteBuf in = (ByteBuf) msg;
+
+            // 中继模式下字节量不设上限（它承载的是整条 frp 控制通道），
+            // 背压交给对端可写性，见 pumpToRendezvous
+            if (mode == Mode.RELAY && upstream != null) {
+                pumpToRendezvous(c, in);
+                return;
+            }
             if (pending == null) {
                 pending = c.alloc().buffer(256);
             }
-            // 独占连接后也要挡住无限投喂：一帧至多 8+4096，攒过头就是异常流量
-            if (pending.readableBytes() + in.readableBytes()
-                    > PreauthProtocol.REQUEST_HEADER_LEN + PreauthProtocol.MAX_PAYLOAD
-                            + ProxyProtocolLimits.MAX) {
+            // 独占连接后也要挡住无限投喂：一帧至多 8+4096，攒过头就是异常流量。
+            // RELAY 模式另算：此刻正在连会合点，攒的是即将原样转发的字节，
+            // 用预认证的帧长上限去卡它会把正常连接误杀。
+            int cap = mode == Mode.RELAY ? RELAY_PENDING_MAX
+                    : PreauthProtocol.REQUEST_HEADER_LEN + PreauthProtocol.MAX_PAYLOAD
+                            + ProxyProtocolLimits.MAX;
+            if (pending.readableBytes() + in.readableBytes() > cap) {
                 in.release();
                 releasePending();
                 c.close();
@@ -233,6 +271,8 @@ final class ConnectionSniffer {
             } else if (mode == Mode.PREAUTH) {
                 pump(c);
             }
+            // mode == RELAY 但 upstream 尚未接上：接管是异步的，
+            // 这期间到达的字节继续攒在 pending 里，等连上会合点一并送出
         }
 
         /** 攒够字节后判定这条连接归谁。 */
@@ -250,8 +290,94 @@ final class ConnectionSniffer {
                 pump(c);
                 return;
             }
-            // 不是预认证帧：交给 PROXY 剥头逻辑，或直接放行给 MC
+            // frp 的控制通道：TLS ClientHello 打头，转发给内嵌会合点。
+            // 排在 PROXY 剥头之前——两者首字节不冲突（0x16 vs 'P'/0x0D），
+            // 但先判它可以让不开会合点的部署完全不受影响。
+            if (ctx.rendezvousPort > 0) {
+                Boolean tls = TlsRecord.looksLikeHandshake(peek, peek.length);
+                if (tls == null) {
+                    return; // 还不能确定，继续攒
+                }
+                if (Boolean.TRUE.equals(tls)) {
+                    mode = Mode.RELAY;
+                    takeover(c);
+                    connectRendezvous(c);
+                    return;
+                }
+            }
+            // 不是预认证帧也不是控制通道：交给 PROXY 剥头逻辑，或直接放行给 MC
             handleProxyProtocol(c);
+        }
+
+        // ---------- 转发给内嵌会合点 ----------
+
+        /**
+         * 接上内嵌会合点，把这条连接变成纯字节管道。
+         *
+         * <p>拨号复用本连接的事件循环：两端在同一个线程上，
+         * upstream / pending 这些字段就不需要任何同步。
+         */
+        private void connectRendezvous(final ChannelHandlerContext c) {
+            final Channel front = c.channel();
+            // 先停读：拨号是异步的，这期间不再往 pending 里堆字节
+            front.config().setAutoRead(false);
+
+            Bootstrap b = new Bootstrap();
+            b.group(front.eventLoop())
+                    .channel(NioSocketChannel.class)
+                    .handler(new RendezvousHandler(front));
+            b.connect("127.0.0.1", ctx.rendezvousPort).addListener(new ChannelFutureListener() {
+                @Override
+                public void operationComplete(ChannelFuture f) {
+                    if (!f.isSuccess()) {
+                        LOG.warn("连接内嵌会合点 127.0.0.1:{} 失败，玩家这条隧道建不起来"
+                                + "（内置 serve 没起来？）: {}", ctx.rendezvousPort,
+                                String.valueOf(f.cause()));
+                        releasePending();
+                        front.close();
+                        return;
+                    }
+                    upstream = f.channel();
+                    ByteBuf head = pending;
+                    pending = null;
+                    if (head != null && head.isReadable()) {
+                        // 嗅探期间吃掉的字节必须原样补回去，否则 frp 的握手就断了头
+                        upstream.writeAndFlush(head);
+                    } else if (head != null) {
+                        head.release();
+                    }
+                    front.config().setAutoRead(true);
+                }
+            });
+        }
+
+        /**
+         * 把玩家发来的字节泵给会合点。
+         *
+         * <p>背压刻意用对端的可写性驱动，而不是「写完成回调里再 read()」：
+         * 后者是 Netty 官方 HexDumpProxy 的写法，但在 1.7.10 的 Netty 4.0.10
+         * 上会死锁——回环上的写常常同步完成，那个 read() 正好落在读循环内部，
+         * 被循环结尾的 removeReadOp 吞掉。实测几百 KB 即卡死。
+         */
+        private void pumpToRendezvous(final ChannelHandlerContext c, ByteBuf in) {
+            if (!upstream.isActive()) {
+                in.release();
+                c.close();
+                return;
+            }
+            upstream.writeAndFlush(in);
+            if (!upstream.isWritable()) {
+                c.channel().config().setAutoRead(false);
+            }
+        }
+
+        /** 玩家侧重新可写 => 会合点侧可以继续读。 */
+        @Override
+        public void channelWritabilityChanged(ChannelHandlerContext c) {
+            if (upstream != null && upstream.isActive() && c.channel().isWritable()) {
+                upstream.config().setAutoRead(true);
+            }
+            c.fireChannelWritabilityChanged();
         }
 
         // ---------- 预认证 ----------
@@ -461,15 +587,63 @@ final class ConnectionSniffer {
         public void channelInactive(ChannelHandlerContext c) {
             cancelDeadline();
             releasePending();
+            closeUpstream();
             c.fireChannelInactive();
+        }
+
+        private void closeUpstream() {
+            Channel up = upstream;
+            upstream = null;
+            if (up != null && up.isActive()) {
+                up.close();
+            }
+        }
+
+        /** 通往会合点的那一半。与前半程对称：可写性驱动背压，一端断另一端跟着断。 */
+        private final class RendezvousHandler extends ChannelInboundHandlerAdapter {
+
+            private final Channel front;
+
+            RendezvousHandler(Channel front) {
+                this.front = front;
+            }
+
+            @Override
+            public void channelRead(ChannelHandlerContext c, Object msg) {
+                front.writeAndFlush(msg);
+                if (!front.isWritable()) {
+                    c.channel().config().setAutoRead(false);
+                }
+            }
+
+            /** 会合点侧重新可写 => 玩家侧可以继续读。 */
+            @Override
+            public void channelWritabilityChanged(ChannelHandlerContext c) {
+                if (front.isActive() && c.channel().isWritable()) {
+                    front.config().setAutoRead(true);
+                }
+            }
+
+            @Override
+            public void channelInactive(ChannelHandlerContext c) {
+                if (front.isActive()) {
+                    front.close();
+                }
+            }
+
+            @Override
+            public void exceptionCaught(ChannelHandlerContext c, Throwable cause) {
+                LOG.debug("与内嵌会合点之间的连接异常: {}", String.valueOf(cause));
+                c.close();
+            }
         }
 
         @Override
         public void exceptionCaught(ChannelHandlerContext c, Throwable cause) {
-            if (mode == Mode.PREAUTH) {
+            if (mode == Mode.PREAUTH || mode == Mode.RELAY) {
                 // 独占后下游已无人消化 IO 异常（原本由 NetworkManager 收场），
                 // 不自己关连接就会冒到 pipeline 尾部刷 netty 警告
-                LOG.debug("预认证连接异常，断开: {}", cause.toString());
+                LOG.debug("独占中的连接异常（{}），断开: {}", mode, cause.toString());
                 c.close();
                 return;
             }
@@ -480,6 +654,7 @@ final class ConnectionSniffer {
         public void handlerRemoved(ChannelHandlerContext c) {
             cancelDeadline();
             releasePending();
+            closeUpstream();
         }
 
         private void cancelDeadline() {

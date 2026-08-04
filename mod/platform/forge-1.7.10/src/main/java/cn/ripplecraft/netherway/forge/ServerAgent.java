@@ -40,8 +40,13 @@ public final class ServerAgent {
         this.config = config;
     }
 
-    /** 启动 serve。失败只记日志——直连是增强功能，绝不能拖垮服务端启动。 */
-    public void start(Path cacheDir, int localPort) {
+    /**
+     * 启动 serve。失败只记日志——直连是增强功能，绝不能拖垮服务端启动。
+     *
+     * @param rendezvousPort 内嵌会合点端口（回环）；0 表示不启用，连公网 frps。
+     *                       非零时必须与 {@link ConnectionSniffer} 收到的是同一个数。
+     */
+    public void start(Path cacheDir, int localPort, int rendezvousPort) {
         if (process != null) {
             return;
         }
@@ -54,7 +59,11 @@ public final class ServerAgent {
             Platform platform = Platform.detect();
             Path exe = new BinaryStore(cacheDir, platform).ensureExtracted();
             List<String> cmd = ServeCommand.build(exe, config.serverParams(), localPort,
-                    config.serveAuthToken(), config.serveProxyProtocol());
+                    new ServeCommand.Options()
+                            .metaToken(config.serveAuthToken())
+                            .proxyProtocol(config.serveProxyProtocol())
+                            .rendezvousPort(rendezvousPort)
+                            .signingKey(rendezvousPort > 0 ? config.tokenSigningKey() : null));
             LOG.info("启动内置 serve（平台 {}）: {}", platform, ServeCommand.describe(cmd));
 
             ProcessBuilder pb = new ProcessBuilder(cmd);

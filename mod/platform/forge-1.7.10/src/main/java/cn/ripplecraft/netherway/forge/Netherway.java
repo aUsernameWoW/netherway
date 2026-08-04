@@ -73,9 +73,12 @@ public final class Netherway {
         if (host != null) {
             logPreauthConfig(host);
         }
+        // 会合点端口在这里挑定：嗅探器要往它转发，agent 要在它上面监听，
+        // 两边必须是同一个数，所以由这一处统一决定再分别传下去。
+        int rendezvousPort = resolveRendezvousPort();
         ConnectionSniffer.install(MinecraftServer.getServer(),
                 host == null ? null : new cn.ripplecraft.netherway.core.PreauthService(host),
-                !config.serveProxyProtocol().isEmpty());
+                !config.serveProxyProtocol().isEmpty(), rendezvousPort);
         if (!config.serverRunAgent()) {
             return;
         }
@@ -88,7 +91,42 @@ public final class Netherway {
             return;
         }
         serverAgent = new ServerAgent(config);
-        serverAgent.start(server.getFile("netherway").toPath(), port);
+        serverAgent.start(server.getFile("netherway").toPath(), port, rendezvousPort);
+    }
+
+    /**
+     * 挑一个空闲的回环端口给内嵌会合点。返回 0 表示不启用。
+     *
+     * <p>让系统分配而不是写死：会合点只对本机可见，端口号本身没有对外意义，
+     * 写死反而会和别的服务撞车。挑完即释放，随后由 agent 绑上——中间有极小的
+     * 竞态窗口，但回环上的端口分配不会立刻复用，实践中足够。
+     */
+    private int resolveRendezvousPort() {
+        if (!config.serverRendezvous()) {
+            return 0;
+        }
+        if (!config.serverRunAgent()) {
+            LOG.warn("server.rendezvous 需要 server.runAgent=true："
+                    + "会合点起在内置 serve 进程里，独立运行的 serve 不会开它。"
+                    + "本次按不启用处理");
+            return 0;
+        }
+        try {
+            java.net.ServerSocket probe = new java.net.ServerSocket(0, 1,
+                    java.net.InetAddress.getByName("127.0.0.1"));
+            int port;
+            try {
+                port = probe.getLocalPort();
+            } finally {
+                probe.close();
+            }
+            LOG.info("内嵌会合点将监听 127.0.0.1:{}：玩家的 frp 控制连接会从 Minecraft "
+                    + "端口转发进去，公网侧只需要一条能到 Minecraft 端口的 TCP 隧道", port);
+            return port;
+        } catch (java.io.IOException e) {
+            LOG.warn("挑选会合点端口失败，内嵌会合点未启用", e);
+            return 0;
+        }
     }
 
     @Mod.EventHandler

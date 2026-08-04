@@ -38,6 +38,7 @@ public final class ModConfig {
     private final String serveProxyProtocol;
     private final boolean serverPreauth;
     private final String serverAuthServer;
+    private final boolean serverRendezvous;
 
     // ---- client ----
     private final boolean clientEnabled;
@@ -119,6 +120,13 @@ public final class ModConfig {
                 + "启用后每次登录都为该玩家签发绑定其 UUID、带有效期的令牌（user/userToken 参数）");
         tokenTtlDays = cfg.getInt("tokenTtlDays", "server", 30, 1, 3650,
                 "每玩家令牌的有效天数；每次登录自动续签，只需覆盖玩家两次游玩的间隔");
+        serverRendezvous = cfg.getBoolean("rendezvous", "server", false,
+                "内嵌会合点：不再连公网 frps，改在本机起一个只监听回环的会合点，\n"
+                + "玩家的 frp 控制连接由本 mod 从 Minecraft 端口转发进去。\n"
+                + "公网那台机器因此只需要把 TCP 转到 Minecraft 端口——不装插件、\n"
+                + "不必支持 xtcp、不必与本 mod 同版本，租来的隧道服务也能用。\n"
+                + "需要 runAgent=true；开启后 params 里的 server/serverPort 应填\n"
+                + "玩家能连到的地址与端口（即 Minecraft 服务器的公网入口）");
         serveAuthToken = cfg.getString("serveAuthToken", "server", "",
                 "内置 serve 向 authplugin 表明身份的静态令牌（与 authplugin 的 -static-token 同值），\n"
                 + "刻意不放进 params——它只属于 serve，绝不能随凭证下发给玩家；\n"
@@ -317,6 +325,14 @@ public final class ModConfig {
     /** 是否在 MC 端口上接受预认证帧。 */
     public boolean serverPreauth() {
         return serverPreauth;
+    }
+
+    /**
+     * 是否启用内嵌会合点。开启后 agent 不连公网 frps，会合点起在本机回环上，
+     * 玩家的控制连接由 {@link ConnectionSniffer} 从 Minecraft 端口转发进去。
+     */
+    public boolean serverRendezvous() {
+        return serverRendezvous;
     }
 
     /** 皮肤站 API root；空串表示交给 authlib-injector 参数自动推断。 */
