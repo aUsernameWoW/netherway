@@ -10,6 +10,7 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelPipeline;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -57,6 +58,12 @@ final class ConnectionSniffer {
     /**
      * 一条预认证连接从建立到完成的宽限。中间隔着客户端去皮肤站 join 的
      * 一次往返，给足余量；超时就断，半开连接不能在 MC 端口上堆积。
+     *
+     * <p>这个值比 MC 自己的读超时（FMLNetworkHandler.READ_TIMEOUT，默认
+     * 30 秒）更宽，能生效的前提是进入 PREAUTH 时已把下游 handler 摘掉
+     * （{@link Sniffer#takeover}）：独占后不再 fireChannelRead，MC 的
+     * ReadTimeoutHandler 收不到读事件就永远不重置计时，不摘的话 30 秒
+     * 一到先被它掐断，这里的宽限永远轮不上。
      */
     private static final int EXCHANGE_TIMEOUT_SECONDS = 40;
 
@@ -171,7 +178,7 @@ final class ConnectionSniffer {
     private enum Mode {
         /** 还没攒够字节下定论。 */
         UNDECIDED,
-        /** 是预认证帧，本连接由我们独占，永远不会交给 MC。 */
+        /** 是预认证帧，本连接由我们独占，永远不会交给 MC（进入时下游 handler 已全部摘掉）。 */
         PREAUTH,
     }
 
@@ -238,6 +245,7 @@ final class ConnectionSniffer {
             }
             if (Boolean.TRUE.equals(nw)) {
                 mode = Mode.PREAUTH;
+                takeover(c);
                 armDeadline(c);
                 pump(c);
                 return;
@@ -247,6 +255,25 @@ final class ConnectionSniffer {
         }
 
         // ---------- 预认证 ----------
+
+        /**
+         * 独占连接：把 pipeline 里本 handler 之后的所有 handler 摘掉。这不只是
+         * 清理——MC 的 ReadTimeoutHandler 就挂在后面，独占后我们不再
+         * fireChannelRead，它收不到读事件就永远不会重置计时，会抢在
+         * {@link #EXCHANGE_TIMEOUT_SECONDS} 之前掐断连接（30 秒，
+         * FMLNetworkHandler.READ_TIMEOUT）。摘除顺带把 ReadTimeoutHandler
+         * 的计时器也取消了（其 handlerRemoved 会 destroy）。
+         *
+         * <p>从尾部逐个摘而不按固定名字列表摘：其它 mod 可能往 pipeline
+         * 里加了自己的 handler。挂在本 handler 之前的一律不动，它们还在
+         * 给我们喂字节。
+         */
+        private void takeover(ChannelHandlerContext c) {
+            ChannelPipeline p = c.pipeline();
+            for (ChannelHandler last = p.last(); last != null && last != this; last = p.last()) {
+                p.remove(last);
+            }
+        }
 
         /** 连接超时就断，半开的预认证连接不能在 MC 端口上堆积。 */
         private void armDeadline(final ChannelHandlerContext c) {
@@ -435,6 +462,18 @@ final class ConnectionSniffer {
             cancelDeadline();
             releasePending();
             c.fireChannelInactive();
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext c, Throwable cause) {
+            if (mode == Mode.PREAUTH) {
+                // 独占后下游已无人消化 IO 异常（原本由 NetworkManager 收场），
+                // 不自己关连接就会冒到 pipeline 尾部刷 netty 警告
+                LOG.debug("预认证连接异常，断开: {}", cause.toString());
+                c.close();
+                return;
+            }
+            c.fireExceptionCaught(cause);
         }
 
         @Override
