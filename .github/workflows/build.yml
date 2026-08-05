@@ -134,7 +134,7 @@ jobs:
           java-version: 21
       # 首次构建 RFG 要下载并反编译 Minecraft（缓存约 1-2GB），
       # 没有这个缓存的话每次 push 都要重来一遍
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: 构建打进 jar 的 agent 二进制（无密钥）
         run: ./mod/build-natives.sh
       - name: Gradle build
