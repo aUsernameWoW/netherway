@@ -32,7 +32,9 @@ go build ./... && go vet ./... && go test ./...
 ```
 
 Go 测试覆盖 `internal/authplugin`（含与 Java 侧的跨语言已知答案向量）与
-`internal/rendezvous`（会合点的绑定范围与令牌生成）。
+`internal/rendezvous`（绑定范围、令牌生成，以及用 frp client 库真连内嵌
+会合点的登录/注册 interop 测试——frp 自动 bump 的行为级防线；这些测试
+不能开 `-race`，frp 自身关停路径带数据竞争，见 interop_test.go 头注）。
 预认证与凭证预取已整体搬进 mod（见「预认证」一节），agent 不再参与，
 原先的 `internal/authbridge` 与 `internal/credfile` 已删除。
 
