@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -133,7 +133,7 @@ jobs:
       matrix:
         java: [8, 17, 21, 25]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # 先装 8 再装运行版本：每次 setup-java 都会覆盖默认 JAVA_HOME，
       # 于是编译固定走 JAVA_HOME_8_X64，运行走默认的 java
       - name: 安装 JDK 8（编译用）
@@ -161,7 +161,7 @@ jobs:
     # 命中缓存时远低于此。上限的意义是别让挂死的下载吃满 6 小时配额
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
