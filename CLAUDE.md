@@ -200,9 +200,18 @@ core 的 `TlsRecord`）。
 **`currentServerAddress()` 必须返回玩家最初选中的那台服务器，不是当前 socket
 的对端。** 升级成功后玩家会重连到本机直连条目，服务端此时还会再下发一次凭证
 （重复分支），用对端地址补就会把回环写进缓存，下一轮预热便让 agent 去连自己
-的回环。Forge 实现取 `Minecraft.currentServerData`——`connectTo` 用的恰好是
-**不设置 ServerData 的那个** `GuiConnecting` 构造函数，切换后它仍指向原服务器；
+的回环。Forge 实现取 `Minecraft.currentServerData`，但**切换后它是 null**：
+`connectTo` 里的 `loadWorld(null)` 走「退出世界」分支时会连带
+`setServerData(null)`（曾以为「(host,port) 构造函数不碰 ServerData 所以切换后
+仍在」，2026-08-09 实测证明是错的）——所以 `connectTo` 在清掉之前把地址存进
+`switchOrigin`，推导失败时回退到它；该字段只在本次重定向的生命周期内有效，
+新连接被识别为与切换无关时立即作废，绝不能拿 A 服的地址补 B 服的凭证。
 仍额外挡掉回环，因为玩家也可能是从直连条目进服的。
+
+**补不上地址的凭证绝不落盘**（`rememberAsync` 里拦截）：缓存按房间同文件
+覆盖，残废版会把带地址的好凭证盖掉，下次启动预热直接瘫痪——2026-08-09
+就是这么坏的。跳过没有代价：参数真轮换过的新凭证一定经真实服务器地址的
+连接送达，那条路补得上。
 
 `server` 与 `serverPort` **必须一起补**：Go 侧缺 `server` 会响亮报错，而缺
 `serverPort` 会静默落到 frp 的默认 7000，只补一个的失败查不出所以然。
@@ -358,6 +367,19 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 
 **预热与升级的 agent 各写各的日志文件**（`tunnel-warmup.log` / `tunnel.log`）。
 预热未出结果时玩家就经中转进服的话，两个 agent 会同时在跑，共用文件会互相踩踏。
+
+**预热与升级不得同时打洞。** 同一 NAT 上并发打两个洞会互相干扰（2026-08-09
+实测：预热侧 QUIC 拨号超时、升级侧 15 秒才通，正常 1.8–5 秒）。谁后到谁等：
+预热每轮打洞前看升级是否 PUNCHING（`UpgradeController` 构造时挂上的
+`UpgradeGate`），升级起自己的 agent 前等预热的这轮出结果（`awaitWarmupAttempt`，
+出来恰好就绪就直接复用）。两个方向都有界（一个 `outcomeWaitMs`），条件互斥
+不会死锁。已就绪的隧道只是守望进程、不在打洞，不触发让路。
+
+**Yggdrasil 的 Profile 必带 `properties` 嵌套数组**（textures 材质），
+`Json.parseObject` 的扁平契约啃不动它——hasJoined 的解析要用
+`Json.parseTopLevel`（顶层标量照收、嵌套值字符串感知地跳过）。2026-08-09
+之前用的是严格版，预认证对任何真实皮肤站都 100% 失败。agent 事件仍走严格版，
+嵌套即异常的契约不变。
 
 **独占连接后必须摘掉下游 handler。** MC 的接入链第一个是
 `ReadTimeoutHandler(FMLNetworkHandler.READ_TIMEOUT)`（默认 30 秒），而嗅探器

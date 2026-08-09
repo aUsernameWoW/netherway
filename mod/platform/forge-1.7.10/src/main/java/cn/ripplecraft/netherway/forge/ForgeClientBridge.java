@@ -42,6 +42,15 @@ public final class ForgeClientBridge implements ClientBridge {
     /** 升级重定向的目标端口；0 表示当前没有进行中的重定向。 */
     private volatile int redirectPort;
 
+    /**
+     * 发起切换时玩家所在服务器的地址。{@code loadWorld(null)} 会连带清掉
+     * {@code currentServerData}（见 {@link #currentServerAddress}），而切换
+     * 落地后服务端还会重发一次凭证、需要这个地址补会合点——所以在清掉之前
+     * 存一份。只在重定向的生命周期内有效：新连接被识别为与切换无关时立即
+     * 作废，绝不能拿 A 服的地址去补 B 服的凭证。
+     */
+    private volatile ServerCandidates.Address switchOrigin;
+
     public ForgeClientBridge(FMLEventChannel channel, boolean verboseLog) {
         this.channel = channel;
         this.verboseLog = verboseLog;
@@ -78,6 +87,8 @@ public final class ForgeClientBridge implements ClientBridge {
     boolean redirectLanded(NetworkManager manager) {
         int expected = redirectPort;
         if (expected == 0) {
+            // 玩家自己发起的连接：切换前记住的地址（若有残留）已经过时
+            switchOrigin = null;
             return false;
         }
         redirectPort = 0;
@@ -87,11 +98,15 @@ public final class ForgeClientBridge implements ClientBridge {
             boolean landed = addr.getPort() == expected
                     && addr.getAddress() != null
                     && addr.getAddress().isLoopbackAddress();
+            if (!landed) {
+                switchOrigin = null;
+            }
             debug("新连接 " + addr + (landed
                     ? " 是我们发起的直连切换"
                     : " 与直连切换无关（期望回环端口 " + expected + "）"));
             return landed;
         }
+        switchOrigin = null;
         debug("新连接的地址类型无法识别，视作与直连切换无关（期望回环端口 " + expected + "）");
         return false;
     }
@@ -102,6 +117,10 @@ public final class ForgeClientBridge implements ClientBridge {
         // 标志必须在断开动作之前立起来：断开事件在 netty 线程异步到达，
         // 到达时 ClientEvents 要靠它认出「这是我们自己造成的断开」
         redirectPort = port;
+        // 下面的 loadWorld(null) 会把 currentServerData 清成 null（退出世界
+        // 分支的连带动作），之后就再也推导不出玩家原来连的是哪台服务器——
+        // 而重定向落地后服务端还会重发一次凭证需要它。必须赶在清掉之前存好。
+        switchOrigin = currentServerAddress();
 
         Minecraft mc = Minecraft.getMinecraft();
         WorldClient world = mc.theWorld;
@@ -118,10 +137,15 @@ public final class ForgeClientBridge implements ClientBridge {
      * ——也就是他在服务器列表里选中并填写的那一条，而不是当前 socket 的对端。
      *
      * <p>这个区分是必需的：升级成功后我们会把玩家重连到本机回环，服务端随后
-     * 还会再下发一次凭证，若用对端地址补凭证就会把回环写进缓存。所幸
-     * {@link #connectTo} 用的是<b>不设置 ServerData 的那个</b>
-     * {@code GuiConnecting} 构造函数（只有带 ServerData 参数的那个才会设），
-     * 因此切换之后 currentServerData 仍指向原来那台服务器，天然不受影响。
+     * 还会再下发一次凭证，若用对端地址补凭证就会把回环写进缓存。
+     *
+     * <p><b>切换之后 currentServerData 是 null</b>：{@link #connectTo} 里的
+     * {@code loadWorld(null)} 走到「退出世界」分支时会连带
+     * {@code setServerData(null)}（GuiConnecting 的 (host, port) 构造函数
+     * 自己也会再调一次 loadWorld(null)）——曾经以为「不带 ServerData 的
+     * 构造函数不碰它、切换后天然还在」，2026-08-09 实测证明是错的。
+     * 所以推导失败时回退到 {@link #switchOrigin}：connectTo 在清掉之前
+     * 存下的原服务器地址，且只在本次重定向的生命周期内有效。
      *
      * <p>仍然显式挡掉回环：玩家也可能是从直连条目（{@link DirectServerEntry}
      * 写进服务器列表的 {@code 127.0.0.1:<预热端口>}）进服的，那一条的地址
@@ -136,18 +160,18 @@ public final class ForgeClientBridge implements ClientBridge {
         Minecraft mc = Minecraft.getMinecraft();
         ServerData data = mc.func_147104_D();
         if (data == null || data.serverIP == null || data.serverIP.isEmpty()) {
-            return null;
+            return switchOrigin;
         }
         try {
             ServerAddress parsed = ServerAddress.func_78860_a(data.serverIP);
             String host = parsed.getIP();
             if (host == null || host.isEmpty() || isLoopback(host)) {
-                return null;
+                return switchOrigin;
             }
             return ServerCandidates.Address.of(host, parsed.getPort());
         } catch (RuntimeException e) {
             LOG.debug("解析当前服务器地址失败: {}", data.serverIP, e);
-            return null;
+            return switchOrigin;
         }
     }
 

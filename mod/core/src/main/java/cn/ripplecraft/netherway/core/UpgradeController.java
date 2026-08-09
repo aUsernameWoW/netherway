@@ -65,6 +65,16 @@ public final class UpgradeController {
         this.timings = timings == null ? Timings.defaults() : timings.normalized();
         this.cache = cache;
         this.warmup = warmup;
+        if (warmup != null) {
+            // 反向观察口：预热每轮打洞前让路给正在打洞的升级。两个方向合起来
+            // 才堵得住「同 NAT 并发打两个洞互相干扰」——谁后到谁等。
+            warmup.setUpgradeGate(new WarmupController.UpgradeGate() {
+                @Override
+                public boolean punching() {
+                    return state.get() == State.PUNCHING;
+                }
+            });
+        }
     }
 
     public State state() {
@@ -141,6 +151,12 @@ public final class UpgradeController {
         // 日志里还会出现两套打洞记录。预热还在打洞或已失败则走既有流程
         // （下发的凭证可能比缓存新，比如 secret 轮换过）。
         if (reuseWarmTunnel(cred, gen)) {
+            return;
+        }
+        // 预热正有一轮打洞在飞时先等它出结果：同 NAT 并发打两个洞会互相
+        // 干扰（2026-08-09 实测两边都受伤）。等出来若恰好就绪就直接复用，
+        // 失败则接着走自己的流程——玩家此刻在中转连接上正常游戏，等得起。
+        if (awaitWarmupAttempt() && reuseWarmTunnel(cred, gen)) {
             return;
         }
         AgentProcess proc = null;
@@ -253,6 +269,28 @@ public final class UpgradeController {
     }
 
     /**
+     * 预热正在打洞时等它出结果（成败皆可），最多等一个
+     * {@link Timings#outcomeWaitMs}。返回 true 表示确实等过——调用方
+     * 应再试一次复用（预热可能恰好就绪了）。
+     */
+    private boolean awaitWarmupAttempt() {
+        if (warmup == null || !warmup.punching()) {
+            return false;
+        }
+        bridge.info("预热正在打洞，等它出结果再决定（避免并发打洞互相干扰）");
+        long deadline = System.currentTimeMillis() + timings.outcomeWaitMs();
+        while (warmup.punching() && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(timings.probeIntervalMs());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return true;
+            }
+        }
+        return true;
+    }
+
+    /**
      * 复用已就绪的预热隧道，成功返回 true。
      *
      * <p>隧道健康只由「进程还活着」担保（frp 的 keepTunnelOpen 会自行维护
@@ -352,6 +390,15 @@ public final class UpgradeController {
 
     private void rememberAsync(final Credentials cred) {
         if (cache == null) {
+            return;
+        }
+        // 没补上会合点地址的凭证绝不落盘：缓存按房间同文件覆盖，这份残废版
+        // 会把之前带地址的好凭证盖掉，下次启动预热直接瘫痪（2026-08-09 实测：
+        // 切换后地址推导不出，重复下发的凭证把缓存污染，预热从此起不来）。
+        // 跳过的代价可忽略——补不上地址意味着推导失败，参数真轮换过的新凭证
+        // 一定是经真实服务器地址的连接送达的，那条路补得上。
+        if (cred.needsRendezvousAddress()) {
+            bridge.debug("凭证缺会合点地址，不写入缓存（保留缓存中已有的版本）");
             return;
         }
         Thread worker = new Thread(new Runnable() {

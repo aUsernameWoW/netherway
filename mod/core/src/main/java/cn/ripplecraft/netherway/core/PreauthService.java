@@ -241,7 +241,9 @@ public final class PreauthService {
             String body = readBody(conn);
             Map<String, String> profile;
             try {
-                profile = Json.parseObject(body);
+                // Profile 必带 properties 嵌套数组（textures 材质），
+                // 用顶层解析跳过它——这里只需要 id
+                profile = Json.parseTopLevel(body);
             } catch (RuntimeException e) {
                 throw new IOException("解析 Profile 失败");
             }

@@ -27,6 +27,7 @@ public final class SelfTest {
         testJsonBasics();
         testJsonEscapes();
         testJsonRejectsNested();
+        testJsonTopLevelSkipsNested();
         testAgentEventParsing();
         testAgentEventTolerance();
         testCredentialsRoundTrip();
@@ -49,6 +50,7 @@ public final class SelfTest {
         testTimingsNormalization();
         testUpgradeGivesUpWithoutBinary();
         testUpgradeIgnoresDuplicateCredentials();
+        testAddresslessCredentialDoesNotClobberCache();
         testStaleWorkerCannotOverrideReset();
         testCredentialCacheRoundTrip();
         testCredentialCacheKeepsMostRecent();
@@ -161,6 +163,48 @@ public final class SelfTest {
             threw = true;
         }
         check("嵌套对象应报错而非静默出错", threw);
+    }
+
+    private static void testJsonTopLevelSkipsNested() {
+        // 真实形状的 hasJoined 响应：Profile 必带 properties 嵌套数组
+        // （2026-08-09 实测 Blessing Skin 返回 textures + uploadableTextures
+        // 两个 property），严格解析器啃不动它，预认证因此全军覆没过
+        java.util.Map<String, String> profile = Json.parseTopLevel(
+                "{\"id\":\"382e8f06ca603e99b8e61241e4393fcf\",\"name\":\"ChengXin\","
+                        + "\"properties\":[{\"name\":\"textures\","
+                        + "\"value\":\"eyJ0aW1lc3RhbXAiOjE3ODYyODQyODMzOTN9\","
+                        + "\"signature\":\"HZkIP85x+abc/def==\"},"
+                        + "{\"name\":\"uploadableTextures\",\"value\":\"skin,cape\"}]}");
+        check("顶层 id 照收", "382e8f06ca603e99b8e61241e4393fcf".equals(profile.get("id")));
+        check("顶层 name 照收", "ChengXin".equals(profile.get("name")));
+        check("嵌套值不进结果表", !profile.containsKey("properties"));
+
+        // 嵌套值排在前面也不影响后续顶层字段
+        java.util.Map<String, String> m = Json.parseTopLevel(
+                "{\"deep\":{\"a\":[1,{\"b\":2}]},\"id\":\"x\"}");
+        check("嵌套值在前仍能取到后续字段", "x".equals(m.get("id")));
+
+        // 嵌套结构里的字符串可以包含任意括号与转义引号，不能搅乱配平计数
+        java.util.Map<String, String> tricky = Json.parseTopLevel(
+                "{\"p\":[{\"v\":\"a]b}c \\\"quoted\\\" \\\\\"}],\"id\":\"y\"}");
+        check("嵌套字符串里的括号不搅乱跳过", "y".equals(tricky.get("id")));
+
+        boolean threw = false;
+        try {
+            Json.parseTopLevel("{\"p\":[{\"v\":\"unclosed\"}");
+        } catch (IllegalArgumentException e) {
+            threw = true;
+        }
+        check("未闭合的嵌套结构应报错", threw);
+
+        // 严格入口的契约不变：agent 事件里出现嵌套仍是异常
+        boolean strictThrew = false;
+        try {
+            Json.parseObject("{\"a\":[1]}");
+        } catch (IllegalArgumentException e) {
+            strictThrew = true;
+        }
+        check("严格入口仍拒绝嵌套", strictThrew);
     }
 
     // ---------- AgentEvent ----------
@@ -742,6 +786,35 @@ public final class SelfTest {
         check("放弃后忽略同房间重复凭证", !c.onCredentials(cred));
         c.shutdown();
         check("shutdown 后回到 IDLE", c.state() == UpgradeController.State.IDLE);
+    }
+
+    /**
+     * 回归：补不上会合点地址的凭证绝不能写缓存。缓存按房间同文件覆盖，
+     * 残废版会把带地址的好凭证盖掉，下次启动预热直接瘫痪（2026-08-09 实测：
+     * 切换后 currentServerData 被 loadWorld(null) 清空，重复下发的凭证
+     * 推导不出地址，就这么把缓存污染了）。
+     */
+    private static void testAddresslessCredentialDoesNotClobberCache() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-test-cachepoison");
+        FakeBridge bridge = new FakeBridge(tmp);
+        CredentialCache cache = new CredentialCache(tmp.resolve("credentials"));
+
+        // 上一场留下的好凭证：带会合点地址
+        Credentials viaRz = Credentials.frpXtcpViaRendezvous(
+                "T", "stun:1", "room-rz", "S", 1000);
+        cache.store(viaRz.rendezvousAt("mc.example.com", 25565));
+
+        // 切换后的重复下发：此刻服务器地址推导不出来（模拟 ServerData 已被清）
+        bridge.currentServer = null;
+        UpgradeController c = new UpgradeController(bridge, Timings.defaults(), cache, null);
+        c.onCredentials(viaRz);
+        bridge.settled.await(10, TimeUnit.SECONDS);
+
+        Credentials cached = cache.loadMostRecent();
+        check("无地址凭证不覆盖缓存", cached != null && !cached.needsRendezvousAddress());
+        check("缓存里仍是带地址的版本",
+                cached != null && "mc.example.com".equals(cached.params().get("server")));
+        c.shutdown();
     }
 
     /**

@@ -26,6 +26,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class WarmupController {
 
+    /**
+     * 升级侧的观察口：预热每轮打洞前先看升级流程是否正在打洞，是则让路。
+     * 同一 NAT 上并发打两个洞会互相干扰（2026-08-09 实测：预热侧 QUIC
+     * 拨号超时、升级侧 15 秒才通，正常 1.8–5 秒）。由
+     * {@link UpgradeController} 构造时自动挂上，平台层无需接线。
+     */
+    public interface UpgradeGate {
+        boolean punching();
+    }
+
     /** 平台层关心的时刻。回调在后台线程触发，实现自行转到游戏主线程。 */
     public interface Listener {
         /**
@@ -64,6 +74,9 @@ public final class WarmupController {
     private volatile Thread worker;
     private volatile Ready ready;
     private volatile AgentProcess agent;
+    /** 本轮 agent 是否还在等打洞结果；就绪或失败后即为 false。 */
+    private volatile boolean punching;
+    private volatile UpgradeGate upgradeGate;
 
     public WarmupController(ClientBridge bridge, CredentialCache cache, Timings timings,
                             Listener listener, int bindPort, Prefetcher prefetcher) {
@@ -144,6 +157,11 @@ public final class WarmupController {
                         bridge.info("缓存凭证未带会合点地址，无法预热（进服一次即会重新缓存）");
                         loggedIdle = true;
                     }
+                } else if (upgradeBusy()) {
+                    // 升级流程正对某个房间打洞：让路，等它出结果再进下一轮。
+                    // 不吃退避计数——让路不是失败。
+                    waitForUpgradeToSettle();
+                    continue;
                 } else if (runAttempt(cred, exe, cacheDir, agentLog)) {
                     // 就绪过又退出：清零退避，尽快恢复直连条目
                     attempt = 0;
@@ -180,6 +198,7 @@ public final class WarmupController {
         bridge.debug("启动预热 agent: " + AgentProcess.describeCommand(
                 AgentProcess.buildCommand(exe, cred, timings, agentLog, bindPort)));
 
+        punching = true;
         AgentProcess proc = AgentProcess.start(exe, cred, timings, cacheDir, agentLog, bindPort,
                 new AgentProcess.Listener() {
                     @Override
@@ -199,6 +218,7 @@ public final class WarmupController {
         agent = proc;
         try {
             AgentEvent outcome = proc.awaitOutcome(timings.outcomeWaitMs());
+            punching = false;
             if (outcome != null && outcome.type() == AgentEvent.Type.READY) {
                 ready = new Ready(cred, outcome, proc);
                 bridge.info("预热直连就绪，端口 " + outcome.port() + "，延迟 "
@@ -218,9 +238,37 @@ public final class WarmupController {
             bridge.info("预热未成功（" + why + "）——继续按退避重试，不影响正常游戏");
             return false;
         } finally {
+            punching = false;
             ready = null;
             agent = null;
             proc.close();
+        }
+    }
+
+    /** 预热是否正有一轮打洞在等结果。升级流程用它避免同 NAT 并发打洞。 */
+    public boolean punching() {
+        return punching;
+    }
+
+    /** {@link UpgradeController} 构造时挂上，让预热能观察到升级是否正在打洞。 */
+    public void setUpgradeGate(UpgradeGate gate) {
+        this.upgradeGate = gate;
+    }
+
+    private boolean upgradeBusy() {
+        UpgradeGate gate = upgradeGate;
+        return gate != null && gate.punching();
+    }
+
+    /**
+     * 等升级流程的这轮打洞出结果（成败皆可），最多等一个
+     * {@link Timings#outcomeWaitMs}——升级卡死也不能把预热永远堵住。
+     */
+    private void waitForUpgradeToSettle() throws InterruptedException {
+        bridge.debug("升级流程正在打洞，预热让路");
+        long deadline = System.currentTimeMillis() + timings.outcomeWaitMs();
+        while (!stopped && upgradeBusy() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(timings.probeIntervalMs());
         }
     }
 
