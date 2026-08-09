@@ -1,6 +1,7 @@
 # CI 构建。三条流水线相互独立：
 #
-#   go    — agent 本体的编译与 vet
+#   go    — agent 本体的编译、vet、测试，外加三个真实二进制冒烟
+#           （build.sh 注入、tunnel stdout 契约、serve 内嵌会合点）
 #   core  — Java core 用 JDK 8 编译，在 8/17/21/25 四个 JVM 上跑 SelfTest，
 #           对应 GTNH 用 lwjgl3ify 把 1.7.10 跑在现代 JVM 上的场景
 #   mod   — Forge 1.7.10 适配层（RetroFuturaGradle），产出可发布的 mod jar
@@ -30,6 +31,7 @@ jobs:
   go:
     name: Go agent
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -38,7 +40,10 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       # 跨语言契约测试（authplugin 的已知答案向量）在这里守门：
-      # 只 build 不 test 的话，契约被改坏要到 Java 侧 SelfTest 才炸，甚至漏网
+      # 只 build 不 test 的话，契约被改坏要到 Java 侧 SelfTest 才炸，甚至漏网。
+      # internal/rendezvous 的 interop 测试也在其中：frp client 库真连内嵌
+      # 会合点，钉住登录与代理注册的放行/拒绝规则（frp bump 的行为级防线）。
+      # 不开 -race：frp 自身关停路径带数据竞争，见 interop_test.go 头注。
       - run: go test ./...
       # build.sh 的 -X symbol 名与 internal/config 的变量名是逐字契约，
       # symbol 写错时 Go 会静默忽略、构建照样成功——真实打包时默认值就悄悄
@@ -83,10 +88,46 @@ jobs:
             cat stdout.jsonl
             exit 1
           }
+      # 内嵌会合点冒烟：真实二进制跑通「起会合点 → serve 的 frpc 从回环连
+      # 回来 → 过内嵌 authplugin → 注册 xtcp 代理」全链路，再验证 SIGTERM
+      # 干净退出。全程不出网：STUN 只在真正打洞时才会被联系，而 stunpick
+      # 对单个候选不做探测直接放行。库层同样的契约由 internal/rendezvous
+      # 的 interop 测试钉住，这里额外覆盖 main/serveEmbedded 的旗标装配、
+      # 自用静态令牌生成与信号退出路径。「start proxy success」是 frp 的
+      # 日志原文，刻意用作 frp bump 的绊线——frp 若改了字样，这里跟着改。
+      - name: serve 内嵌会合点冒烟
+        run: |
+          bin/netherway-linux-amd64 serve \
+            -rendezvous 17321 -port 25565 \
+            -room ci-smoke -secret ci-smoke -token ci-token \
+            -signing-key ci-signing-key \
+            -stun 127.0.0.1:1 \
+            >serve.out 2>serve.err &
+          pid=$!
+          ok=""
+          for i in $(seq 1 40); do
+            if grep -q "start proxy success" serve.out 2>/dev/null; then ok=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          kill "$pid" 2>/dev/null || true
+          status=0; wait "$pid" || status=$?
+          cat serve.out
+          cat serve.err >&2
+          grep -q "内嵌会合点" serve.out || { echo "会合点未启动"; exit 1; }
+          if [ -z "$ok" ]; then
+            echo "serve 未能在内嵌会合点上注册代理（登录或 NewProxy 被拒？）"
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "SIGTERM 后未干净退出（exit $status）"
+            exit 1
+          fi
 
   core:
     name: Java core SelfTest (JDK ${{ matrix.java }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -116,6 +157,9 @@ jobs:
   mod:
     name: Forge 1.7.10 mod
     runs-on: ubuntu-latest
+    # 首次构建（缓存未命中）要下载并反编译 Minecraft，留足余量；
+    # 命中缓存时远低于此。上限的意义是别让挂死的下载吃满 6 小时配额
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

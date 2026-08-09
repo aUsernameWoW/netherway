@@ -3,9 +3,11 @@
 # frp 也在自动合入范围内，不做特殊处理：frp 自 v0.69 起承诺 frpc↔frps
 # 前后各 8 个小版本的协议兼容窗口（见 v0.69.0 release notes），frps 只需
 # 保持在窗口内跟进（按 frp 发版节奏约一年升一次）。库 API 层的破坏表现
-# 为编译失败，由 CI 拦下——PR 不绿就不会合；「编译过但行为变」的主要
-# 风险面（frp 日志漏进 stdout 污染 JSON 契约）由 build.yml 的
-# tunnel stdout 契约冒烟兜底。
+# 为编译失败，由 CI 拦下——PR 不绿就不会合；「编译过但行为变」的风险面
+# 由三道行为级防线兜底：frp 日志漏进 stdout 污染 JSON 契约 → build.yml
+# 的 tunnel stdout 契约冒烟；内嵌会合点的登录/注册放行规则 →
+# internal/rendezvous 的 interop 测试（go test 里跑）；serve 内嵌模式的
+# 全链路装配 → build.yml 的 serve 内嵌会合点冒烟。
 #
 # Gradle（mod/platform/forge-1.7.10）刻意不纳入：RetroFuturaGradle 与
 # 1.7.10 生态版本钉死，自动 bump 只会添乱。
