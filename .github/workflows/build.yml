@@ -33,8 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: go build ./...
@@ -133,16 +133,16 @@ jobs:
       matrix:
         java: [8, 17, 21, 25]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # 先装 8 再装运行版本：每次 setup-java 都会覆盖默认 JAVA_HOME，
       # 于是编译固定走 JAVA_HOME_8_X64，运行走默认的 java
       - name: 安装 JDK 8（编译用）
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: zulu
           java-version: 8
       - name: 安装 JDK ${{ matrix.java }}（运行用）
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: zulu
           java-version: ${{ matrix.java }}
@@ -161,31 +161,31 @@ jobs:
     # 命中缓存时远低于此。上限的意义是别让挂死的下载吃满 6 小时配额
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       # JDK 8 给编译 toolchain，JDK 21 给 Gradle/RFG 自己；顺序决定默认值
       - name: 安装 JDK 8（编译 toolchain）
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: zulu
           java-version: 8
       - name: 安装 JDK 21（运行 Gradle）
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: zulu
           java-version: 21
       # 首次构建 RFG 要下载并反编译 Minecraft（缓存约 1-2GB），
       # 没有这个缓存的话每次 push 都要重来一遍
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: 构建打进 jar 的 agent 二进制（无密钥）
         run: ./mod/build-natives.sh
       - name: Gradle build
         working-directory: mod/platform/forge-1.7.10
         # fromEnv 让 Gradle 的 toolchain 探测认到 setup-java 装的 JDK 8
         run: ./gradlew build -Dorg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64 --console=plain
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: netherway-forge-1.7.10
           path: mod/platform/forge-1.7.10/build/libs/*.jar
