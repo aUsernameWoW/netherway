@@ -61,7 +61,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.nethe
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 370 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 387 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -370,12 +370,21 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 **预热与升级的 agent 各写各的日志文件**（`tunnel-warmup.log` / `tunnel.log`）。
 预热未出结果时玩家就经中转进服的话，两个 agent 会同时在跑，共用文件会互相踩踏。
 
+**等待 agent 终态的窗口必须与 `-timeout` 同源（凭证下发值优先）。**
+服务端可随凭证下发 `punchTimeoutMs`（2026-08-10 实测下发过 1 小时），取值
+收敛在 `Timings.punchTimeoutMs(long)` / `outcomeWaitMs(long)`；等自己起的
+agent 若用本地配置的 `outcomeWaitMs()`，mod 会抢在 agent 自己的超时之前把它
+掐掉——HardNAT 常态要两轮打洞，第二轮根本来不及开始。
+
 **预热与升级不得同时打洞。** 同一 NAT 上并发打两个洞会互相干扰（2026-08-09
 实测：预热侧 QUIC 拨号超时、升级侧 15 秒才通，正常 1.8–5 秒）。谁后到谁等：
 预热每轮打洞前看升级是否 PUNCHING（`UpgradeController` 构造时挂上的
 `UpgradeGate`），升级起自己的 agent 前等预热的这轮出结果（`awaitWarmupAttempt`，
-出来恰好就绪就直接复用）。两个方向都有界（一个 `outcomeWaitMs`），条件互斥
-不会死锁。已就绪的隧道只是守望进程、不在打洞，不触发让路。
+出来恰好就绪就直接复用）。两个方向的让路等待都有界，但界不是本地配置——
+取对方经 `punchWaitBoundMs` 公布的这轮实际预算（可能来自服务端下发的凭证，
+远长于本地配置；拿本地配置猜会提前到点、恰好撞回并发打洞）。轮询在对方出
+结果时提前退出，条件互斥不会死锁。已就绪的隧道只是守望进程、不在打洞，
+不触发让路。
 
 **Yggdrasil 的 Profile 必带 `properties` 嵌套数组**（textures 材质），
 `Json.parseObject` 的扁平契约啃不动它——hasJoined 的解析要用

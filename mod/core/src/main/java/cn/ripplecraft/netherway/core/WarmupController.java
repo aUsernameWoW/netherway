@@ -34,6 +34,13 @@ public final class WarmupController {
      */
     public interface UpgradeGate {
         boolean punching();
+
+        /**
+         * 正在打洞的这轮升级的等待上限。让路等待用它定界：升级的 agent
+         * 超时可能来自服务端下发的凭证（远长于本地配置），拿本地配置去
+         * 猜会猜短。轮询在对方出结果时提前退出，这个界只兜卡死的底。
+         */
+        long punchWaitBoundMs();
     }
 
     /** 平台层关心的时刻。回调在后台线程触发，实现自行转到游戏主线程。 */
@@ -76,6 +83,8 @@ public final class WarmupController {
     private volatile AgentProcess agent;
     /** 本轮 agent 是否还在等打洞结果；就绪或失败后即为 false。 */
     private volatile boolean punching;
+    /** 本轮打洞的等待上限（凭证优先），公布给升级侧的让路等待定界。 */
+    private volatile long punchWaitMs;
     private volatile UpgradeGate upgradeGate;
 
     public WarmupController(ClientBridge bridge, CredentialCache cache, Timings timings,
@@ -198,6 +207,10 @@ public final class WarmupController {
         bridge.debug("启动预热 agent: " + AgentProcess.describeCommand(
                 AgentProcess.buildCommand(exe, cred, timings, agentLog, bindPort)));
 
+        // 与 agent 的 -timeout 同源（凭证优先）：缓存的凭证同样可能带着
+        // 服务端下发的超时，拿本地配置等会抢在 agent 之前判死这一轮
+        long waitMs = timings.outcomeWaitMs(cred.punchTimeoutMs());
+        punchWaitMs = waitMs;
         punching = true;
         AgentProcess proc = AgentProcess.start(exe, cred, timings, cacheDir, agentLog, bindPort,
                 new AgentProcess.Listener() {
@@ -217,7 +230,7 @@ public final class WarmupController {
                 });
         agent = proc;
         try {
-            AgentEvent outcome = proc.awaitOutcome(timings.outcomeWaitMs());
+            AgentEvent outcome = proc.awaitOutcome(waitMs);
             punching = false;
             if (outcome != null && outcome.type() == AgentEvent.Type.READY) {
                 ready = new Ready(cred, outcome, proc);
@@ -239,6 +252,7 @@ public final class WarmupController {
             return false;
         } finally {
             punching = false;
+            punchWaitMs = 0;
             ready = null;
             agent = null;
             proc.close();
@@ -248,6 +262,15 @@ public final class WarmupController {
     /** 预热是否正有一轮打洞在等结果。升级流程用它避免同 NAT 并发打洞。 */
     public boolean punching() {
         return punching;
+    }
+
+    /**
+     * 本轮打洞的等待上限（凭证优先），供升级侧的让路等待
+     * （{@code awaitWarmupAttempt}）定界；未在打洞时退回本地配置的窗口。
+     */
+    public long punchWaitBoundMs() {
+        long b = punchWaitMs;
+        return b > 0 ? b : timings.outcomeWaitMs();
     }
 
     /** {@link UpgradeController} 构造时挂上，让预热能观察到升级是否正在打洞。 */
@@ -261,12 +284,17 @@ public final class WarmupController {
     }
 
     /**
-     * 等升级流程的这轮打洞出结果（成败皆可），最多等一个
-     * {@link Timings#outcomeWaitMs}——升级卡死也不能把预热永远堵住。
+     * 等升级流程的这轮打洞出结果（成败皆可），上限取升级公布的这轮预算
+     * （{@link UpgradeGate#punchWaitBoundMs}）——升级卡死也不能把预热永远
+     * 堵住。到点后回到主循环重新判断（仍在打洞就继续让路），绝不会因此
+     * 并发打洞；界跟着对方的实际预算走，是为了少做几次无谓的空转
+     * （每次回主循环都会跑一遍预取）。
      */
     private void waitForUpgradeToSettle() throws InterruptedException {
         bridge.debug("升级流程正在打洞，预热让路");
-        long deadline = System.currentTimeMillis() + timings.outcomeWaitMs();
+        UpgradeGate gate = upgradeGate;
+        long bound = gate != null ? gate.punchWaitBoundMs() : timings.outcomeWaitMs();
+        long deadline = System.currentTimeMillis() + bound;
         while (!stopped && upgradeBusy() && System.currentTimeMillis() < deadline) {
             Thread.sleep(timings.probeIntervalMs());
         }

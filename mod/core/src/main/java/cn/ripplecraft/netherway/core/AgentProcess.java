@@ -133,9 +133,9 @@ public final class AgentProcess implements Closeable {
                                      Path logFile, int bindPort) {
         Timings t = timings == null ? Timings.defaults() : timings.normalized();
 
-        // 服务端下发的超时优先：它更清楚自己这端的网络状况；
-        // 未下发（<=0）时用客户端配置。
-        long punchMs = cred.punchTimeoutMs() > 0 ? cred.punchTimeoutMs() : t.punchTimeoutMs();
+        // 凭证优先的取值必须与调用方的等待窗口同源（Timings.outcomeWaitMs(long)），
+        // 否则 mod 会抢在 agent 自己的超时之前把它掐掉
+        long punchMs = t.punchTimeoutMs(cred.punchTimeoutMs());
 
         List<String> cmd = new ArrayList<String>();
         cmd.add(exe.toAbsolutePath().toString());

@@ -48,6 +48,13 @@ public final class UpgradeController {
 
     private volatile AgentProcess agent;
     private volatile String activeKey;
+    /**
+     * 本轮升级等待终态的上限（凭证优先，见 {@link Timings#outcomeWaitMs(long)}），
+     * 经 {@link WarmupController.UpgradeGate} 公布给预热的让路等待定界。
+     * 让路等的是这轮打洞的实际预算——那可能来自服务端下发的凭证，
+     * 预热拿自己的本地配置去猜会猜短，到点自以为对方卡死。
+     */
+    private volatile long punchWaitBoundMs;
     /** 成功时的 READY 事件，供切换落地后的结果回执取 rtt/耗时。 */
     private volatile AgentEvent lastReady;
     /** 成功回执只发一次（服务端每次重连都会重发凭证）。 */
@@ -72,6 +79,12 @@ public final class UpgradeController {
                 @Override
                 public boolean punching() {
                     return state.get() == State.PUNCHING;
+                }
+
+                @Override
+                public long punchWaitBoundMs() {
+                    long b = punchWaitBoundMs;
+                    return b > 0 ? b : UpgradeController.this.timings.outcomeWaitMs();
                 }
             });
         }
@@ -125,6 +138,7 @@ public final class UpgradeController {
         synchronized (transition) {
             if (state.compareAndSet(State.IDLE, State.PUNCHING)) {
                 activeKey = cred.dedupKey();
+                punchWaitBoundMs = timings.outcomeWaitMs(cred.punchTimeoutMs());
                 gen = epoch;
             } else {
                 gen = -1;
@@ -194,9 +208,12 @@ public final class UpgradeController {
                 return;
             }
 
-            bridge.debug("等待打洞结果，最多 " + timings.outcomeWaitMs()
+            // 与 agent 的 -timeout 同源（凭证优先），再留 startupGrace 的余量：
+            // agent 正常应先于这个窗口自行报 failed，窗口只兜进程卡死的底
+            long waitMs = timings.outcomeWaitMs(cred.punchTimeoutMs());
+            bridge.debug("等待打洞结果，最多 " + waitMs
                     + "ms（agent 详细日志: " + agentLog + "）");
-            AgentEvent outcome = proc.awaitOutcome(timings.outcomeWaitMs());
+            AgentEvent outcome = proc.awaitOutcome(waitMs);
 
             if (outcome == null) {
                 giveUp(proc, cred, "等待直连结果超时", gen);
@@ -269,16 +286,19 @@ public final class UpgradeController {
     }
 
     /**
-     * 预热正在打洞时等它出结果（成败皆可），最多等一个
-     * {@link Timings#outcomeWaitMs}。返回 true 表示确实等过——调用方
-     * 应再试一次复用（预热可能恰好就绪了）。
+     * 预热正在打洞时等它出结果（成败皆可），上限取预热公布的这轮预算
+     * （{@link WarmupController#punchWaitBoundMs}）——预热的 agent 超时可能
+     * 来自服务端下发的凭证，远长于本地配置；用本地配置定界会提前到点、
+     * 起自己的 agent 与预热并发打洞，正是让路要避免的事。轮询在预热出
+     * 结果时立即退出，界只兜预热卡死的底。返回 true 表示确实等过——
+     * 调用方应再试一次复用（预热可能恰好就绪了）。
      */
     private boolean awaitWarmupAttempt() {
         if (warmup == null || !warmup.punching()) {
             return false;
         }
         bridge.info("预热正在打洞，等它出结果再决定（避免并发打洞互相干扰）");
-        long deadline = System.currentTimeMillis() + timings.outcomeWaitMs();
+        long deadline = System.currentTimeMillis() + warmup.punchWaitBoundMs();
         while (warmup.punching() && System.currentTimeMillis() < deadline) {
             try {
                 Thread.sleep(timings.probeIntervalMs());
@@ -506,6 +526,7 @@ public final class UpgradeController {
             proc = agent;
             agent = null;
             activeKey = null;
+            punchWaitBoundMs = 0;
             lastReady = null;
             upgradeReported = false;
             adoptedDirect = false;

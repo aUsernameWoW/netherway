@@ -48,6 +48,7 @@ public final class SelfTest {
         testServeCommandRendezvous();
         testTlsRecordDetection();
         testTimingsNormalization();
+        testCredAwareWaitWindows();
         testUpgradeGivesUpWithoutBinary();
         testUpgradeIgnoresDuplicateCredentials();
         testAddresslessCredentialDoesNotClobberCache();
@@ -659,6 +660,39 @@ public final class SelfTest {
         Timings custom = new Timings(30000, 500, 3000, 2000).normalized();
         check("保留自定义值", custom.punchTimeoutMs() == 30000L);
         check("自定义等待总时长", custom.outcomeWaitMs() == 32000L);
+    }
+
+    /**
+     * 等待窗口与 agent 的 -timeout 必须同源（凭证下发值优先）。
+     * 2026-08-10 实测过脱节的代价：服务端下发 1 小时，agent 拿到了
+     * -timeout 3600，mod 却按本地 20 秒把它掐掉——HardNAT 常态要两轮
+     * 打洞，第二轮根本来不及开始。
+     */
+    private static void testCredAwareWaitWindows() {
+        Timings t = new Timings(15000, 250, 2000, 5000).normalized();
+
+        // 凭证下发值优先；未下发（<=0）回退本地配置
+        check("凭证超时优先", t.punchTimeoutMs(3600000) == 3600000L);
+        check("未下发回退本地", t.punchTimeoutMs(0) == 15000L);
+        check("负值同样回退本地", t.punchTimeoutMs(-1) == 15000L);
+        check("凭证版等待窗口 = 凭证超时 + 余量",
+                t.outcomeWaitMs(3600000) == 3600000L + t.startupGraceMs());
+        check("未下发时两个版本一致", t.outcomeWaitMs(0) == t.outcomeWaitMs());
+
+        // 与 buildCommand 组装的 -timeout 同源：凭证说 1 小时，
+        // 命令行就该是 3600 秒，而等待窗口必须比它更长
+        Credentials cred = Credentials.frpXtcp("1.2.3.4", 7000, "tok",
+                "stun:1", "gtnh", "sec", 3600000);
+        List<String> cmd = AgentProcess.buildCommand(
+                Paths.get("/tmp/netherway"), cred, t, null);
+        int at = cmd.indexOf("-timeout");
+        check("命令行超时取凭证值", at >= 0 && "3600.000".equals(cmd.get(at + 1)));
+        check("等待窗口长于 agent 预算",
+                t.outcomeWaitMs(cred.punchTimeoutMs()) > 3600000L);
+
+        // 未在打洞时，预热公布的让路界退回本地配置的窗口
+        WarmupController idle = new WarmupController(null, null, t, null, 0, null);
+        check("预热闲置时公布本地窗口", idle.punchWaitBoundMs() == t.outcomeWaitMs());
     }
 
     // ---------- UpgradeController ----------

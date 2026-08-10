@@ -81,6 +81,19 @@ public final class Timings {
         return punchTimeoutMs;
     }
 
+    /**
+     * agent 实际使用的打洞超时：服务端随凭证下发的值优先（它更清楚自己
+     * 那端的网络状况），未下发（<=0）时用本地配置。
+     *
+     * <p>组装 {@code -timeout}（{@link AgentProcess}）与等待终态的窗口都
+     * 必须经这里取值，保证两者同源。2026-08-10 实测过一次脱节的代价：
+     * 服务端下发 1 小时，agent 拿到了，mod 却按本地默认 20 秒把它掐掉——
+     * HardNAT 下常态需要两轮打洞，第二轮根本来不及开始。
+     */
+    public long punchTimeoutMs(long credPunchTimeoutMs) {
+        return credPunchTimeoutMs > 0 ? credPunchTimeoutMs : punchTimeoutMs;
+    }
+
     public long probeIntervalMs() {
         return probeIntervalMs;
     }
@@ -99,9 +112,18 @@ public final class Timings {
         return startupGraceMs;
     }
 
-    /** mod 等待终态的总时长。 */
+    /** mod 等待终态的总时长（本地配置版，无凭证语境下的兜底）。 */
     public long outcomeWaitMs() {
         return punchTimeoutMs + startupGraceMs;
+    }
+
+    /**
+     * mod 等待终态的总时长，打洞超时按 {@link #punchTimeoutMs(long)} 取
+     * 凭证优先。等自己起的 agent 必须用这个版本：agent 的 {@code -timeout}
+     * 同样是凭证优先，两边不同源的话 mod 会抢在 agent 之前判死。
+     */
+    public long outcomeWaitMs(long credPunchTimeoutMs) {
+        return punchTimeoutMs(credPunchTimeoutMs) + startupGraceMs;
     }
 
     /**
