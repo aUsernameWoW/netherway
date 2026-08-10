@@ -29,13 +29,11 @@ import java.util.Map;
 public final class Credentials {
 
     /**
-     * 格式版本。v1 是 frp 专用的固定字段布局，v2 起为通用参数表，
-     * v3 在参数表之后追加了一段「客户端策略」（{@link #policy()}）。
-     *
-     * <p>v3 对老客户端是安全的：{@link #decode} 读完已知字段就收手，
-     * 尾部追加的内容一律不读——老客户端只是用不上新特性。
+     * 格式版本。v1 是 frp 专用的固定字段布局，v2 起为通用参数表。
+     * v3 曾在参数表后追加过「客户端策略」段，现已移除——decode 仍能读 v3
+     * 并丢弃那段，保持对老缓存凭证的兼容。
      */
-    private static final byte FORMAT_VERSION = 3;
+    private static final byte FORMAT_VERSION = 2;
 
     /**
      * 还认得的最低通用布局版本。v2 的凭证仍会被老服务端下发，也仍躺在
@@ -57,26 +55,12 @@ public final class Credentials {
     public static final String PARAM_USER = "user";
     public static final String PARAM_USER_TOKEN = "userToken";
 
-    /**
-     * 客户端策略键：服务端准许该客户端开启零配置预取
-     * （值 {@code "1"}）。与 backend 参数刻意分开——它不传给 agent，
-     * 是服务端对客户端行为的授权，见 {@link #policy()}。
-     */
-    public static final String POLICY_ZERO_CONFIG_PREFETCH = "zeroConfigPrefetch";
-
     private final String backendId;
     /** 保序（下发顺序），使 encode 与命令行输出确定、可测。 */
     private final Map<String, String> params;
     private final int punchTimeoutMs;
-    /** 客户端策略，不进 agent 命令行，也不参与 {@link #dedupKey()}。 */
-    private final Map<String, String> policy;
 
     public Credentials(String backendId, Map<String, String> params, int punchTimeoutMs) {
-        this(backendId, params, punchTimeoutMs, null);
-    }
-
-    public Credentials(String backendId, Map<String, String> params, int punchTimeoutMs,
-                       Map<String, String> policy) {
         this.backendId = require(backendId, "backendId");
         if (params == null) {
             throw new IllegalArgumentException("params 不能为 null");
@@ -102,19 +86,6 @@ public final class Credentials {
         this.params = Collections.unmodifiableMap(copy);
         require(this.params.get(PARAM_ROOM), PARAM_ROOM);
         this.punchTimeoutMs = punchTimeoutMs;
-
-        Map<String, String> pol = new LinkedHashMap<String, String>();
-        if (policy != null) {
-            for (Map.Entry<String, String> e : policy.entrySet()) {
-                if (e.getKey() != null && !e.getKey().isEmpty() && e.getValue() != null) {
-                    pol.put(e.getKey(), e.getValue());
-                }
-            }
-        }
-        if (pol.size() > 0xFFFF) {
-            throw new IllegalArgumentException("策略项过多: " + pol.size());
-        }
-        this.policy = Collections.unmodifiableMap(pol);
     }
 
     /**
@@ -189,12 +160,6 @@ public final class Credentials {
                 out.writeUTF(e.getKey());
                 out.writeUTF(e.getValue());
             }
-            // v3 追加：老客户端读完上面就收手，这段对它们不可见
-            out.writeShort(policy.size());
-            for (Map.Entry<String, String> e : policy.entrySet()) {
-                out.writeUTF(e.getKey());
-                out.writeUTF(e.getValue());
-            }
             out.flush();
         } catch (IOException e) {
             // ByteArrayOutputStream 不会真的抛 IO 异常
@@ -209,6 +174,7 @@ public final class Credentials {
      * <p>版本号高于当前实现时仍会读取已知前缀并忽略尾部追加的字段——服务端
      * 更新后老客户端仍能工作，只是用不上新特性，这比直接拒绝连接体面得多。
      * v1（frp 专用布局）会被翻译成等价的 frp-xtcp 参数表，老服务端不受影响。
+     * v3 曾在参数表后追加过「客户端策略」段，现已被丢弃——读到时跳过即可。
      *
      * @throws IOException 数据损坏或字段缺失
      */
@@ -232,19 +198,18 @@ public final class Credentials {
             String key = in.readUTF();
             params.put(key, in.readUTF());
         }
-        // v3 起参数表后面还有一段客户端策略。v2 的数据到此为止，
-        // 用 available() 判断而不是版本号——缓存里可能存着老服务端发的 v2。
-        Map<String, String> policy = new LinkedHashMap<String, String>();
+        // v3 的参数表后曾有一段「客户端策略」（policy）。该机制已移除，
+        // 但玩家缓存目录里可能还躺着 v3 凭证——读到时整段跳过即可。
         if (version >= 3 && in.available() >= 2) {
             int policyCount = in.readUnsignedShort();
             for (int i = 0; i < policyCount; i++) {
-                String key = in.readUTF();
-                policy.put(key, in.readUTF());
+                in.readUTF(); // key，丢弃
+                in.readUTF(); // value，丢弃
             }
         }
         // 版本更高时后面可能还有字段，直接不读，保持向后兼容
         try {
-            return new Credentials(backendId, params, punchTimeoutMs, policy);
+            return new Credentials(backendId, params, punchTimeoutMs);
         } catch (IllegalArgumentException e) {
             // 数据完整但内容非法（如缺 room），统一按损坏凭证处理
             throw new IOException("凭证内容非法: " + e.getMessage());
@@ -276,7 +241,7 @@ public final class Credentials {
     public Credentials withExtraParams(Map<String, String> extra) {
         Map<String, String> merged = new LinkedHashMap<String, String>(params);
         merged.putAll(extra);
-        return new Credentials(backendId, merged, punchTimeoutMs, policy);
+        return new Credentials(backendId, merged, punchTimeoutMs);
     }
 
     /**
@@ -299,7 +264,7 @@ public final class Credentials {
                 merged.put(e.getKey(), e.getValue());
             }
         }
-        return new Credentials(backendId, merged, punchTimeoutMs, policy);
+        return new Credentials(backendId, merged, punchTimeoutMs);
     }
 
     /**
@@ -333,29 +298,6 @@ public final class Credentials {
         }
         String s = params.get("server");
         return s == null || s.isEmpty();
-    }
-
-    /** 返回附加了客户端策略的新凭证（原对象不变），同名键被覆盖。 */
-    public Credentials withPolicy(Map<String, String> extra) {
-        Map<String, String> merged = new LinkedHashMap<String, String>(policy);
-        merged.putAll(extra);
-        return new Credentials(backendId, params, punchTimeoutMs, merged);
-    }
-
-    /**
-     * 服务端随凭证下发的客户端策略。
-     *
-     * <p>与 {@link #params()} 刻意分开：params 会原样变成 agent 的命令行参数，
-     * 而策略是服务端对客户端<b>行为</b>的授权，不该传给 agent，也不参与
-     * {@link #dedupKey()}——同一房间的凭证不会因为策略变了就被当成新凭证。
-     */
-    public Map<String, String> policy() {
-        return policy;
-    }
-
-    /** 某项策略是否被服务端置为开启（值为 {@code "1"}）。 */
-    public boolean policyEnabled(String key) {
-        return "1".equals(policy.get(key));
     }
 
     /** backend 标识，决定 agent 用哪种隧道方案。 */

@@ -33,14 +33,12 @@ public final class ClientEvents {
     private final UpgradeController controller;
     private final WarmupController warmup;
     private final ForgeClientBridge bridge;
-    private final ModConfig config;
 
     public ClientEvents(UpgradeController controller, WarmupController warmup,
-                        ForgeClientBridge bridge, ModConfig config) {
+                        ForgeClientBridge bridge) {
         this.controller = controller;
         this.warmup = warmup;
         this.bridge = bridge;
-        this.config = config;
     }
 
     /** 服务端在我们的频道上发来了凭证。事件在 netty 线程触发。 */
@@ -52,12 +50,6 @@ public final class ClientEvents {
         bridge.debug("收到服务端凭证包，" + data.length + " 字节");
         try {
             Credentials cred = Credentials.decode(data);
-            // 服务端授权零配置预取：能走到这里说明玩家确实登录了这台服务器，
-            // 由它来开这个开关比让玩家盲扫服务器列表安全得多
-            if (cred.policyEnabled(Credentials.POLICY_ZERO_CONFIG_PREFETCH)
-                    && config.adoptZeroConfigPrefetch()) {
-                LOG.info("服务端已授权零配置预取，已写回配置；下次启动即可自动预取凭证");
-            }
             controller.onCredentials(cred);
         } catch (IOException e) {
             // 损坏或过旧的凭证只影响升级，不影响玩家当前的连接
