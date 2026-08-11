@@ -7,7 +7,7 @@
 # 用法：
 #   TOKEN=xxx SECRET=yyy ./build.sh
 #
-# 真实部署参数（frps 地址、皮肤站等）放 build.env（已 gitignore，
+# 真实部署参数（frps 地址与可选密钥等）放 build.env（已 gitignore，
 # 模板见 build.env.example），环境变量可临时覆盖其中任何一项。
 # 版本库里不出现任何真实地址——这是转公开仓库的前提之一。
 #

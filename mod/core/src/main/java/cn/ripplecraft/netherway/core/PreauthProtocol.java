@@ -29,9 +29,6 @@ import java.io.IOException;
  *
  * <p>请求 payload 是 {@code UTF username, UTF uuid}；响应 OK 的 payload 是
  * 凭证裸字节（{@link Credentials#encode()}），响应 ERR 的 payload 是 {@code UTF reason}。
- *
- * <p>与 Go 侧 {@code internal/preauth} 是<b>逐字节一致</b>的跨语言契约，
- * 改动必须两边同步——两侧各有一个用同一组常量的已知答案测试钉住这一点。
  */
 public final class PreauthProtocol {
 
