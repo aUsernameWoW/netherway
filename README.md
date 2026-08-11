@@ -1,127 +1,130 @@
 # Netherway
 
-让 Minecraft 玩家绕过中转节点，通过 [frp](https://github.com/fatedier/frp) 的
-xtcp 打洞与服务器 P2P 直连。
+让 Minecraft 玩家和服务器之间走 P2P 直连，游戏流量不经过中转节点。类似 HMCL、PCL 启动器自带的联机功能，只不过面向的是有 正经服务端 的场景。
 
-为 GTNH（GregTech: New Horizons，Forge 1.7.10，跑在现代 JVM 上）而做，但架构
-上不与它绑定：隧道方案经 `internal/backend` 接口抽象（frp xtcp 是当前实现），
-mod 的核心层不含任何 Minecraft 类型，换游戏版本或加载器只需重写一层薄适配
-（见 [mod/README.md](mod/README.md)）。
+## 解决什么问题
 
-实测收益：P2P 直连的 Server List Ping 往返 **31–49 ms**，同一客户端经中转
-节点为 156–214 ms。打洞成功后游戏流量不经过任何第三方机器——这一点做过网络层
-验证（经隧道传 20 MB，frps 侧只看到心跳包），完整的端到端验证记录与踩坑见
-[docs/field-notes.md](docs/field-notes.md)。
+国内很多 MC 服务器跑在"家里云"上——家里宽带没有公网 IP，服主靠樱花 frp 之类的第三方端口转发让玩家能连进来。所有游戏流量都经第三方转发，延迟高，许多按量付费的转发服务花销大。
 
-## 快速开始
+Netherway 让这类服务器也能 P2P 直连：玩家和服务器打洞成功后，游戏流量直接走 UDP 互连，第三方只负责最初的信令交换，不再转发游戏数据，降低中转延迟的同时节约第三方流量费用。
 
-前提：一台公网可达的机器上跑着 frp 服务端（frps），手里有它的地址与
-`auth.token`。（也可以让服务端自带会合点，那样公网侧只需要一条能到达
-Minecraft 端口的普通 TCP 隧道，连 frps 都不必是——见
-[内嵌会合点](#内嵌会合点)。）然后构建 mod jar（需要 Go 工具链与 JDK，
-Gradle 要 Java 21+；jar 里打包的 agent 不含任何密钥）：
+## 前提
+
+服务端需要一个能被外网访问的地址，两种方式：
+
+- **自建 frps**：一台有公网 IP 的机器跑 frps
+- **（推荐）内嵌会合点 + 端口转发**：mod 配置文件里开启 `rendezvous=true`，然后用樱花 frp、花生壳 等任何第三方 TCP 转发让MC服本身有一个能被公网访问的链接地址即可，适用于本身就在用樱花 frp 之类工具的服主，不用自建 frps，最简单的配置
+
+不管哪种方式，打洞成功后游戏流量都不经过第三方。
+
+## 怎么工作
+
+```
+游戏服务器                    frps / 端口转发               玩家
+  │                               │                        │
+  ├─ frpc(xtcp) ── 控制连接 ───────┼────────────── frpc ────┤
+  │                               │                        │
+  └──────── UDP 直连，不经过第三方 ──────────────────────────┘
+```
+
+frpc 以库的形式内嵌在 mod 自带的 agent 里，由 mod 自动启停，玩家无需安装或运行任何额外程序。
+
+## 用法
+
+### 构建
 
 ```bash
-./mod/build-natives.sh
-cd mod/platform/forge-1.7.10 && ./gradlew build   # 产物在 build/libs/
+./mod/build-natives.sh        # 编译 agent 二进制（不含密钥）
+cd mod/platform/forge-1.7.10 && ./gradlew build
 ```
 
-部署就两步：
+产物在 `build/libs/`。Gradle 需要 Java 21+，编译产物是 Java 8 字节码。
 
-1. **服务端**：jar 丢进 `mods/`，启动前存一份 `config/netherway.cfg`：
+### 服务端
 
-   ```
-   server {
-       B:enabled=true
-       S:params <
-           server=frps.example.com
-           serverPort=7000
-           token=换成frps的auth.token
-           room=gtnh
-           secret=auto
-        >
-   }
-   ```
+jar 丢进 `<MC服务端根目录>/mods/`，首次启动自动生成 `<MC服务端根目录>/config/netherway.cfg`，改完重启 MC 服务端生效。
 
-   完整模板与逐项说明（每玩家令牌、PROXY protocol 等）见
-   [mod/platform/forge-1.7.10/README.md](mod/platform/forge-1.7.10/README.md)。
+**方式一：自建 frps**
 
-2. **客户端**：同一个 jar 丢进 `mods/`，零配置。
+\*注意，该方式需要一定的Linux操作基础，如果不会或没有公网IP的机器的话，建议使用方式二。
 
-就这些。玩家先经既有的中转隧道正常进服，服务端在登录后下发 P2P 凭证，
-客户端后台打洞，成功了自动切换连接，失败就安静地留在原线路上；没装 mod
-的客户端照常进服，完全不受影响。从第二次启动起，缓存的凭证会在游戏加载
-期间提前打洞，并在服务器列表里维护一个直连条目——预认证开启后（默认开启）
-首次启动也能在进服前预取凭证并打洞，全程不必先经中转。
-
-## 工作原理
-
-服务器端口固定（专用服务器，非「对局域网开放」的单人世界），服务端不需要
-动态发现端口，比一般的联机工具简单一截：
+frps 跑在有公网 IP 的机器上。`config/netherway.cfg` 示例：
 
 ```
-MC 服务器宿主机                  frps (203.0.113.10:7000)           玩家机器
-127.0.0.1:25565                  仅做信令协调，不转发流量           frpc visitor
-  └─ frpc (xtcp proxy) ──────────────── 控制连接 ────────────────── 127.0.0.1:空闲端口
-        │                                                              │
-        └────────── QUIC over UDP，打洞后直连，不经过 frps ────────────┘
-                                                                       │
-                                             mod 把游戏连接切换到该端口 ┘
+server {
+    B:enabled=true
+    S:params <
+        server=frps.example.com
+        serverPort=7000
+        token=1234abcd
+        room=testroom
+        secret=auto
+     >
+}
 ```
 
-frpc 以**库**的形式内嵌进 agent 而不是调用二进制：单文件分发、零配置文件、
-Windows 上不弹黑窗。
+- `server`/`serverPort`：你自建的 frps 的地址和端口，不是 MC 端口
+- `token`：你自建的 frps 的 auth.token，玩家需要它连 frps
+- `secret=auto`：每次重启随机生成房间密钥，旧凭证自动失效，这里默认即可
+- `room`：xtcp 房间名，英文，不能包含空格，随意命名即可
 
-**就绪判断靠主动探测。** frp 没有提供查询打洞状态的 API，所以 agent 用
-Minecraft 自己的握手（Server List Ping，`internal/mcping`）判断隧道是否真的
-可用——顺带确认了服务端进程在响应，而不只是端口被监听着。
+frps 那边需要部署 authplugin 防止 token 滥用——玩家手里有 frps 的 token，不拦的话有人能拿它建别的代理开端口。authplugin 是一个独立的 HTTP 服务，跑在 frps 同一台机器上，frps 通过 `httpPlugins` 配置调用它。
 
-**打洞失败不影响游玩，也刻意不做中转兜底。** mod 用的 `tunnel` 子命令建链
-失败就退出——玩家此刻本来就连着中转，留在原连接上即可；而且有兜底通道的话
-「隧道可用」的探测会永远成功，反而分不清到底打没打通。这条已是 backend
-接口的契约。登录触发的升级每次都有超时上限，失败即放弃本次会话的该房间，
-不反复折腾玩家的网络；启动期的预热则相反——它按退避周期持续重试（封顶后
-仍继续），因为它承载着服务器列表里的直连条目。
+**步骤 1**：把 `build-natives.sh` 编译出的 `netherway` 二进制程序拷到 frps 那台机器上，放在哪个目录都行。
 
-**新增一种隧道方案**只需一个 Go 实现包加一行注册（`cmd/netherway/backends.go`）；
-凭证是「backend 标识 + 参数表」，核心层不解释参数，原样转交 agent。
+**步骤 2**：在 frps 机器的终端里启动 authplugin。签发密钥和静态令牌都是你自己编的随机字符串（任意非空值即可，最好复杂一些），终端运行如下指令：
 
-## 内嵌会合点
-
-上面那张图里，frps 只干一件事：在两条控制连接之间转发打洞信令。地址发现靠
-外部 STUN，打通后的数据流根本不经过它。**一个只需要收发 TCP 的会合点，没有
-理由必须待在公网。**
-
-打开 `server.rendezvous` 后，会合点变成服务端进程里的一个内嵌 frps，只监听
-回环；玩家的 frp 控制连接由 mod 从 Minecraft 端口转发进去（frp 的控制通道是
-TLS，首字节 `0x16 0x03`，与 MC 握手、预认证帧、legacy ping、PROXY 头最迟第
-2 字节就分得开，共用一个嗅探器）。
-
-```
-MC 服务器宿主机                        公网入口                  玩家机器
-127.0.0.1:25565  ← Minecraft 端口 ← 任意 TCP 转发 ← 25565 ─── frpc visitor
-  └─ 内嵌 frps（仅回环）  ↑                                        │
-       ↑ 嗅探器按首字节把 frp 控制连接转发进来                     │
-       └────────── QUIC over UDP，打洞后直连，不经过任何中间机器 ──┘
+```bash
+# 注意下面这个指令要在frps所在机器的终端里运行
+# 签发密钥：自己编一串随机字符串，下面记作 <签发密钥>
+# 静态令牌：再编一串，下面记作 <静态令牌>
+NETHERWAY_AUTH_KEY=<签发密钥> ./netherway authplugin -static-token <静态令牌> -allow-legacy
 ```
 
-于是公网那台机器对本项目**再无任何要求**：不装插件、不必支持 xtcp、不必与
-本项目同版本，只要能把 TCP 转到 Minecraft 端口——而这本来就是玩家能进服的
-前提。它可以是 frps 的普通 tcp 代理、nginx stream，甚至一条 NAT 规则，
-**也可以是租来的隧道服务**，不必自建。
+authplugin（也就是netherway二进制程序）必须常驻运行——它挂了 frps 会拒绝所有登录（fail-closed）。生产环境用 systemd 之类的守护进程管理，开机自启 + 挂了自动拉起。示例 unit 文件：
 
-两项连带的好处：
+```ini
+# 不要直接复制，根据你自己的实际路径和参数自己去改
+# /etc/systemd/system/netherway-auth.service
+[Unit]
+Description=Netherway authplugin for frps
+After=network.target
 
-- **玩家手里的凭证不再是公网机器的门钥匙。** 经典模式下凭证里的 `token` 就是
-  frps 的全局准入令牌，分发给几十个玩家的东西正是那台机器的门禁；内嵌会合点
-  的令牌只在服务端进程内有意义，填 `token=auto` 还能随每次重启轮换。你与隧道
-  提供商之间的凭据从此不经玩家的手。
-- **每玩家令牌的签发密钥不必再放到公网机器上。** authplugin 改由服务端在回环
-  上自带（见[安全](#安全)）。
+[Service]
+Environment=NETHERWAY_AUTH_KEY=<签发密钥>
+ExecStart=/path/to/netherway authplugin -static-token <静态令牌> -allow-legacy
+Restart=always
 
-凭证也因此不再携带 `server`/`serverPort`：会合点就在这台服务器的 Minecraft
-端口后面，客户端知道自己连的是哪，而服务端未必知道自己的公网入口（NAT 后、
-多入口、域名与实际入口不一致都很常见）。
+[Install]
+WantedBy=multi-user.target
+```
+
+**步骤 3**：frps.toml 加上以下配置，然后重启 frps。`addr` 是 frps 调用 authplugin 的地址，只监听回环（127.0.0.1）即可——frps 和 authplugin 在同一台机器上，不需要外网访问。如果 7200 端口被占用了，这里改端口的同时，步骤 2 的启动命令也要加 `-listen 127.0.0.1:<新端口>`，两边对上：
+
+```toml
+[[httpPlugins]]
+name = "netherway-auth"
+addr = "127.0.0.1:7200"
+path = "/handler"
+ops = ["Login", "NewProxy"]
+```
+
+**步骤 4**：MC 服务端的 `config/netherway.cfg` 里补上同值的两个键（与步骤 2 的值一致）：
+
+```
+server {
+    S:tokenSigningKey=<签发密钥>
+    S:serveAuthToken=<静态令牌>
+}
+```
+
+两侧启动日志都会打印签发密钥指纹，一致才说明没配岔。
+
+authplugin 拦两件事：`Login` 检查登录、`NewProxy` 只允许服务端的 serve 注册代理，玩家只能建 visitor 不能建 proxy。`-allow-legacy` 是迁移开关，先带着上线，等玩家都登录过一轮再去掉。
+
+**方式二：内嵌会合点 + 端口转发（推荐使用）**
+
+开了 `rendezvous=true` 后 frps 内嵌在 MC 服务端进程里。只需要你随便找一个第三方的端口转发，保证 MC 服务器本身能被外网访问——樱花 frp、花生壳之类的都可以，服主不必自建 frps，也不用单独部署 authplugin。`config/netherway.cfg` 示例：
 
 ```
 server {
@@ -135,151 +138,37 @@ server {
 }
 ```
 
-需要 `runAgent=true`（会合点起在内置 serve 进程里）；配错成 `runAgent=false`
-时会按未启用处理并告警，不会下发半成品凭证。**当前默认关闭**：会合点的绑定
-范围与首字节判定有单元测试覆盖（`internal/rendezvous`、core 的 `TlsRecord`），
-但还没在真实服务器上跑过一轮，等实战验证后再考虑翻默认值。
+- `token=auto`：内置 frps 的 token 轮换，保持默认即可
+- `secret=auto`：内置 frps 的 secret 轮换，保持默认即可
+- `room=gtnh`：xtcp 房间名，不包含空格的英文随意命名即可
 
-## 可选组件
+### 客户端
 
-以下都不是必需的——快速开始那两步就是完整部署。
+jar 直接丢进 `<MC客户端根目录>/mods/`，无需配置。
 
-### 独立 agent 二进制（build.sh）
+客户端启动时自动向服务器列表里的地址预取凭证并打洞，玩家打开多人游戏就能看到直连条目，玩家选择直连条目直接正常进服就行。打不通也有樱花 frp 之类的中转兜底，不影响游玩。
 
-只有一个场景用得到：托管环境禁止子进程时独立运行 serve（见下）。
-密钥经 `-ldflags` 在构建时注入，不进源码仓库，产出的二进制零配置可用：
+## 可选功能
 
-```bash
-cp build.env.example build.env   # 填入你的 frps 地址等部署参数
-TOKEN=<frps的auth.token> SECRET=<房间密钥> ./build.sh
-```
+### PROXY protocol（`server.proxyProtocol`）
 
-产出 Windows / macOS / Linux 五个平台的二进制，各约 13–15 MB。
+让经 xtcp 隧道进来的连接带上真实来源地址，服务端日志和封禁看到的是玩家真实 IP 而不是 127.0.0.1。只对直连隧道的连接生效。
 
-**发布纪律**：`build.sh` 的产物（`bin/`）内嵌 frps 令牌与房间密钥，只能经
-私有渠道分发给本服玩家，**绝不能挂公开 Release 或 CI artifact**。公开渠道
-只发 mod jar——它打包的 agent 由 `mod/build-natives.sh` 构建，刻意不注入
-任何密钥。
-
-### 独立运行 serve
-
-默认不需要：服务端 mod 会内置启动 serve（cfg 的 `server.runAgent=true`，
-参数与下发凭证同源）。托管环境禁止子进程时，把 cfg 改为 `runAgent=false`，
-在宿主机上独立运行 `netherway serve`（普通前台进程，交给 systemd /
-MCSManager 等托管即可；参数构建时已注入，临时覆盖用 `-server` `-room` 等）。
-两种方式**只能开一个**——同名代理会在 frps 上注册冲突。
-
-[内嵌会合点](#内嵌会合点)与这条互斥：会合点起在内置 serve 进程里，
-独立运行的 serve 不会开它，所以 `rendezvous=true` 需要 `runAgent=true`。
-
-## 预取凭证（预认证）
-
-预认证默认开启（`server.preauth=true`）。开启后，mod 在游戏加载期就自动
-向服务器预取凭证并后台打洞（打不通按退避周期一直重试，就绪后守望隧道、
-断了再打），首次启动、密钥轮换后都无需先经中转：玩家点开服务器列表时
-直连条目已经就绪，中转条目只是列表里备用的另一行。
-
-**服务器不需要多开任何端口。** 交换就在 Minecraft 自己那一个端口上完成，
-靠首字节与游戏流量分辨（预认证帧以 `NWAY` 开头，MC 握手第 2 字节是包 id
-`0x00`）。没开预认证的服务器会把这个帧当坏包直接断开，客户端跳过即可。
-
-**不做任何身份验证。** 客户端自报用户名/UUID，服务端直接回凭证——准入交给
-MC 服务端自己的白名单与正版验证，本 mod 只管把凭证送出去。这是刻意的分工：
-鉴权是 MC 服务端自己的事，本 mod 不多管闲事。
-
-单步请求-响应，无状态：
-
-```
-① 客户端 → MC 端口   NWAY 帧：自报用户名/UUID
-② 服务端 → 客户端   凭证（或拒绝原因）
-③ 凭证写进 .minecraft/netherway/credentials/
-   ↳ mod 的预热循环随即用它打洞 → 首次进服即直连
-```
-
-服务端 cfg（默认即开，不必显式写）：
-
-```
-server {
-    B:preauth=true
-}
-```
-
-客户端 cfg 里写明要问哪些服务器（整合包预置，玩家就零配置）：
-
-```
-client {
-    S:prefetchServers <
-        play.example.com:25565
-     >
-}
-```
-
-`prefetchServers` 留空时自动扫描服务器列表（server.dat）里的条目——玩家
-自己加的服务器地址就是要玩的服，扫描它们不存在隐私问题。候选都是玩家自己
-加的，没开预认证的服务器会直接断开，客户端跳过即可。
-
-预取失败（网络问题、服务器没开预认证等）不阻断游戏——玩家走原有中转进服
-流程，体验退化为原状而非不可用。
-
-## 安全
-
-**凭证不随客户端分发。** mod 路径下，凭证由服务端在玩家通过既有正版验证 /
-白名单登录后才下发——能拿到密钥的必然是有权进服的人，因此不需要另建一套
-鉴权系统。凭证换来的隧道也只通向 MC 端口。
-
-**frps 全局 token 的泄露面需要收口。** 经典模式下 token 会随凭证下发给所有
-玩家，拿到它的人可以在 frps 上开任意 tcp/udp 公网端口映射。按部署成本从低
-到高：
-
-1. **`allowPorts` 白名单**（零代码）：在 frps.toml 里只放行实际在用的端口。
-   xtcp / stcp 不占 `remotePort`，完全不受影响：
-
-   ```toml
-   allowPorts = [
-     { start = 25565, end = 25565 },   # 按 frps 上实际在用的映射端口填写
-   ]
-   ```
-
-2. **部署 authplugin**（frps 的 httpPlugins，`netherway authplugin` 子命令，
-   配置见 [mod/platform/forge-1.7.10/README.md](mod/platform/forge-1.7.10/README.md)
-   部署章节）：在全局 token 之上叠加每玩家令牌（绑定 UUID、带有效期、HMAC
-   签名，服务端登录时签发）。迁移完成后关掉 `-allow-legacy`，光有全局 token
-   连登录都过不了，注册代理只认 serve 的静态令牌，泄露的滥用面收敛到零。
-
-3. **开[内嵌会合点](#内嵌会合点)**：这个问题从根上不再存在——玩家拿到的
-   token 只对服务端进程内那个会合点有意义，公网机器的凭据从不经玩家的手。
-   每玩家令牌照旧可用：配了 `tokenSigningKey` 时，服务端会在回环上自带一个
-   只服务本进程的 authplugin 端点，**签发密钥因此不必再放到公网机器上**。
-   开了这条，前两条就都不必做了。
+注意：当前 frp（v0.70）的 xtcp P2P 流尚不携带来源地址（上游 [fatedier/frp#2748](https://github.com/fatedier/frp/issues/2748) 尚未落地），此选项配置后暂不生效，待上游支持后无需改动即可用。
 
 ## 已知限制
 
-- 打洞成功率取决于两端 NAT 类型，对称 NAT 大概率失败——失败时玩家留在
-  既有中转线路上，不影响游玩。
-- Windows 首次运行有防火墙弹窗——预写规则需要签名安装器，暂未做。
-- 吞吐受玩家家宽上行限制（实测约 616 KB/s 即为上行天花板）。联机绰绰有余，
-  但不适合让玩家经隧道拉存档或资源包。
+- 打洞成功率取决于两端 NAT 类型，对称 NAT 大概率失败——但失败时留在原有的中转线路上，不影响游玩。
+- Windows 首次运行有防火墙弹窗。
+- 因吞吐受连接双方上传带宽限制（家宽一般限制60Mbps），无论用不用直连都不适合大流量传输的场景。
 
 ## 代码结构
 
 ```
-cmd/netherway/       CLI 入口（serve / tunnel / authplugin）
-internal/backend/    隧道方案的统一接口与注册表；frp xtcp 是首个实现
-internal/tunnel/     以库的方式嵌入 frpc，无独立进程、无 toml
-internal/rendezvous/ 以库的方式嵌入 frps，只监听回环：内嵌会合点
-internal/authplugin/ 每玩家令牌校验；既可作 frps 的 httpPlugins 独立部署，
-                     也由内嵌会合点在回环上自带
-internal/mcping/     Minecraft Server List Ping，用游戏握手判定隧道就绪
-internal/stunpick/   启动前并行探测候选，挑一个当场验证过的 STUN
-internal/config/     房间标识与构建期注入的默认值
-mod/                 Minecraft mod 侧：Java core 驱动 agent 的 tunnel 子命令，
-                     打洞成功后游戏内自动切换连接（详见 mod/README.md）
+cmd/netherway/       Go agent：serve / tunnel / authplugin
+internal/            隧道实现、会合点、令牌校验、STUN 选型
+mod/core/            Java 核心层，零 Minecraft 依赖，驱动 agent
+mod/platform/        Forge 1.7.10 适配层
 ```
 
-## 参考
-
-- [实测记录：端到端验证与踩坑](docs/field-notes.md) — 本 README 所有实测
-  数字的出处，含 STUN 选型、组播出接口、bindAddr 三个必踩的坑
-- [XTCP | frp 官方文档](https://gofrp.org/zh-cn/docs/features/xtcp/)
-- [frp client/service.go](https://github.com/fatedier/frp/blob/dev/client/service.go) — 嵌入 frpc 的 API
-- [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)
+core 不含任何 Minecraft 类型，换版本或加载器只需重写适配层。
