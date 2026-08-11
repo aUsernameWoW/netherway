@@ -32,7 +32,7 @@ public final class ClientProxy extends CommonProxy {
                 config.prewarmPort(), buildPrefetcher(bridge, config));
         UpgradeController controller = new UpgradeController(
                 bridge, config.clientTimings(), cache, warmup);
-        ClientEvents events = new ClientEvents(controller, warmup, bridge, config);
+        ClientEvents events = new ClientEvents(controller, warmup, bridge);
 
         // 凭证包走频道自己的事件总线，tick 与连接事件走 FML 总线
         channel.register(events);
@@ -54,23 +54,23 @@ public final class ClientProxy extends CommonProxy {
             return null;
         }
         Session session = Minecraft.getMinecraft().getSession();
-        SessionIdentity id = session == null ? SessionIdentity.of("", "", "")
+        SessionIdentity id = session == null ? SessionIdentity.of("", "")
                 : SessionIdentity.of(session.getUsername(),
-                        session.getPlayerID(), session.getToken());
-        // 离线会话仍然可以预取：online-mode=false 的服务器不查证身份。
-        // 但会话得有个像样的用户名，否则连 CONFIRM 的字段校验都过不了。
+                        session.getPlayerID());
+        // 离线会话仍然可以预取：预下发不做身份验证。
+        // 但会话得有个像样的用户名，否则连请求的字段校验都过不了。
         if (id.username().isEmpty()) {
             bridge.debug("游戏会话没有用户名，跳过凭证预取");
             return null;
         }
-        // 默认只问 cfg 里写明的地址。扫描服务器列表是实验性行为，要么玩家
-        // 自己开了 experimental.zeroConfigPrefetch，要么某台服务器在玩家
-        // 登录后授权过（见 ModConfig 里那一项的说明）。
+        // prefetchServers 为空时退回扫描服务器列表（server.dat）。
+        // 候选都是玩家自己加的，没开预下发的服务器会直接断开，对客户端就是「不应答」。
         String[] configured = config.prefetchServers();
-        List<String> fromServerList = config.zeroConfigPrefetch()
+        List<String> fromServerList = configured.length == 0
                 ? serverListAddresses(bridge) : null;
-        if (configured.length == 0 && fromServerList == null) {
-            bridge.debug("client.prefetchServers 为空，且未开启零配置预取，跳过凭证预取");
+        if (configured.length == 0
+                && (fromServerList == null || fromServerList.isEmpty())) {
+            bridge.debug("没有可预取的服务器地址（client.prefetchServers 为空且服务器列表无可用条目），跳过凭证预取");
             return null;
         }
         List<ServerCandidates.Address> candidates =

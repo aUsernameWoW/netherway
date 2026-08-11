@@ -27,7 +27,6 @@ public final class SelfTest {
         testJsonBasics();
         testJsonEscapes();
         testJsonRejectsNested();
-        testJsonTopLevelSkipsNested();
         testAgentEventParsing();
         testAgentEventTolerance();
         testCredentialsRoundTrip();
@@ -68,7 +67,6 @@ public final class SelfTest {
         testProxyProtocolV2();
         testProxyProtocolSniff();
         testProxyProtocolInvalid();
-        testSessionIdentityUsable();
         testServerCandidatesFromServerList();
         testServerCandidatesConfigFirst();
         testServerCandidatesCap();
@@ -77,8 +75,6 @@ public final class SelfTest {
         testPreauthFrameIncremental();
         testPreauthFrameRejects();
         testPreauthIdentityValidation();
-        testPreauthJsonEscaping();
-        testCredentialPolicyRoundTrip();
         testCredentialV2StillDecodes();
         testWarmupRetryBackoff();
 
@@ -164,48 +160,14 @@ public final class SelfTest {
             threw = true;
         }
         check("嵌套对象应报错而非静默出错", threw);
-    }
 
-    private static void testJsonTopLevelSkipsNested() {
-        // 真实形状的 hasJoined 响应：Profile 必带 properties 嵌套数组
-        // （2026-08-09 实测 Blessing Skin 返回 textures + uploadableTextures
-        // 两个 property），严格解析器啃不动它，预认证因此全军覆没过
-        java.util.Map<String, String> profile = Json.parseTopLevel(
-                "{\"id\":\"382e8f06ca603e99b8e61241e4393fcf\",\"name\":\"ChengXin\","
-                        + "\"properties\":[{\"name\":\"textures\","
-                        + "\"value\":\"eyJ0aW1lc3RhbXAiOjE3ODYyODQyODMzOTN9\","
-                        + "\"signature\":\"HZkIP85x+abc/def==\"},"
-                        + "{\"name\":\"uploadableTextures\",\"value\":\"skin,cape\"}]}");
-        check("顶层 id 照收", "382e8f06ca603e99b8e61241e4393fcf".equals(profile.get("id")));
-        check("顶层 name 照收", "ChengXin".equals(profile.get("name")));
-        check("嵌套值不进结果表", !profile.containsKey("properties"));
-
-        // 嵌套值排在前面也不影响后续顶层字段
-        java.util.Map<String, String> m = Json.parseTopLevel(
-                "{\"deep\":{\"a\":[1,{\"b\":2}]},\"id\":\"x\"}");
-        check("嵌套值在前仍能取到后续字段", "x".equals(m.get("id")));
-
-        // 嵌套结构里的字符串可以包含任意括号与转义引号，不能搅乱配平计数
-        java.util.Map<String, String> tricky = Json.parseTopLevel(
-                "{\"p\":[{\"v\":\"a]b}c \\\"quoted\\\" \\\\\"}],\"id\":\"y\"}");
-        check("嵌套字符串里的括号不搅乱跳过", "y".equals(tricky.get("id")));
-
-        boolean threw = false;
-        try {
-            Json.parseTopLevel("{\"p\":[{\"v\":\"unclosed\"}");
-        } catch (IllegalArgumentException e) {
-            threw = true;
-        }
-        check("未闭合的嵌套结构应报错", threw);
-
-        // 严格入口的契约不变：agent 事件里出现嵌套仍是异常
         boolean strictThrew = false;
         try {
             Json.parseObject("{\"a\":[1]}");
         } catch (IllegalArgumentException e) {
             strictThrew = true;
         }
-        check("严格入口仍拒绝嵌套", strictThrew);
+        check("嵌套数组应报错", strictThrew);
     }
 
     // ---------- AgentEvent ----------
@@ -1301,31 +1263,7 @@ public final class SelfTest {
                 .status == ProxyProtocol.Status.INVALID);
     }
 
-    // ---------- 断言 ----------
-
     // ---------- 凭证预取（会话/候选推导/命令行） ----------
-
-    private static void testSessionIdentityUsable() {
-        check("正版会话可用", SessionIdentity.of("Alice",
-                "069a79f4-44e9-4726-a5be-fca90e38aaf5", "real-token").usable());
-        check("无连字符 uuid 也可用", SessionIdentity.of("Alice",
-                "069a79f444e94726a5befca90e38aaf5", "real-token").usable());
-        check("离线 token 0 不可用", !SessionIdentity.of("Alice",
-                "069a79f444e94726a5befca90e38aaf5", "0").usable());
-        check("离线 token - 不可用", !SessionIdentity.of("Alice",
-                "069a79f444e94726a5befca90e38aaf5", "-").usable());
-        check("1.7.10 缺名占位 NotValid 不可用", !SessionIdentity.of("Alice",
-                "NotValid", "NotValid").usable());
-        check("空 token 不可用", !SessionIdentity.of("Alice",
-                "069a79f444e94726a5befca90e38aaf5", "").usable());
-        check("uuid 不是 32 位 hex 不可用",
-                !SessionIdentity.of("Alice", "not-a-uuid", "real-token").usable());
-        check("空玩家名不可用", !SessionIdentity.of("",
-                "069a79f444e94726a5befca90e38aaf5", "real-token").usable());
-        check("toString 不含 accessToken", !SessionIdentity.of("Alice",
-                "069a79f444e94726a5befca90e38aaf5", "hush-secret").toString()
-                .contains("hush-secret"));
-    }
 
     private static void testServerCandidatesFromServerList() {
         List<ServerCandidates.Address> got = ServerCandidates.build(null,
@@ -1378,27 +1316,22 @@ public final class SelfTest {
     }
 
     private static void testPreauthFrameRoundTrip() throws Exception {
-        byte[] payload = PreauthProtocol.encodeHello("Alice",
+        byte[] payload = PreauthProtocol.encodeIdentity("Alice",
                 "069a79f4-44e9-4726-a5be-fca90e38aaf5");
-        byte[] frame = PreauthProtocol.encodeRequest(PreauthProtocol.OP_HELLO, payload);
+        byte[] frame = PreauthProtocol.encodeRequest(PreauthProtocol.OP_REQUEST, payload);
         // 帧头布局是 mod 新旧版本之间的线上契约，逐字节钉住
         check("帧以 NWAY 开头", frame[0] == 'N' && frame[1] == 'W'
                 && frame[2] == 'A' && frame[3] == 'Y');
         check("第 5 字节是协议版本", (frame[4] & 0xFF) == PreauthProtocol.VERSION);
-        check("第 6 字节是操作码", (frame[5] & 0xFF) == PreauthProtocol.OP_HELLO);
+        check("第 6 字节是操作码", (frame[5] & 0xFF) == PreauthProtocol.OP_REQUEST);
         check("payload 长度大端写在第 7-8 字节",
                 (((frame[6] & 0xFF) << 8) | (frame[7] & 0xFF)) == payload.length);
 
         PreauthProtocol.Request req = PreauthProtocol.readRequest(frame, frame.length);
         check("解出的帧长度与原帧一致", req.frameLength() == frame.length);
-        String[] hello = PreauthProtocol.decodeHello(req.payload);
-        check("HELLO 往返保真", hello[0].equals("Alice")
-                && hello[1].equals("069a79f4-44e9-4726-a5be-fca90e38aaf5"));
-
-        String[] confirm = PreauthProtocol.decodeConfirm(
-                PreauthProtocol.encodeConfirm("abc123", "Alice", "069a79f4"));
-        check("CONFIRM 往返保真", confirm[0].equals("abc123")
-                && confirm[1].equals("Alice") && confirm[2].equals("069a79f4"));
+        String[] id = PreauthProtocol.decodeIdentity(req.payload);
+        check("身份往返保真", id[0].equals("Alice")
+                && id[1].equals("069a79f4-44e9-4726-a5be-fca90e38aaf5"));
     }
 
     private static void testPreauthFrameSniff() {
@@ -1428,8 +1361,8 @@ public final class SelfTest {
     }
 
     private static void testPreauthFrameIncremental() throws Exception {
-        byte[] frame = PreauthProtocol.encodeRequest(PreauthProtocol.OP_HELLO,
-                PreauthProtocol.encodeHello("Bob", "069a79f444e94726a5befca90e38aaf5"));
+        byte[] frame = PreauthProtocol.encodeRequest(PreauthProtocol.OP_REQUEST,
+                PreauthProtocol.encodeIdentity("Bob", "069a79f444e94726a5befca90e38aaf5"));
         // 嗅探器是一个字节一个字节攒的：收全之前必须一直说「还不够」
         for (int n = 0; n < frame.length; n++) {
             check("收到 " + n + " 字节时还不成帧",
@@ -1457,7 +1390,7 @@ public final class SelfTest {
         byte[] huge = new byte[PreauthProtocol.REQUEST_HEADER_LEN];
         System.arraycopy(PreauthProtocol.MAGIC, 0, huge, 0, 4);
         huge[4] = (byte) PreauthProtocol.VERSION;
-        huge[5] = (byte) PreauthProtocol.OP_HELLO;
+        huge[5] = (byte) PreauthProtocol.OP_REQUEST;
         huge[6] = (byte) 0xFF;
         huge[7] = (byte) 0xFF;
         boolean rejected = false;
@@ -1470,7 +1403,7 @@ public final class SelfTest {
 
         boolean tooBig = false;
         try {
-            PreauthProtocol.encodeRequest(PreauthProtocol.OP_HELLO,
+            PreauthProtocol.encodeRequest(PreauthProtocol.OP_REQUEST,
                     new byte[PreauthProtocol.MAX_PAYLOAD + 1]);
         } catch (IllegalArgumentException e) {
             tooBig = true;
@@ -1493,59 +1426,14 @@ public final class SelfTest {
                 "069a79f444e94726a5befca90e38aaf5").isEmpty());
         check("非 hex uuid 被拒",
                 !PreauthProtocol.validateIdentity("Alice", "not-a-uuid").isEmpty());
-        check("serverId 接受 hex", PreauthProtocol.validServerId("a1b2c3d4"));
-        check("serverId 拒绝非 hex", !PreauthProtocol.validServerId("hello!"));
-        check("serverId 拒绝空", !PreauthProtocol.validServerId(""));
-        check("serverId 拒绝超长", !PreauthProtocol.validServerId(
-                "0123456789012345678901234567890123456789012345678901234567890123456789"));
         check("uuid 归一去连字符", PreauthProtocol.normalizeUuid(
                 "069a79f4-44e9-4726-a5be-fca90e38aaf5")
                 .equals("069a79f444e94726a5befca90e38aaf5"));
     }
 
-    private static void testPreauthJsonEscaping() {
-        StringBuilder sb = new StringBuilder();
-        PreauthClient.escape(sb, "a\"b\\c\nd");
-        check("join 请求体转义引号与反斜杠",
-                sb.toString().equals("a\\\"b\\\\c\\nd"));
-        StringBuilder ctrl = new StringBuilder();
-        PreauthClient.escape(ctrl, "x" + ((char) 1) + "y");
-        check("控制字符转成转义序列", ctrl.toString().equals("x\\u0001y"));
-    }
-
-    private static void testCredentialPolicyRoundTrip() throws Exception {
-        Credentials base = Credentials.frpXtcp("203.0.113.7", 7000, "tok",
-                "stun.example.com:3478", "gtnh", "s3cret", 15_000);
-        check("默认没有策略", base.policy().isEmpty());
-        check("未下发时策略为关",
-                !base.policyEnabled(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
-
-        java.util.Map<String, String> policy = new java.util.LinkedHashMap<String, String>();
-        policy.put(Credentials.POLICY_ZERO_CONFIG_PREFETCH, "1");
-        Credentials granted = base.withPolicy(policy);
-        check("withPolicy 不改原对象", base.policy().isEmpty());
-        check("策略已置位",
-                granted.policyEnabled(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
-
-        Credentials decoded = Credentials.decode(granted.encode());
-        check("策略经编解码保真",
-                decoded.policyEnabled(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
-        check("参数不受策略影响", decoded.param("secret").equals("s3cret"));
-        // 策略变化不能让同一房间的凭证被当成新凭证，否则会触发重复升级
-        check("策略不进 dedupKey", granted.dedupKey().equals(base.dedupKey()));
-        // 策略是服务端对客户端行为的授权，绝不能混进 agent 的参数表
-        check("策略不进 params",
-                !decoded.params().containsKey(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
-
-        java.util.Map<String, String> extra = new java.util.LinkedHashMap<String, String>();
-        extra.put(Credentials.PARAM_USER, "abc");
-        check("withExtraParams 保留策略", granted.withExtraParams(extra)
-                .policyEnabled(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
-    }
-
     private static void testCredentialV2StillDecodes() throws Exception {
         // 手工拼一份 v2 凭证：老服务端仍会下发，玩家缓存目录里也躺着这种。
-        // 本侧升到 v3 之后绝不能把它们当成损坏数据。
+        // 本侧回退到 v2 之后绝不能把它们当成损坏数据。
         java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
         java.io.DataOutputStream out = new java.io.DataOutputStream(buf);
         out.writeByte(2);
@@ -1561,9 +1449,6 @@ public final class SelfTest {
         Credentials v2 = Credentials.decode(buf.toByteArray());
         check("v2 凭证仍能解码", v2.room().equals("gtnh"));
         check("v2 参数完整", v2.param("secret").equals("s3cret"));
-        check("v2 没有策略段时策略为空", v2.policy().isEmpty());
-        check("v2 解出的策略默认为关",
-                !v2.policyEnabled(Credentials.POLICY_ZERO_CONFIG_PREFETCH));
     }
 
     private static void testWarmupRetryBackoff() {

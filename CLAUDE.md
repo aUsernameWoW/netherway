@@ -39,7 +39,7 @@ Go 测试覆盖 `internal/authplugin`（含与 Java 侧的跨语言已知答案�
 原先的 `internal/authbridge` 与 `internal/credfile` 已删除。
 
 跨平台构建（Windows/macOS/Linux 五个目标），密钥经 `-ldflags` 注入而不进源码；
-真实部署参数（frps 地址、皮肤站等）放 gitignore 的 `build.env`（模板
+真实部署参数（frps 地址等）放 gitignore 的 `build.env`（模板
 `build.env.example`），`SERVER_ADDR` 必填：
 
 ```bash
@@ -61,7 +61,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.nethe
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 387 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 354 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -246,9 +246,9 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 凭证来源除缓存外还有 mod 内建预取（`Prefetcher`，每轮预热前跑一次）：
 平台层把游戏会话（`SessionIdentity`）与候选地址交给 core，候选由
 `ServerCandidates` 组装——客户端 cfg 的 `client.prefetchServers` 优先，
-其余来自服务器列表（server.dat，需开 `experimental.zeroConfigPrefetch`）。
-全程在 JVM 内完成，不起子进程，accessToken 从不离开进程。首次启动即可
-直连；密钥轮换后下一轮预取自动取到新密钥，无需先经中转。
+其余来自服务器列表（server.dat，`prefetchServers` 留空时自动扫描）。
+全程在 JVM 内完成，不起子进程。首次启动即可直连；
+密钥轮换后下一轮预取自动取到新密钥，无需先经中转。
 玩家可三种方式进服，互为兜底：
 
 - **直连条目**：进服后平台层按「回环地址 + 预热端口」识别（`ClientEvents.warmupMatch`），
@@ -266,8 +266,8 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 ### 预认证（在 MC 端口上换凭证）
 
 玩家第一次启动、或密钥轮换之后本地没有任何可用凭证，而预热打洞需要凭证
-才能开始。预认证解决这个先有鸡还是先有蛋：借皮肤站自己的 join/hasJoined，
-在**不登录游戏**的前提下证明「这是个真实账号」，换回一份凭证。
+才能开始。预认证解决这个先有鸡还是先有蛋：在**不登录游戏**的前提下向
+MC 端口请求一份凭证。
 
 **整个交换在 Minecraft 那一个端口上完成，服务器不多开任何监听端口。**
 帧靠首字节与 MC 流量分叉：预认证帧以 `NWAY` 开头，而 MC 现代握手第 2 字节
@@ -278,19 +278,15 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 
 - 协议：core 的 `PreauthProtocol`（裸字节、版本化、有界），
   服务端 `PreauthService` ↔ 客户端 `PreauthClient`，两侧都是 Java。
-- 流程：HELLO（自报身份，换 serverId 与皮肤站地址）→ 客户端拿
-  accessToken 去皮肤站 `/join` → CONFIRM（服务端查 hasJoined，签令牌、
-  下发凭证）。serverId 是**同一条连接**上签出并记住的，因此服务端零全局状态。
-- `online-mode=false` 时没有会话服务器可查证，交换退化为 `MODE_OFFLINE`：
-  跳过皮肤站那一跳，准入沿用服务器自己的名单（白名单开着就查白名单）。
-  这不是本 mod 放松了标准，而是服务器本身就不验证身份。
+- 流程：单步请求-响应。客户端发 `OP_REQUEST`（自报用户名/UUID），
+  服务端直接回凭证（或拒绝原因）。不做任何身份验证——准入交给 MC 服务端
+  自己的白名单与正版验证，本 mod 只管把凭证送出去。这是刻意的分工：
+  鉴权是 MC 服务端自己的事，本 mod 不多管闲事。
 - **帧不加密**，凭证以明文过网。这是刻意取舍，换取「只暴露一个端口」。
-  accessToken 不在此列：它只在玩家本机与皮肤站之间走 HTTPS，从不进入
-  任何一帧；且**皮肤站地址由客户端自己钉死**（`AuthlibInjector.detect()`），
-  服务端在 HELLO 里说的一律不采信——否则被问到的服务器就能把令牌骗走。
 
 信任边界与 PROXY 剥头刻意不同：**PROXY 头只信回环**（头谁都能伪造），
-**预认证帧接受任何来源**（它自带身份证明，且玩家本就从公网经隧道过来）。
+**预认证帧接受任何来源**——预下发不做身份验证，准入交给 MC 服务端自己的
+白名单与正版验证。
 
 ### 每玩家令牌（分层鉴权）
 
@@ -386,12 +382,6 @@ agent 若用本地配置的 `outcomeWaitMs()`，mod 会抢在 agent 自己的超
 结果时提前退出，条件互斥不会死锁。已就绪的隧道只是守望进程、不在打洞，
 不触发让路。
 
-**Yggdrasil 的 Profile 必带 `properties` 嵌套数组**（textures 材质），
-`Json.parseObject` 的扁平契约啃不动它——hasJoined 的解析要用
-`Json.parseTopLevel`（顶层标量照收、嵌套值字符串感知地跳过）。2026-08-09
-之前用的是严格版，预认证对任何真实皮肤站都 100% 失败。agent 事件仍走严格版，
-嵌套即异常的契约不变。
-
 **独占连接后必须摘掉下游 handler。** MC 的接入链第一个是
 `ReadTimeoutHandler(FMLNetworkHandler.READ_TIMEOUT)`（默认 30 秒），而嗅探器
 `addFirst` 挂在它前面。一旦进入独占模式（预认证或中继）就不再 `fireChannelRead`，
@@ -435,7 +425,7 @@ handler）。摘掉 `packet_handler` 后下游无人消化 IO 异常，所以独
 
 **版本库为「可随时转公开」标准维护**：文档、模板与测试中的示例地址一律用
 文档专用段（`203.0.113.x`，不可路由）与 `example.com`；真实部署参数（frps
-地址、皮肤站域名）只存在于 gitignore 的 `build.env`。README 不写指向
+地址等）只存在于 gitignore 的 `build.env`。README 不写指向
 具体机器的运维细节（宿主机上跑着什么、真实端口表）。提交用 GitHub noreply
 邮箱（repo 本地 git config 已设）。内嵌密钥的 `build.sh` 产物绝不上公开
 Release，公开渠道只发 mod jar（natives 无密钥）。
@@ -444,20 +434,17 @@ mod 方案的核心安全价值在于：**凭证由服务端在玩家登录后�
 能拿到密钥的必然是通过了服务器既有正版验证/白名单的玩家，因此不需要另建鉴权系统。
 `Credentials.toString()` 刻意不输出任何参数值（token 与密钥都在其中），只列键名。
 
-开启预认证（`server.preauth`）后这条边界放宽为「皮肤站上任何有效账号 +
-服务器自己的准入名单」：hasJoined 只证明账号真实，不证明是本服玩家，
-所以还叠了一层 `PreauthService.Host.allowsPlayer`（白名单开着就查白名单）。
-这是刻意取舍——谁能进服由 MC 服务端自己决定，不属于本 mod 的职责范围；
-凭证换来的隧道也只通向 MC 端口。皮肤站换成公共站点前需重新评估这一点。
+开启预认证（`server.preauth`）后这条边界进一步放宽：客户端进服前就能向
+MC 端口请求凭证，服务端不做身份验证直接回——准入交给 MC 服务端自己的
+白名单与正版验证。这是刻意取舍——谁能进服由 MC 服务端自己决定，不属于
+本 mod 的职责范围；凭证换来的隧道也只通向 MC 端口。
 
 预认证的帧**明文**，凭证因此在网络路径上可见（见「预认证」一节）。这是为
 「只暴露一个端口」付出的代价，已知且刻意。止损同样是服务端轮换密钥。
 
-零配置预取（`experimental.zeroConfigPrefetch`，默认关）会让客户端去问
-服务器列表里的每个地址，等于把玩家名/UUID 发给一批没打过交道的服务器，
-且应答者未经验证。默认关就是因为这个；服务端可在玩家登录后随凭证下发
-`POLICY_ZERO_CONFIG_PREFETCH` 把它打开并写回客户端 cfg——那条路径上的
-应答者是玩家确实登录过的服务器，比盲扫可控得多。
+预取默认扫描服务器列表（server.dat）里的所有条目：玩家自己加的服务器
+地址就是要玩的服，向它们发用户名/UUID 不构成隐私问题——玩家迟早要进服，
+UUID 本身也不是敏感信息。
 
 客户端的凭证缓存（预热用）**刻意明文落盘、不加密**：解密密钥必须与密文同机，
 加密对玩家本人只是混淆；凭证本就完整出现在其内存与 agent 命令行里，落盘未增加

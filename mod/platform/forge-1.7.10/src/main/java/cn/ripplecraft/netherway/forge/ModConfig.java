@@ -37,7 +37,6 @@ public final class ModConfig {
     private final String serveAuthToken;
     private final String serveProxyProtocol;
     private final boolean serverPreauth;
-    private final String serverAuthServer;
     private final boolean serverRendezvous;
 
     // ---- client ----
@@ -56,15 +55,7 @@ public final class ModConfig {
     private final int warmupRetryMaxSeconds;
     private final int prefetchTimeoutSeconds;
 
-    // ---- experimental ----
-    /** 运行中可被服务端下发的策略打开，因此不是 final。 */
-    private volatile boolean zeroConfigPrefetch;
-    private final boolean grantZeroConfigPrefetch;
-    /** 留着以便把服务端授权的开关写回磁盘。 */
-    private final File configFile;
-
     public ModConfig(File file) {
-        this.configFile = file;
         // 服主会按 README 手写这个文件（免得为生成骨架先空跑一次游戏），
         // 手写就可能有语法错误——1.7.10 的 Configuration 解析失败会直接抛
         // RuntimeException，不接住的话整个游戏/服务端就起不来了。
@@ -175,14 +166,8 @@ public final class ModConfig {
         serverPreauth = cfg.getBoolean("preauth", "server", true,
                 "允许玩家在进服之前于 Minecraft 端口上换取直连凭证（不另开监听端口）。\n"
                 + "开启后玩家首次启动、密钥轮换之后都无需先经中转进服。\n"
-                + "在线模式下经皮肤站 hasJoined 查证身份；online-mode=false 时无从查证，\n"
-                + "准入沿用服务器自己的名单（白名单开着就查白名单）。\n"
+                + "不做身份验证——准入交给 MC 服务端自己的白名单与正版验证。\n"
                 + "注意：交换帧不加密，凭证以明文过网");
-        serverAuthServer = cfg.getString("authServer", "server", "",
-                "皮肤站 API root，如 https://skin.example.com/api/yggdrasil；\n"
-                + "预认证时服务端拿它查 hasJoined，并告知客户端去哪报到。\n"
-                + "留空则从 authlib-injector 的 -javaagent 参数里自动读取；\n"
-                + "online-mode=false 时本项无用");
 
         cfg.setCategoryComment("client",
                 "客户端专用：时间参数默认值来自实测，顺利时建链约 2-5 秒。\n"
@@ -202,7 +187,7 @@ public final class ModConfig {
                 + "整合包可改成服务器名让条目看起来就是「那个服务器」。\n"
                 + "改动后旧名字的条目不再被维护，需手动删除");
         clientPrefetch = cfg.getBoolean("prefetch", "client", true,
-                "启动时直接向 Minecraft 服务器端口预取凭证（用游戏会话走一遍正版验证），\n"
+                "启动时直接向 Minecraft 服务器端口预取凭证，\n"
                 + "首次启动、密钥轮换后都无需先经中转进服。\n"
                 + "服务端没开 server.preauth 时本项静默不生效");
         prefetchServers = cfg.getStringList("prefetchServers", "client", new String[0],
@@ -225,41 +210,7 @@ public final class ModConfig {
         warmupRetryMaxSeconds = cfg.getInt("warmupRetryMaxSeconds", "client",
                 120, 1, 86_400, "预热重试退避的上限秒数——打不通就按这个周期一直打");
         prefetchTimeoutSeconds = cfg.getInt("prefetchTimeoutSeconds", "client",
-                60, 5, 600, "单个候选的预取超时秒数（含 TCP 往返与一次皮肤站报到）");
-
-        cfg.setCategoryComment("experimental",
-                "实验性开关，默认全关。开之前请读完每一项的说明。");
-        zeroConfigPrefetch = cfg.getBoolean("zeroConfigPrefetch", "experimental", false,
-                "【零配置预取】关闭时，预取只问 client.prefetchServers 里写明的地址；\n"
-                + "开启后，该项为空时改为扫描服务器列表（server.dat），\n"
-                + "对里面的每个服务器都试一次预认证。\n"
-                + "\n"
-                + "原理: 预认证帧与 Minecraft 流量共用服务器那一个端口，靠首字节分辨\n"
-                + "（帧以 NWAY 开头，MC 握手第 2 字节是包 id 0x00）。没开预认证的\n"
-                + "服务器会把这个帧当成坏包直接断开，对客户端就是「这个候选不应答」。\n"
-                + "好处是玩家什么都不用填，服务器列表里有地址就能直连。\n"
-                + "\n"
-                + "风险:\n"
-                + "1. 会把你的玩家名与 UUID 发给服务器列表里的每一个服务器，\n"
-                + "   包括与本 mod 毫无关系的那些——它们能得知你启动了游戏。\n"
-                + "2. 预认证帧不加密：同一条网络路径上的人能看到往来内容，\n"
-                + "   换回的凭证（房间密钥、frps 令牌）也是明文。\n"
-                + "3. 应答者未经任何验证。恶意服务器可以回一份指向它自己 frps 的\n"
-                + "   凭证，你的预热隧道就会连到它那里（隧道只通向 MC 端口，\n"
-                + "   且要你真的去点那个直连条目才会用上）。\n"
-                + "   accessToken 不在此列: 它只发给本机 authlib-injector 认的皮肤站，\n"
-                + "   服务器指定的地址一律不采信。\n"
-                + "\n"
-                + "服务端可以下发策略把这一项打开并写回本文件——那种情况下\n"
-                + "应答者是你确实登录过的服务器，风险 3 基本不存在。");
-        grantZeroConfigPrefetch = cfg.getBoolean("grantZeroConfigPrefetch", "experimental",
-                false,
-                "【服务端专用】玩家登录后，随凭证下发一条策略，把该玩家客户端的\n"
-                + "zeroConfigPrefetch 打开并写回它的配置文件。\n"
-                + "意义: 玩家经中转进过一次服之后，以后每次启动都能自动预取，\n"
-                + "不必手填 client.prefetchServers。此时应答者是玩家真正登录过的\n"
-                + "服务器，比让他盲扫整个服务器列表安全得多。\n"
-                + "客户端侧仍可手动关掉——这只是授权，不是强制。");
+                60, 5, 600, "单个候选的预取超时秒数（含 TCP 往返）");
 
         // 解析失败时绝不能回写：会用默认值覆盖服主手里只是语法有瑕疵的文件
         if (loadedOk && cfg.hasChanged()) {
@@ -373,11 +324,6 @@ public final class ModConfig {
         return serverRendezvous;
     }
 
-    /** 皮肤站 API root；空串表示交给 authlib-injector 参数自动推断。 */
-    public String serverAuthServer() {
-        return serverAuthServer;
-    }
-
     /** 32 位十六进制随机密钥，密码学强度随机源。 */
     private static String randomSecret() {
         byte[] raw = new byte[16];
@@ -418,42 +364,6 @@ public final class ModConfig {
     /** cfg 里预置的 Minecraft 服务器地址；空数组表示改用 server.dat 里的条目。 */
     public String[] prefetchServers() {
         return prefetchServers.clone();
-    }
-
-    // ---- experimental ----
-
-    /** 预取候选为空时是否可以退回扫描服务器列表。 */
-    public boolean zeroConfigPrefetch() {
-        return zeroConfigPrefetch;
-    }
-
-    /** 服务端是否要授权客户端开启零配置预取。 */
-    public boolean grantZeroConfigPrefetch() {
-        return grantZeroConfigPrefetch;
-    }
-
-    /**
-     * 采纳服务端下发的「可以零配置预取」授权，并写回配置文件，下次启动继续生效。
-     *
-     * <p>已经开着就什么都不做——避免每次登录都去动一次磁盘。写盘失败只记日志：
-     * 本次会话照常生效，无非是下次启动还要再被授权一遍。
-     *
-     * @return 本次调用是否真的改变了状态
-     */
-    public boolean adoptZeroConfigPrefetch() {
-        if (zeroConfigPrefetch) {
-            return false;
-        }
-        zeroConfigPrefetch = true;
-        try {
-            Configuration cfg = new Configuration(configFile);
-            cfg.get("experimental", "zeroConfigPrefetch", false).set(true);
-            cfg.save();
-        } catch (RuntimeException e) {
-            LOG.warn("服务端已授权零配置预取，但写回配置文件失败"
-                    + "（本次会话仍生效，下次启动需重新授权）", e);
-        }
-        return true;
     }
 
     public Timings clientTimings() {

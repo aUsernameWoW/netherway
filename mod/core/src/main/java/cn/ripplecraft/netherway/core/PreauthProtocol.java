@@ -7,18 +7,18 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 
 /**
- * 预认证协议：玩家进服<b>之前</b>在 Minecraft 端口上换取直连凭证。
+ * 预下发协议：玩家进服<b>之前</b>在 Minecraft 端口上换取直连凭证。
  *
- * <p>它刻意不另开监听端口，也不走 HTTP——服务器对外可达的地方从头到尾
- * 只有那一个被映射出去的 MC 端口。帧靠首字节嗅探与 MC 流量分叉：本协议
- * 以 {@code "NWAY"} 开头，而 MC 现代握手的第 2 字节是包 id {@code 0x00}、
- * legacy ping 以 {@code 0xFE} 开头、PROXY protocol 以 {@code 'P'} 或
- * {@code 0x0D} 开头，最迟在第 2 字节就分得开（与 {@link ProxyProtocol}
- * 共用同一条嗅探链，见平台层的注入器）。
+ * <p>不另开监听端口、不走 HTTP——服务器对外可达的地方从头到尾只有那一个
+ * 被映射出去的 MC 端口。帧靠首字节嗅探与 MC 流量分叉：本协议以 {@code "NWAY"}
+ * 开头，而 MC 现代握手第 2 字节是包 id {@code 0x00}、legacy ping 以
+ * {@code 0xFE} 开头、PROXY protocol 以 {@code 'P'} 或 {@code 0x0D} 开头，
+ * 最迟在第 2 字节就分得开（与 {@link ProxyProtocol} 共用同一条嗅探链）。
  *
- * <p><b>帧不加密。</b>凭证（房间密钥、frps 令牌、每玩家令牌）以明文过网，
- * 这是刻意取舍：换取「只暴露一个端口」的部署形态。accessToken 不在此列——
- * 它只在玩家本机与皮肤站之间走 HTTPS，从不进入本协议的任何一帧。
+ * <p><b>单步请求-响应，不做任何身份验证。</b>客户端自报用户名/UUID（用于
+ * 签发绑定该玩家的每玩家令牌），服务端直接回凭证。准入交给 MC 服务端自己的
+ * 白名单与正版验证——本协议只管把凭证送出去。帧不加密：换取「只暴露一个
+ * 端口」的部署形态。
  *
  * <p>线格式（大端，与 {@link java.io.DataOutputStream} 一致）：
  *
@@ -27,14 +27,8 @@ import java.io.IOException;
  * 响应                    version(1) | status(1) | payloadLen(2) | payload
  * </pre>
  *
- * <p>请求 {@link #OP_HELLO} 的 payload 是 {@code UTF username, UTF uuid}，
- * 响应 payload 是 {@code byte mode, UTF serverId, UTF authServer}；
- * 请求 {@link #OP_CONFIRM} 的 payload 是 {@code UTF serverId, UTF username,
- * UTF uuid}，响应 payload 是 {@code UTF room, UTF backendId, int credLen,
- * byte[] cred}。错误响应的 payload 一律是 {@code UTF reason}。
- *
- * <p>与 Go 侧 {@code internal/preauth} 是<b>逐字节一致</b>的跨语言契约，
- * 改动必须两边同步——两侧各有一个用同一组常量的已知答案测试钉住这一点。
+ * <p>请求 payload 是 {@code UTF username, UTF uuid}；响应 OK 的 payload 是
+ * 凭证裸字节（{@link Credentials#encode()}），响应 ERR 的 payload 是 {@code UTF reason}。
  */
 public final class PreauthProtocol {
 
@@ -51,22 +45,13 @@ public final class PreauthProtocol {
     public static final int RESPONSE_HEADER_LEN = 4;
 
     /**
-     * payload 长度上限。合法请求最大也就几百字节（用户名 + UUID + serverId），
+     * payload 长度上限。合法请求最大也就几百字节（用户名 + UUID），
      * 4 KB 已是数量级的余量；上限管住的是服务端在解析定论前需要缓冲的量。
      */
     public static final int MAX_PAYLOAD = 4096;
 
-    /** 领取 serverId：客户端自报身份，服务端给出 serverId 与皮肤站地址。 */
-    public static final int OP_HELLO = 1;
-
-    /** 验证并换取凭证：客户端已向皮肤站报到，请服务端查证。 */
-    public static final int OP_CONFIRM = 2;
-
-    /** 服务端不做皮肤站查证（online-mode=false），客户端应跳过 join 直接 confirm。 */
-    public static final int MODE_OFFLINE = 0;
-
-    /** 服务端会查证 hasJoined，客户端必须先拿 accessToken 去皮肤站 join。 */
-    public static final int MODE_ONLINE = 1;
+    /** 唯一操作码：请求凭证。 */
+    public static final int OP_REQUEST = 1;
 
     public static final int STATUS_OK = 0;
     public static final int STATUS_ERR = 1;
@@ -183,8 +168,8 @@ public final class PreauthProtocol {
 
     // ---------- payload 编解码 ----------
 
-    /** HELLO 请求的 payload。 */
-    public static byte[] encodeHello(String username, String uuid) throws IOException {
+    /** 请求 payload：客户端自报用户名与 UUID（用于签发每玩家令牌，不做身份验证）。 */
+    public static byte[] encodeIdentity(String username, String uuid) throws IOException {
         ByteArrayOutputStream bo = new ByteArrayOutputStream();
         DataOutputStream out = new DataOutputStream(bo);
         out.writeUTF(username);
@@ -193,53 +178,10 @@ public final class PreauthProtocol {
         return bo.toByteArray();
     }
 
-    /** 解出 HELLO 请求的 payload，返回 {@code [username, uuid]}。 */
-    public static String[] decodeHello(byte[] payload) throws IOException {
+    /** 解出请求 payload，返回 {@code [username, uuid]}。 */
+    public static String[] decodeIdentity(byte[] payload) throws IOException {
         DataInputStream in = new DataInputStream(new ByteArrayInputStream(payload));
         return new String[] {in.readUTF(), in.readUTF()};
-    }
-
-    /** HELLO 响应的 payload。 */
-    public static byte[] encodeHelloReply(int mode, String serverId, String authServer)
-            throws IOException {
-        ByteArrayOutputStream bo = new ByteArrayOutputStream();
-        DataOutputStream out = new DataOutputStream(bo);
-        out.writeByte(mode);
-        out.writeUTF(serverId);
-        out.writeUTF(authServer == null ? "" : authServer);
-        out.flush();
-        return bo.toByteArray();
-    }
-
-    /** CONFIRM 请求的 payload。 */
-    public static byte[] encodeConfirm(String serverId, String username, String uuid)
-            throws IOException {
-        ByteArrayOutputStream bo = new ByteArrayOutputStream();
-        DataOutputStream out = new DataOutputStream(bo);
-        out.writeUTF(serverId);
-        out.writeUTF(username);
-        out.writeUTF(uuid);
-        out.flush();
-        return bo.toByteArray();
-    }
-
-    /** 解出 CONFIRM 请求的 payload，返回 {@code [serverId, username, uuid]}。 */
-    public static String[] decodeConfirm(byte[] payload) throws IOException {
-        DataInputStream in = new DataInputStream(new ByteArrayInputStream(payload));
-        return new String[] {in.readUTF(), in.readUTF(), in.readUTF()};
-    }
-
-    /** CONFIRM 响应的 payload：凭证本体以裸字节随行。 */
-    public static byte[] encodeConfirmReply(String room, String backendId, byte[] credential)
-            throws IOException {
-        ByteArrayOutputStream bo = new ByteArrayOutputStream();
-        DataOutputStream out = new DataOutputStream(bo);
-        out.writeUTF(room == null ? "" : room);
-        out.writeUTF(backendId == null ? "" : backendId);
-        out.writeInt(credential.length);
-        out.write(credential);
-        out.flush();
-        return bo.toByteArray();
     }
 
     // ---------- 身份字段校验 ----------
@@ -247,10 +189,8 @@ public final class PreauthProtocol {
     /**
      * 校验 username/uuid 的形状，合法返回空串，否则返回拒绝原因。
      *
-     * <p>这两个字段会进日志，拒绝控制字符是从源头掐死日志注入（换行伪造
-     * 日志行）；与 {@link UpgradeReport} 的 sanitize 是同一条纪律。用户名的
-     * 具体合法性交给皮肤站的 hasJoined 判定——皮肤站不一定限于 Mojang 的
-     * 字符集（可能允许中文）。
+     * <p>这不是身份验证——只防日志注入（换行伪造日志行）与畸形输入。
+     * 用户名/UUID 的真实性由 MC 服务端自己的正版验证保证。
      */
     public static String validateIdentity(String username, String uuid) {
         if (username == null || username.isEmpty() || uuid == null || uuid.isEmpty()) {
@@ -265,26 +205,7 @@ public final class PreauthProtocol {
         return "";
     }
 
-    /**
-     * serverId 的形状校验。服务端自己签发的是 32 位 hex，放宽到 64 字符以内的
-     * hex 与连字符，给未来的格式变化留余量。
-     */
-    public static boolean validServerId(String s) {
-        if (s == null || s.isEmpty() || s.length() > 64) {
-            return false;
-        }
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            boolean hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
-                    || (c >= 'A' && c <= 'F');
-            if (!hex && c != '-') {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /** 去掉 UUID 的连字符。皮肤站返回的不带，请求侧可能带，比对前统一。 */
+    /** 去掉 UUID 的连字符，比对前统一格式。 */
     public static String normalizeUuid(String uuid) {
         return uuid == null ? "" : uuid.replace("-", "");
     }

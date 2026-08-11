@@ -108,11 +108,11 @@ server {
 换隧道方案时这里跟着换键名即可，mod 代码零改动。键名契约与 Go 侧
 backend 实现（如 `internal/backend/frpxtcp`）保持一致。
 
-**客户端零配置即用**，什么都不用填。默认 `client.prewarm=true`：游戏启动时用
-上次缓存的凭证预热隧道并维护服务器列表里的直连条目（首次进服仍需先经中转拿
-凭证）。要关掉预热/直连条目、改条目名（`directEntryName`）、固定预热端口
-（`prewarmPort`）或调时间参数，同一路径的 cfg 里写 `client` 类目
-（键见 `ModConfig`），也是启动前手写即可。
+**客户端零配置即用**，什么都不用填。默认 `client.prewarm=true` 且 `client.prefetch=true`：
+游戏启动时自动向服务器列表（server.dat）里的服务器预取凭证并后台打洞，
+首次启动即直连——不必先经中转进服拿凭证。要关掉预热/直连条目、改条目名
+（`directEntryName`）、固定预热端口（`prewarmPort`）或调时间参数，同一路径
+的 cfg 里写 `client` 类目（键见 `ModConfig`），也是启动前手写即可。
 
 ## 每玩家令牌（可选，frps 侧 authplugin）
 

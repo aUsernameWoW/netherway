@@ -20,7 +20,6 @@ import java.net.SocketAddress;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import net.minecraft.network.NetworkManager;
@@ -54,8 +53,7 @@ import org.apache.logging.log4j.Logger;
  *
  * <p>信任边界的两条线不同：<b>PROXY 头只信回环</b>（frp 从本机拨入，
  * 而头是谁都能伪造的，局域网邻居能借它冒充任意来源地址）；<b>预认证帧接受
- * 任何来源</b>——它自带身份证明（皮肤站 hasJoined），且玩家本来就是从
- * 公网经隧道过来的。
+ * 任何来源</b>——预下发不做身份验证，准入交给 MC 服务端自己的白名单与正版验证。
  */
 final class ConnectionSniffer {
 
@@ -64,8 +62,8 @@ final class ConnectionSniffer {
     private static final String HANDLER_NAME = "netherway_sniffer";
 
     /**
-     * 一条预认证连接从建立到完成的宽限。中间隔着客户端去皮肤站 join 的
-     * 一次往返，给足余量；超时就断，半开连接不能在 MC 端口上堆积。
+     * 一条预认证连接从建立到完成的宽限。单步请求-响应，给足余量；
+     * 超时就断，半开连接不能在 MC 端口上堆积。
      *
      * <p>这个值比 MC 自己的读超时（FMLNetworkHandler.READ_TIMEOUT，默认
      * 30 秒）更宽，能生效的前提是进入 PREAUTH 时已把下游 handler 摘掉
@@ -75,11 +73,8 @@ final class ConnectionSniffer {
      */
     private static final int EXCHANGE_TIMEOUT_SECONDS = 40;
 
-    /**
-     * 同时在跑的 confirm 上限。每个 confirm 都是一次最长 10 秒的皮肤站外呼，
-     * 不设限的话一波并发就能把线程和上游一起拖垮。
-     */
-    private static final int MAX_CONCURRENT_CONFIRM = 8;
+    /** 同时在处理的预认证请求上限。不设限的话一波并发就能把线程池拖垮。 */
+    private static final int MAX_CONCURRENT_PREAUTH = 8;
 
     /**
      * RELAY 模式下、会合点还没接上时允许攒的字节上限。
@@ -101,7 +96,6 @@ final class ConnectionSniffer {
         /** 内嵌会合点的回环端口；0 表示不启用，TLS 分叉整条路径都不生效。 */
         final int rendezvousPort;
         final ExecutorService worker;
-        final Semaphore confirmSlots = new Semaphore(MAX_CONCURRENT_CONFIRM);
 
         Context(PreauthService preauth, boolean proxyProtocol, int rendezvousPort,
                 ExecutorService worker) {
@@ -126,7 +120,7 @@ final class ConnectionSniffer {
         if (preauth == null && !proxyProtocol && rendezvousPort <= 0) {
             return;
         }
-        ExecutorService worker = Executors.newFixedThreadPool(MAX_CONCURRENT_CONFIRM,
+        ExecutorService worker = Executors.newFixedThreadPool(MAX_CONCURRENT_PREAUTH,
                 new ThreadFactory() {
                     @Override
                     public Thread newThread(Runnable r) {
@@ -224,8 +218,6 @@ final class ConnectionSniffer {
         private Mode mode = Mode.UNDECIDED;
         /** RELAY 模式下通往内嵌会合点的连接；未接上前为 null。 */
         private Channel upstream;
-        /** 本连接上签出的 serverId；CONFIRM 必须报同一个。 */
-        private volatile String issuedServerId;
         /** 有请求正在工作线程上处理，此时不再解析新帧。 */
         private boolean busy;
         private java.util.concurrent.ScheduledFuture<?> deadline;
@@ -436,14 +428,14 @@ final class ConnectionSniffer {
             dispatch(c, req);
         }
 
-        /** 真正的处理放到工作线程：confirm 里有一次皮肤站外呼，绝不能占着事件循环。 */
+        /** 处理放到工作线程，避免阻塞事件循环。 */
         private void dispatch(final ChannelHandlerContext c, final PreauthProtocol.Request req) {
             try {
                 ctx.worker.execute(new Runnable() {
                     @Override
                     public void run() {
                         byte[] reply = process(req);
-                        respond(c, reply, req.op == PreauthProtocol.OP_CONFIRM);
+                        respond(c, reply);
                     }
                 });
             } catch (java.util.concurrent.RejectedExecutionException shuttingDown) {
@@ -458,26 +450,9 @@ final class ConnectionSniffer {
                         "协议版本不符（服务端 " + PreauthProtocol.VERSION + "）");
             }
             try {
-                if (req.op == PreauthProtocol.OP_HELLO) {
-                    String[] id = PreauthProtocol.decodeHello(req.payload);
-                    StringBuilder out = new StringBuilder();
-                    PreauthService.Reply r = ctx.preauth.handleHello(id[0], id[1], out);
-                    if (r.ok) {
-                        issuedServerId = out.toString();
-                    }
-                    return r.encode();
-                }
-                if (req.op == PreauthProtocol.OP_CONFIRM) {
-                    String[] f = PreauthProtocol.decodeConfirm(req.payload);
-                    if (!ctx.confirmSlots.tryAcquire()) {
-                        return PreauthProtocol.errorResponse("服务繁忙，稍后重试");
-                    }
-                    try {
-                        return ctx.preauth.handleConfirm(issuedServerId, f[0], f[1], f[2])
-                                .encode();
-                    } finally {
-                        ctx.confirmSlots.release();
-                    }
+                if (req.op == PreauthProtocol.OP_REQUEST) {
+                    String[] id = PreauthProtocol.decodeIdentity(req.payload);
+                    return ctx.preauth.handleRequest(id[0], id[1]).encode();
                 }
                 return PreauthProtocol.errorResponse("未知操作 " + req.op);
             } catch (IOException malformed) {
@@ -488,25 +463,13 @@ final class ConnectionSniffer {
             }
         }
 
-        /** 把响应写回连接。CONFIRM 之后交换结束，写完即关。 */
-        private void respond(final ChannelHandlerContext c, final byte[] reply,
-                             final boolean last) {
+        /** 把响应写回连接。单步请求-响应，写完即关。 */
+        private void respond(final ChannelHandlerContext c, final byte[] reply) {
             if (!c.channel().isActive()) {
                 return;
             }
-            ChannelFuture f = c.writeAndFlush(c.alloc().buffer(reply.length).writeBytes(reply));
-            if (last) {
-                f.addListener(ChannelFutureListener.CLOSE);
-                return;
-            }
-            // 回到事件循环再解锁：busy 与 pending 都只在这个线程上碰
-            c.executor().execute(new Runnable() {
-                @Override
-                public void run() {
-                    busy = false;
-                    pump(c);
-                }
-            });
+            c.writeAndFlush(c.alloc().buffer(reply.length).writeBytes(reply))
+                    .addListener(ChannelFutureListener.CLOSE);
         }
 
         // ---------- PROXY protocol ----------
