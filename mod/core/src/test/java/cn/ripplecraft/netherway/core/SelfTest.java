@@ -77,6 +77,13 @@ public final class SelfTest {
         testPreauthIdentityValidation();
         testCredentialV2StillDecodes();
         testWarmupRetryBackoff();
+        testTelemetryQualityWindow();
+        testTelemetryFailureCodeContract();
+        testTelemetryCollector();
+        testTelemetryConcurrentFlush();
+        testUpgradeTelemetryLanding();
+        testUpgradeTelemetryStaleRedirect();
+        testUpgradeTelemetryRedirectFailure();
 
         System.out.println();
         System.out.println("通过 " + passed + "，失败 " + failed);
@@ -182,8 +189,12 @@ public final class SelfTest {
         check("解析延迟", ready.rttMs() == 31L);
         check("解析版本", "1.7.10".equals(ready.version()));
 
-        AgentEvent failed = AgentEvent.parse("{\"event\":\"failed\",\"reason\":\"打洞超时\"}");
+        AgentEvent failed = AgentEvent.parse("{\"event\":\"failed\","
+                + "\"failureStage\":\"probe\",\"failureCode\":\"ready_probe_timeout\","
+                + "\"reason\":\"打洞超时\"}");
         check("识别 failed", failed != null && failed.type() == AgentEvent.Type.FAILED);
+        check("解析失败阶段", "probe".equals(failed.failureStage()));
+        check("解析失败码", "ready_probe_timeout".equals(failed.failureCode()));
         check("解析原因", "打洞超时".equals(failed.reason()));
 
         AgentEvent starting = AgentEvent.parse("{\"event\":\"starting\",\"port\":1}");
@@ -204,6 +215,19 @@ public final class SelfTest {
         // 字段类型不符时退化为 0，而不是抛异常中断整条流水线
         AgentEvent weird = AgentEvent.parse("{\"event\":\"ready\",\"port\":\"abc\"}");
         check("非法数字退化为 0", weird != null && weird.port() == 0);
+
+        // 老 agent 只有自由文本 reason；新增字段缺失时仍应正常解析
+        AgentEvent legacy = AgentEvent.parse("{\"event\":\"failed\",\"reason\":\"旧版失败\"}");
+        check("兼容旧 agent 失败事件", legacy != null
+                && legacy.failureStage() == null && legacy.failureCode() == null);
+
+        AgentEvent local = AgentEvent.failed("start", "agent_start_failed", "无法启动");
+        check("构造结构化失败事件", "start".equals(local.failureStage())
+                && "agent_start_failed".equals(local.failureCode())
+                && "无法启动".equals(local.reason()));
+        AgentEvent legacyLocal = AgentEvent.failed("旧式本地失败");
+        check("兼容旧式失败构造", legacyLocal.failureStage() == null
+                && legacyLocal.failureCode() == null);
     }
 
     // ---------- Credentials ----------
@@ -1465,6 +1489,491 @@ public final class SelfTest {
         check("非正预取超时回填默认值", zero.prefetchTimeoutMs() == 60_000L);
         check("配置的预取超时生效",
                 Timings.defaults().withPrefetchTimeout(5_000L).prefetchTimeoutMs() == 5_000L);
+    }
+
+    // ---------- Telemetry ----------
+
+    private static void testTelemetryFailureCodeContract() {
+        check("遥测契约：Go start stage 对齐",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage
+                        .fromWire("start")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.START);
+        check("遥测契约：Go backend stage 对齐",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage
+                        .fromWire("backend")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.BACKEND);
+        check("遥测契约：Go probe stage 对齐",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage
+                        .fromWire("probe")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.PROBE);
+        check("遥测契约：backend_unknown 对齐",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode
+                        .fromWire("backend_unknown")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.BACKEND_UNKNOWN);
+        check("遥测契约：bind_port_failed 对齐",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode
+                        .fromWire("bind_port_failed")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.BIND_PORT_FAILED);
+        check("遥测契约：backend_exited 对齐",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode
+                        .fromWire("backend_exited")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.BACKEND_EXITED);
+        check("遥测契约：ready_probe_timeout 对齐",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode
+                        .fromWire("ready_probe_timeout")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.READY_PROBE_TIMEOUT);
+        check("遥测契约：未知 stage 归一为 other",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage
+                        .fromWire("future_stage")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.OTHER);
+        check("遥测契约：未知 code 归一为 other",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode
+                        .fromWire("future_code")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.OTHER);
+    }
+
+    private static void testTelemetryQualityWindow() {
+        final long[] now = new long[1];
+        cn.ripplecraft.netherway.core.telemetry.QualityWindow window =
+                new cn.ripplecraft.netherway.core.telemetry.QualityWindow(
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Path.WARMUP,
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Source.COLD_AGENT,
+                        new cn.ripplecraft.netherway.core.telemetry.QualityWindow.Clock() {
+                            @Override
+                            public long nanoTime() {
+                                return now[0];
+                            }
+                        });
+        cn.ripplecraft.netherway.core.telemetry.QualitySummary summary = null;
+        for (int i = 0; i < 4; i++) {
+            window.markAttempts(1);
+            summary = window.failed(
+                    cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.ROUND_FINISHED,
+                    cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.PROBE,
+                    cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.READY_PROBE_TIMEOUT);
+        }
+        check("质量窗口：前四次失败不结算", summary == null);
+        window.markAttempts(1);
+        summary = window.failed(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.ROUND_FINISHED,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.PROBE,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.READY_PROBE_TIMEOUT);
+        check("质量窗口：第五次真实尝试结算", summary != null);
+
+        window.markAttempts(1);
+        check("质量窗口：持续失败在六小时内被抑制", window.failed(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.ROUND_FINISHED,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.PROBE,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.READY_PROBE_TIMEOUT) == null);
+        now[0] += TimeUnit.HOURS.toNanos(6L);
+        window.markAttempts(1);
+        check("质量窗口：持续失败满六小时再次结算", window.failed(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.ROUND_FINISHED,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.PROBE,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.READY_PROBE_TIMEOUT) != null);
+
+        window.markAttempts(1);
+        check("质量窗口：失败后的恢复成功立即结算", window.succeeded(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.TUNNEL_READY,
+                1800L, 31L) != null);
+        window.markAttempts(1);
+        check("质量窗口：重复成功在六小时内被抑制", window.succeeded(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.TUNNEL_READY,
+                1800L, 31L) == null);
+        window.markAttempts(1);
+        check("质量窗口：成功后的单次失败先留在窗口", window.failed(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.ROUND_FINISHED,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.BACKEND,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.BACKEND_EXITED) == null);
+        window.markAttempts(1);
+        check("质量窗口：有失败夹在中间时恢复成功不被抑制", window.succeeded(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.TUNNEL_READY,
+                2200L, 40L) != null);
+
+        final long[] age = new long[1];
+        cn.ripplecraft.netherway.core.telemetry.QualityWindow aged =
+                new cn.ripplecraft.netherway.core.telemetry.QualityWindow(
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Path.PREFETCH,
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Source.CONFIG,
+                        new cn.ripplecraft.netherway.core.telemetry.QualityWindow.Clock() {
+                            @Override
+                            public long nanoTime() {
+                                return age[0];
+                            }
+                        });
+        aged.markAttempts(1);
+        check("质量窗口：未满三十分钟不结算", aged.failed(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.ROUND_FINISHED,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.PREFETCH,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.PREFETCH_FAILED) == null);
+        age[0] += TimeUnit.MINUTES.toNanos(30L);
+        aged.markAttempts(1);
+        check("质量窗口：满三十分钟即使不足五次也结算", aged.failed(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.ROUND_FINISHED,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.PREFETCH,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.PREFETCH_FAILED) != null);
+
+        cn.ripplecraft.netherway.core.telemetry.QualityWindow dominant =
+                new cn.ripplecraft.netherway.core.telemetry.QualityWindow(
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Path.WARMUP,
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Source.COLD_AGENT,
+                        new cn.ripplecraft.netherway.core.telemetry.QualityWindow.Clock() {
+                            @Override
+                            public long nanoTime() {
+                                return 0L;
+                            }
+                        });
+        cn.ripplecraft.netherway.core.telemetry.QualitySummary dominantResult = null;
+        for (int i = 0; i < 4; i++) {
+            dominant.markAttempts(1);
+            dominantResult = dominant.failed(
+                    cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.ROUND_FINISHED,
+                    cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.BACKEND,
+                    cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.BACKEND_EXITED);
+        }
+        dominant.markAttempts(1);
+        dominantResult = dominant.failed(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.ROUND_FINISHED,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.PROBE,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode.READY_PROBE_TIMEOUT);
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector dominantCollector =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.enabled(true),
+                        new cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment(
+                                "test", "1.7.10", "8", "linux", "amd64",
+                                cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment.Role.CLIENT));
+        dominantCollector.record(dominantResult);
+        String dominantPayload = dominantCollector.previewPayload();
+        check("质量窗口：按窗口主要失败码结算而非最后一次",
+                dominantPayload.contains("\"failureCode\":\"backend_exited\"")
+                        && !dominantPayload.contains("ready_probe_timeout"));
+    }
+
+    private static void testTelemetryCollector() throws Exception {
+        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment env =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment(
+                        "0.1.0", "1.7.10", "8", "linux", "amd64",
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment.Role.CLIENT);
+        cn.ripplecraft.netherway.core.telemetry.QualitySummary failed =
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.of(
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Path.UPGRADE,
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.ROUND_FINISHED,
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Outcome.FAILED)
+                        .withSource(cn.ripplecraft.netherway.core.telemetry.QualitySummary.Source.COLD_AGENT)
+                        .withFailure("probe", "ready_probe_timeout")
+                        .withAttempts(3).withTimings(5200L, 31L);
+
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector enhanced =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        new cn.ripplecraft.netherway.core.telemetry.TelemetryConfig(true, true, 2), env);
+        enhanced.record(failed);
+        enhanced.record(failed);
+        enhanced.record(failed);
+        String full = enhanced.previewPayload();
+        check("增强遥测队列有界", enhanced.pendingCount() == 2 && enhanced.droppedCount() == 1);
+        check("默认 transport 明确标记为未配置", !enhanced.transportConfigured());
+        check("payload 含临时 batch ID", full.contains("\"batchId\":\""));
+        check("增强 payload 含稳定失败码", full.contains("\"failureCode\":\"ready_probe_timeout\""));
+        check("增强 payload 使用桶而非精确耗时", full.contains("\"elapsed\":\"5_8s\"")
+                && full.contains("\"rtt\":\"25_50ms\"") && !full.contains("5200"));
+
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector basic =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        new cn.ripplecraft.netherway.core.telemetry.TelemetryConfig(true, false, 4), env);
+        basic.record(cn.ripplecraft.netherway.core.telemetry.QualitySummary.of(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Path.UPGRADE,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.PUNCH_STARTED,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Outcome.STARTED)
+                .withFailure("probe", "ready_probe_timeout").withTimings(9876L, 44L));
+        basic.record(failed);
+        String small = basic.previewPayload();
+        check("基础模式不收集中间漏斗事件", basic.pendingCount() == 1);
+        check("基础 payload 只保留粗粒度结果", small.contains("\"outcome\":\"failed\"")
+                && !small.contains("\"path\"") && !small.contains("\"stage\"")
+                && !small.contains("failureStage") && !small.contains("failureCode")
+                && !small.contains("\"source\"") && !small.contains("\"rtt\"")
+                && !small.contains("9876"));
+
+        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment unsafe =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment(
+                        "/Users/alice/mod", "1.7.10", "8", "AliceOS", "secret-arch",
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment.Role.CLIENT);
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector sanitized =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.enabled(true), unsafe);
+        String safe = sanitized.previewPayload();
+        check("环境自由文本被 allow-list 拦截", !safe.contains("alice")
+                && !safe.contains("secret-arch") && safe.contains("\"modVersion\":\"unknown\""));
+
+        final byte[][] sent = new byte[1][];
+        cn.ripplecraft.netherway.core.telemetry.TelemetryTransport accepting =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryTransport() {
+                    @Override
+                    public boolean send(byte[] payload) {
+                        sent[0] = payload;
+                        return true;
+                    }
+                };
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector flushing =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.enabled(true),
+                        env, accepting);
+        flushing.record(failed);
+        check("注入 transport 后标记为已配置", flushing.transportConfigured());
+        check("transport 接受后才清队列", flushing.flush()
+                && sent[0] != null && flushing.pendingCount() == 0);
+
+        final byte[][] retried = new byte[2][];
+        final int[] retryCalls = new int[1];
+        cn.ripplecraft.netherway.core.telemetry.TelemetryTransport retryTransport =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryTransport() {
+                    @Override
+                    public boolean send(byte[] payload) {
+                        int call = retryCalls[0]++;
+                        if (call < retried.length) retried[call] = payload.clone();
+                        return call > 0;
+                    }
+                };
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector retrying =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.enabled(true),
+                        env, retryTransport);
+        retrying.record(failed);
+        check("失败发送保留首批", !retrying.flush() && retrying.pendingCount() == 1);
+        retrying.record(failed);
+        check("重试只确认冻结首批", retrying.flush() && retrying.pendingCount() == 1);
+        check("重试复用完全相同的 batch ID 与内容",
+                java.util.Arrays.equals(retried[0], retried[1]));
+
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector disabled =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.disabled(), env);
+        disabled.record(failed);
+        check("关闭时不收集摘要", disabled.pendingCount() == 0);
+    }
+
+    private static void testTelemetryConcurrentFlush() throws Exception {
+        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment env =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment(
+                        "test", "1.7.10", "8", "linux", "amd64",
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment.Role.CLIENT);
+        final CountDownLatch firstSendEntered = new CountDownLatch(1);
+        final CountDownLatch releaseFirstSend = new CountDownLatch(1);
+        final int[] sendCalls = new int[1];
+        cn.ripplecraft.netherway.core.telemetry.TelemetryTransport blocking =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryTransport() {
+                    @Override
+                    public boolean send(byte[] payload) throws java.io.IOException {
+                        int call;
+                        synchronized (sendCalls) {
+                            call = ++sendCalls[0];
+                        }
+                        if (call == 1) {
+                            firstSendEntered.countDown();
+                            try {
+                                releaseFirstSend.await();
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new java.io.IOException("interrupted", e);
+                            }
+                        }
+                        return true;
+                    }
+                };
+        final cn.ripplecraft.netherway.core.telemetry.TelemetryCollector collector =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.enabled(true),
+                        env, blocking);
+        collector.record(cn.ripplecraft.netherway.core.telemetry.QualitySummary.of(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Path.UPGRADE,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.STARTED,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Outcome.STARTED));
+
+        final boolean[] results = new boolean[2];
+        final Throwable[] errors = new Throwable[2];
+        Thread first = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    results[0] = collector.flush();
+                } catch (Throwable t) {
+                    errors[0] = t;
+                }
+            }
+        }, "telemetry-flush-first");
+        first.start();
+        check("并发 flush：首批已进入 transport",
+                firstSendEntered.await(2, TimeUnit.SECONDS));
+
+        Thread second = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    results[1] = collector.flush();
+                } catch (Throwable t) {
+                    errors[1] = t;
+                }
+            }
+        }, "telemetry-flush-second");
+        second.start();
+        second.join(2_000L);
+        check("并发 flush：第二次不重复发送",
+                !second.isAlive() && !results[1] && errors[1] == null);
+
+        collector.record(cn.ripplecraft.netherway.core.telemetry.QualitySummary.of(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Path.PREFETCH,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.ROUND_FINISHED,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Outcome.SUCCESS));
+        releaseFirstSend.countDown();
+        first.join(2_000L);
+        String remaining = collector.previewPayload();
+        check("并发 flush：首批成功且无异常",
+                !first.isAlive() && results[0] && errors[0] == null);
+        check("并发 flush：不删除未发送的新摘要",
+                collector.pendingCount() == 1
+                        && remaining.contains("\"path\":\"prefetch\"")
+                        && !remaining.contains("\"path\":\"upgrade\""));
+        check("并发 flush：后续批次可正常发送",
+                collector.flush() && collector.pendingCount() == 0 && sendCalls[0] == 2);
+    }
+
+    private static void testUpgradeTelemetryLanding() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-telemetry-upgrade");
+        FakeBridge bridge = new FakeBridge(tmp);
+        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment env =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment(
+                        "test", "1.7.10", "8", "linux", "amd64",
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment.Role.CLIENT);
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector telemetry =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.enabled(true), env);
+        WarmupController warmup = new WarmupController(bridge,
+                new CredentialCache(tmp.resolve("credentials")), Timings.defaults(),
+                null, 0, null);
+        Credentials cred = Credentials.frpXtcp("203.0.113.10", 7000, "secret-token",
+                "stun.example:3478", "private-room", "secret-key", 1000);
+        warmup.injectReadyForTest(cred, AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31,\"elapsedMs\":1792}"));
+        UpgradeController controller = new UpgradeController(bridge, Timings.defaults(),
+                null, warmup, telemetry);
+
+        check("遥测落地：收到凭证启动升级", controller.onCredentials(cred));
+        long deadline = System.currentTimeMillis() + 5000L;
+        while (System.currentTimeMillis() < deadline) {
+            synchronized (bridge.connects) {
+                if (bridge.connects.contains("127.0.0.1:25595")) break;
+            }
+            Thread.sleep(20L);
+        }
+        String before = telemetry.previewPayload();
+        check("遥测落地：READY 与重定向开始已记录", before.contains("tunnel_ready")
+                && before.contains("redirect_started"));
+        check("遥测落地：READY 不冒充真正落地", !before.contains("redirect_landed"));
+        controller.onRedirectLanded();
+        controller.onRedirectLanded();
+        String after = telemetry.previewPayload();
+        check("遥测落地：平台确认后才记录 landed", countOf(after, "redirect_landed") == 1);
+        check("遥测 payload 不含凭证与服务器标识", !after.contains("secret-token")
+                && !after.contains("secret-key") && !after.contains("private-room")
+                && !after.contains("203.0.113.10") && !after.contains("stun.example"));
+        controller.shutdown();
+        warmup.shutdown();
+    }
+
+    private static void testUpgradeTelemetryStaleRedirect() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-telemetry-stale-redirect");
+        final List<Runnable> queued = java.util.Collections.synchronizedList(
+                new ArrayList<Runnable>());
+        FakeBridge bridge = new FakeBridge(tmp) {
+            @Override
+            public void runOnGameThread(Runnable task) {
+                queued.add(task);
+            }
+        };
+        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment env =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment(
+                        "test", "1.7.10", "8", "linux", "amd64",
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment.Role.CLIENT);
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector telemetry =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.enabled(true), env);
+        WarmupController warmup = new WarmupController(bridge,
+                new CredentialCache(tmp.resolve("credentials")), Timings.defaults(),
+                null, 0, null);
+        Credentials cred = Credentials.frpXtcp("203.0.113.11", 7000, "token",
+                "stun.example:3478", "room", "key", 1000);
+        warmup.injectReadyForTest(cred, AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":25596,\"rttMs\":40,\"elapsedMs\":2000}"));
+        UpgradeController controller = new UpgradeController(bridge, Timings.defaults(),
+                null, warmup, telemetry);
+
+        check("过期重定向：收到凭证后开始升级", controller.onCredentials(cred));
+        long deadline = System.currentTimeMillis() + 5_000L;
+        while (queued.isEmpty() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10L);
+        }
+        check("过期重定向：READY 任务已排队", !queued.isEmpty());
+        controller.shutdown();
+        List<Runnable> snapshot;
+        synchronized (queued) {
+            snapshot = new ArrayList<Runnable>(queued);
+            queued.clear();
+        }
+        for (Runnable task : snapshot) task.run();
+        String payload = telemetry.previewPayload();
+        check("过期重定向：shutdown 后旧任务不再连接", bridge.connects.isEmpty());
+        check("过期重定向：未伪造 redirect_started", !payload.contains("redirect_started"));
+        check("过期重定向：排队窗口记为 interrupted", payload.contains("interrupted"));
+        warmup.shutdown();
+    }
+
+    private static void testUpgradeTelemetryRedirectFailure() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-telemetry-redirect-failure");
+        FakeBridge bridge = new FakeBridge(tmp) {
+            @Override
+            public void connectTo(String host, int port) {
+                throw new IllegalStateException("synthetic connect failure");
+            }
+        };
+        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment env =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment(
+                        "test", "1.7.10", "8", "linux", "amd64",
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment.Role.CLIENT);
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector telemetry =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.enabled(true), env);
+        WarmupController warmup = new WarmupController(bridge,
+                new CredentialCache(tmp.resolve("credentials")), Timings.defaults(),
+                null, 0, null);
+        Credentials cred = Credentials.frpXtcp("203.0.113.12", 7000, "token",
+                "stun.example:3478", "room", "key", 1000);
+        warmup.injectReadyForTest(cred, AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":25597,\"rttMs\":40,\"elapsedMs\":2000}"));
+        UpgradeController controller = new UpgradeController(bridge, Timings.defaults(),
+                null, warmup, telemetry);
+
+        check("重定向异常：收到凭证后开始升级", controller.onCredentials(cred));
+        long deadline = System.currentTimeMillis() + 5_000L;
+        while (controller.state() != UpgradeController.State.IDLE
+                && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10L);
+        }
+        String payload = telemetry.previewPayload();
+        check("重定向异常：平台抛错后复位", controller.state() == UpgradeController.State.IDLE
+                && !controller.redirectInProgress());
+        check("重定向异常：只记录 redirect_failed 而非 interrupted",
+                payload.contains("redirect_failed") && !payload.contains("interrupted"));
+        warmup.shutdown();
+    }
+
+    private static int countOf(String text, String needle) {
+        int count = 0;
+        int at = 0;
+        while ((at = text.indexOf(needle, at)) >= 0) {
+            count++;
+            at += needle.length();
+        }
+        return count;
     }
 
     private static void check(String name, boolean ok) {

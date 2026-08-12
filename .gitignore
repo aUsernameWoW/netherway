@@ -12,6 +12,10 @@
 /mod/platform/*/.gradle/
 /mod/platform/*/run/
 
+# 遥测接收端只在自有服务器维护，不上传到公开仓库
+/cmd/telemetry-ingest/
+/deploy/telemetry-ingest.service
+
 *.log
 
 .DS_Store

@@ -1,0 +1,191 @@
+package cn.ripplecraft.netherway.core.telemetry;
+
+/**
+ * One locally aggregated quality fact. Every dimension is a fixed enum or a bucket; there is no
+ * free-text/map escape hatch by design.
+ */
+public final class QualitySummary {
+
+    public enum Path {
+        UPGRADE("upgrade"), WARMUP("warmup"), PREFETCH("prefetch"),
+        /** Internal placeholder used after an enhanced summary is reduced to basic. */
+        BASIC("quality");
+        private final String wire;
+        Path(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+    }
+
+    public enum Stage {
+        STARTED("started"), PUNCH_STARTED("punch_started"), TUNNEL_READY("tunnel_ready"),
+        REDIRECT_STARTED("redirect_started"), REDIRECT_LANDED("redirect_landed"),
+        ROUND_FINISHED("round_finished"), TUNNEL_LOST("tunnel_lost"),
+        /** Internal placeholder used after an enhanced summary is reduced to basic. */
+        SUMMARY("summary");
+        private final String wire;
+        Stage(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+    }
+
+    public enum Outcome {
+        STARTED("started"), SUCCESS("success"), FAILED("failed"),
+        INTERRUPTED("interrupted"), UNKNOWN("unknown");
+        private final String wire;
+        Outcome(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+    }
+
+    public enum Source {
+        UNKNOWN("unknown"), COLD_AGENT("cold_agent"), WARMUP_REUSE("warmup_reuse"),
+        DIRECT_ENTRY("direct_entry"), CONFIG("config"), SERVER_LIST("server_list");
+        private final String wire;
+        Source(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+    }
+
+    public enum FailureStage {
+        NONE("none"), PLATFORM("platform"), EXTRACT("extract"), START("start"),
+        BACKEND("backend"), PROBE("probe"), REDIRECT("redirect"),
+        PREFETCH("prefetch"), INTERNAL("internal"), OTHER("other");
+        private final String wire;
+        FailureStage(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+
+        public static FailureStage fromWire(String value) {
+            if (value == null || value.isEmpty()) return NONE;
+            for (FailureStage item : values()) if (item.wire.equals(value)) return item;
+            return OTHER;
+        }
+    }
+
+    public enum FailureCode {
+        NONE("none"), BACKEND_UNKNOWN("backend_unknown"),
+        BIND_PORT_FAILED("bind_port_failed"), BACKEND_EXITED("backend_exited"),
+        READY_PROBE_TIMEOUT("ready_probe_timeout"), AGENT_EARLY_EXIT("agent_early_exit"),
+        PLATFORM_UNSUPPORTED("platform_unsupported"),
+        BINARY_EXTRACT_FAILED("binary_extract_failed"),
+        AGENT_START_FAILED("agent_start_failed"), REDIRECT_FAILED("redirect_failed"),
+        PREFETCH_FAILED("prefetch_failed"), INTERRUPTED("interrupted"),
+        INTERNAL_ERROR("internal_error"), OTHER("other");
+        private final String wire;
+        FailureCode(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+
+        public static FailureCode fromWire(String value) {
+            if (value == null || value.isEmpty()) return NONE;
+            for (FailureCode item : values()) if (item.wire.equals(value)) return item;
+            return OTHER;
+        }
+    }
+
+    private final Path path;
+    private final Stage stage;
+    private final Outcome outcome;
+    private final Source source;
+    private final FailureStage failureStage;
+    private final FailureCode failureCode;
+    private final int attempts;
+    private final long elapsedMs;
+    private final long rttMs;
+
+    private QualitySummary(Path path, Stage stage, Outcome outcome, Source source,
+                           FailureStage failureStage, FailureCode failureCode,
+                           int attempts, long elapsedMs, long rttMs) {
+        if (path == null || stage == null || outcome == null) {
+            throw new IllegalArgumentException("path/stage/outcome must be set");
+        }
+        this.path = path;
+        this.stage = stage;
+        this.outcome = outcome;
+        this.source = source == null ? Source.UNKNOWN : source;
+        this.failureStage = failureStage == null ? FailureStage.NONE : failureStage;
+        this.failureCode = failureCode == null ? FailureCode.NONE : failureCode;
+        this.attempts = Math.max(0, attempts);
+        this.elapsedMs = Math.max(0L, elapsedMs);
+        this.rttMs = Math.max(0L, rttMs);
+    }
+
+    public static QualitySummary of(Path path, Stage stage, Outcome outcome) {
+        return new QualitySummary(path, stage, outcome, Source.UNKNOWN,
+                FailureStage.NONE, FailureCode.NONE, 0, 0L, 0L);
+    }
+
+    public QualitySummary withSource(Source value) {
+        return new QualitySummary(path, stage, outcome, value, failureStage, failureCode,
+                attempts, elapsedMs, rttMs);
+    }
+
+    public QualitySummary withFailure(FailureStage failureStage, FailureCode failureCode) {
+        return new QualitySummary(path, stage, outcome, source, failureStage, failureCode,
+                attempts, elapsedMs, rttMs);
+    }
+
+    public QualitySummary withFailure(String failureStage, String failureCode) {
+        return withFailure(FailureStage.fromWire(failureStage), FailureCode.fromWire(failureCode));
+    }
+
+    public QualitySummary withAttempts(int value) {
+        return new QualitySummary(path, stage, outcome, source, failureStage, failureCode,
+                value, elapsedMs, rttMs);
+    }
+
+    public QualitySummary withTimings(long elapsedMs, long rttMs) {
+        return new QualitySummary(path, stage, outcome, source, failureStage, failureCode,
+                attempts, elapsedMs, rttMs);
+    }
+
+    /**
+     * Basic mode only retains a terminal coarse result. Path, stage, failure classification,
+     * attempts and timing values are deliberately erased before the item enters the queue.
+     */
+    QualitySummary forBasicMode() {
+        return new QualitySummary(Path.BASIC, Stage.SUMMARY, outcome, Source.UNKNOWN,
+                FailureStage.NONE, FailureCode.NONE, 0, 0L, 0L);
+    }
+
+    /** Intermediate funnel events are enhanced-only and are not collected in basic mode. */
+    boolean isTerminalForBasicMode() {
+        if (outcome == Outcome.FAILED || outcome == Outcome.INTERRUPTED) {
+            return true;
+        }
+        if (outcome != Outcome.SUCCESS) {
+            return false;
+        }
+        return stage == Stage.REDIRECT_LANDED || stage == Stage.ROUND_FINISHED
+                || (path == Path.WARMUP && stage == Stage.TUNNEL_READY);
+    }
+
+    String path() { return path.wire(); }
+    String stage() { return stage.wire(); }
+    String outcome() { return outcome.wire(); }
+    String source() { return source.wire(); }
+    String failureStage() { return failureStage.wire(); }
+    String failureCode() { return failureCode.wire(); }
+
+    String attemptsBucket() {
+        if (attempts <= 0) return "unknown";
+        if (attempts == 1) return "1";
+        if (attempts == 2) return "2";
+        if (attempts <= 5) return "3_5";
+        return "6_plus";
+    }
+
+    String elapsedBucket() {
+        if (elapsedMs <= 0) return "unknown";
+        if (elapsedMs < 1000) return "lt_1s";
+        if (elapsedMs < 3000) return "1_3s";
+        if (elapsedMs < 5000) return "3_5s";
+        if (elapsedMs < 8000) return "5_8s";
+        if (elapsedMs < 15000) return "8_15s";
+        if (elapsedMs < 30000) return "15_30s";
+        return "30s_plus";
+    }
+
+    String rttBucket() {
+        if (rttMs <= 0) return "unknown";
+        if (rttMs < 25) return "lt_25ms";
+        if (rttMs < 50) return "25_50ms";
+        if (rttMs < 100) return "50_100ms";
+        if (rttMs < 200) return "100_200ms";
+        return "200ms_plus";
+    }
+}

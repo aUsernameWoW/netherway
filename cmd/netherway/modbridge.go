@@ -43,7 +43,31 @@ type event struct {
 	RTTMs   int64  `json:"rttMs,omitempty"`
 	Version string `json:"version,omitempty"`
 	Online  int    `json:"online,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	// FailureStage/FailureCode 是供统计使用的稳定、低基数字段；Reason 只供
+	// 本地诊断日志展示，不能作为遥测维度或上传内容。
+	FailureStage string `json:"failureStage,omitempty"`
+	FailureCode  string `json:"failureCode,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+const (
+	failureStageStart   = "start"
+	failureStageBackend = "backend"
+	failureStageProbe   = "probe"
+
+	failureCodeBackendUnknown    = "backend_unknown"
+	failureCodeBindPortFailed    = "bind_port_failed"
+	failureCodeBackendExited     = "backend_exited"
+	failureCodeReadyProbeTimeout = "ready_probe_timeout"
+)
+
+func failedEvent(stage, code, reason string) event {
+	return event{
+		Event:        "failed",
+		FailureStage: stage,
+		FailureCode:  code,
+		Reason:       reason,
+	}
 }
 
 // measureRTT 连测几次取最小值。隧道刚建立时首条连接会带上协商开销，
@@ -164,7 +188,7 @@ func cmdTunnel(args []string) error {
 	if !ok {
 		err := fmt.Errorf("未知 backend %q，可用: %s",
 			*backendName, strings.Join(backend.Names(), ", "))
-		emit(event{Event: "failed", Reason: err.Error()})
+		emit(failedEvent(failureStageStart, failureCodeBackendUnknown, err.Error()))
 		return err
 	}
 	merged := mergedParams(fs, *backendName, params)
@@ -173,7 +197,7 @@ func cmdTunnel(args []string) error {
 	// 固定端口会撞车，而 mod 是从状态输出里读端口的，用哪个都无所谓。
 	port, err := pickPort(*wantPort)
 	if err != nil {
-		emit(event{Event: "failed", Reason: err.Error()})
+		emit(failedEvent(failureStageStart, failureCodeBindPortFailed, err.Error()))
 		return err
 	}
 
@@ -244,11 +268,12 @@ func cmdTunnel(args []string) error {
 		if err != nil {
 			reason = err.Error()
 		}
-		emit(event{Event: "failed", Reason: reason})
+		emit(failedEvent(failureStageBackend, failureCodeBackendExited, reason))
 		return fmt.Errorf("%s", reason)
 
 	case err := <-probeErr:
-		emit(event{Event: "failed", Reason: fmt.Sprintf("建链超时: %v", err)})
+		emit(failedEvent(failureStageProbe, failureCodeReadyProbeTimeout,
+			fmt.Sprintf("建链超时: %v", err)))
 		return fmt.Errorf("隧道未在 %.1fs 内就绪", *timeout)
 
 	case st := <-ready:

@@ -2,10 +2,18 @@ package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.CredentialCache;
 import cn.ripplecraft.netherway.core.Prefetcher;
+import cn.ripplecraft.netherway.core.Platform;
 import cn.ripplecraft.netherway.core.ServerCandidates;
 import cn.ripplecraft.netherway.core.SessionIdentity;
 import cn.ripplecraft.netherway.core.UpgradeController;
 import cn.ripplecraft.netherway.core.WarmupController;
+import cn.ripplecraft.netherway.core.telemetry.QualitySummary;
+import cn.ripplecraft.netherway.core.telemetry.HttpTelemetryTransport;
+import cn.ripplecraft.netherway.core.telemetry.TelemetryCollector;
+import cn.ripplecraft.netherway.core.telemetry.TelemetryConfig;
+import cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment;
+import cn.ripplecraft.netherway.core.telemetry.TelemetryFlusher;
+import cn.ripplecraft.netherway.core.telemetry.TelemetryTransport;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.network.FMLEventChannel;
 import java.util.ArrayList;
@@ -14,24 +22,38 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.ServerList;
 import net.minecraft.util.Session;
+import net.minecraftforge.client.ClientCommandHandler;
 
 /** 物理客户端的接线：把 core 的状态机挂到 Forge 的事件与频道上。 */
 public final class ClientProxy extends CommonProxy {
 
+    private static final String TELEMETRY_ENDPOINT =
+            "https://telemetry.ripplecraft.cn/v1/batches";
+
+    private TelemetryCollector telemetry;
+
     @Override
     public void initClient(FMLEventChannel channel, ModConfig config) {
+        TelemetryTransport transport = new HttpTelemetryTransport(
+                TELEMETRY_ENDPOINT, 2_000, 2_000);
+        telemetry = new TelemetryCollector(
+                new TelemetryConfig(config.telemetryEnabled(), config.telemetryEnhanced(),
+                        TelemetryConfig.DEFAULT_MAX_PENDING),
+                clientTelemetryEnvironment(), transport);
+        TelemetryFlusher.start(telemetry, 60L);
         if (!config.clientEnabled()) {
             // 玩家可彻底关掉：不注册任何监听，连凭证都不收
             return;
         }
         ForgeClientBridge bridge = new ForgeClientBridge(channel, config.verboseLogging());
+        ClientCommandHandler.instance.registerCommand(new TelemetryCommand(telemetry, bridge));
         CredentialCache cache = new CredentialCache(
                 bridge.cacheDirectory().resolve("credentials"));
         WarmupController warmup = new WarmupController(bridge, cache, config.clientTimings(),
                 new DirectServerEntry(bridge, config.directEntryName()),
-                config.prewarmPort(), buildPrefetcher(bridge, config));
+                config.prewarmPort(), buildPrefetcher(bridge, config, telemetry), telemetry);
         UpgradeController controller = new UpgradeController(
-                bridge, config.clientTimings(), cache, warmup);
+                bridge, config.clientTimings(), cache, warmup, telemetry);
         ClientEvents events = new ClientEvents(controller, warmup, bridge);
 
         // 凭证包走频道自己的事件总线，tick 与连接事件走 FML 总线
@@ -49,7 +71,8 @@ public final class ClientProxy extends CommonProxy {
      * 组装凭证预取器；缺任何前提（关了开关、离线会话、没有候选地址）
      * 返回 null，预热退回「只用缓存凭证」的路径。
      */
-    private static Prefetcher buildPrefetcher(ForgeClientBridge bridge, ModConfig config) {
+    private static Prefetcher buildPrefetcher(ForgeClientBridge bridge, ModConfig config,
+                                              TelemetryCollector telemetry) {
         if (!config.clientPrefetch()) {
             return null;
         }
@@ -80,7 +103,36 @@ public final class ClientProxy extends CommonProxy {
             return null;
         }
         bridge.debug("预取候选（依次尝试）: " + candidates);
-        return new Prefetcher(bridge, id, candidates, config.clientTimings());
+        QualitySummary.Source source = configured.length == 0
+                ? QualitySummary.Source.SERVER_LIST : QualitySummary.Source.CONFIG;
+        return new Prefetcher(bridge, id, candidates, config.clientTimings(), source, telemetry);
+    }
+
+    /** 只输出低基数的标准化环境值；绝不把原始系统属性塞进 payload。 */
+    private static TelemetryEnvironment clientTelemetryEnvironment() {
+        String os = "other";
+        String arch = "other";
+        try {
+            String platform = Platform.detect().toString();
+            int dash = platform.indexOf('-');
+            if (dash > 0) {
+                os = platform.substring(0, dash);
+                arch = platform.substring(dash + 1);
+            }
+        } catch (Platform.UnsupportedPlatformException ignored) {
+            // Unsupported platforms are deliberately grouped as other/other.
+        }
+        return new TelemetryEnvironment(Tags.VERSION, "1.7.10", javaMajor(), os, arch,
+                TelemetryEnvironment.Role.CLIENT);
+    }
+
+    private static String javaMajor() {
+        String spec = System.getProperty("java.specification.version", "");
+        if (spec.startsWith("1.")) {
+            spec = spec.substring(2);
+        }
+        int dot = spec.indexOf('.');
+        return dot < 0 ? spec : spec.substring(0, dot);
     }
 
     /** 读服务器列表（server.dat）里的条目地址，读不了就当没有。 */

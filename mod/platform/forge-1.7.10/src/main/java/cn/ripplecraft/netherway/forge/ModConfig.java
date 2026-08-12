@@ -55,6 +55,16 @@ public final class ModConfig {
     private final int warmupRetryMaxSeconds;
     private final int prefetchTimeoutSeconds;
 
+    // ---- telemetry ----
+    /**
+     * 遥测总开关。默认开启，但缺省时刻意不写进 cfg；只有用户手工加入
+     * telemetry.enable 时才读取并保留该 entry。与 enhanced 同为 false
+     * 时才彻底关闭。
+     */
+    private final boolean telemetryEnabled;
+    /** 是否包含详细的连接质量维度；这个开关正常生成在 cfg 中。 */
+    private final boolean telemetryEnhanced;
+
     public ModConfig(File file) {
         // 服主会按 README 手写这个文件（免得为生成骨架先空跑一次游戏），
         // 手写就可能有语法错误——1.7.10 的 Configuration 解析失败会直接抛
@@ -211,6 +221,16 @@ public final class ModConfig {
                 120, 1, 86_400, "预热重试退避的上限秒数——打不通就按这个周期一直打");
         prefetchTimeoutSeconds = cfg.getInt("prefetchTimeoutSeconds", "client",
                 60, 5, 600, "单个候选的预取超时秒数（含 TCP 往返）");
+
+        cfg.setCategoryComment("telemetry",
+                "匿名质量测量。发送版本、平台与粗粒度结果；视开关发送\n"
+                + "打洞阶段、稳定失败码、重试次数、RTT/耗时桶、预热/升级/预取路径。");
+        telemetryEnhanced = cfg.getBoolean("enhanced", "telemetry", true,
+                "是否发送详细匿名质量指标");
+        boolean masterEnabled = !cfg.hasKey("telemetry", "enable")
+                || cfg.getBoolean("enable", "telemetry", true,
+                        "");
+        telemetryEnabled = masterEnabled || telemetryEnhanced;
 
         // 解析失败时绝不能回写：会用默认值覆盖服主手里只是语法有瑕疵的文件
         if (loadedOk && cfg.hasChanged()) {
@@ -372,5 +392,13 @@ public final class ModConfig {
                 .withWarmupRetry(warmupRetryInitialSeconds * 1000L,
                         warmupRetryMaxSeconds * 1000L)
                 .withPrefetchTimeout(prefetchTimeoutSeconds * 1000L);
+    }
+
+    public boolean telemetryEnabled() {
+        return telemetryEnabled;
+    }
+
+    public boolean telemetryEnhanced() {
+        return telemetryEnhanced;
     }
 }

@@ -29,16 +29,21 @@ public final class AgentEvent {
     private final long rttMs;
     private final String version;
     private final int online;
+    private final String failureStage;
+    private final String failureCode;
     private final String reason;
 
     private AgentEvent(Type type, int port, long elapsedMs, long rttMs,
-                       String version, int online, String reason) {
+                       String version, int online, String failureStage,
+                       String failureCode, String reason) {
         this.type = type;
         this.port = port;
         this.elapsedMs = elapsedMs;
         this.rttMs = rttMs;
         this.version = version;
         this.online = online;
+        this.failureStage = failureStage;
+        this.failureCode = failureCode;
         this.reason = reason;
     }
 
@@ -49,7 +54,17 @@ public final class AgentEvent {
      * 免得原因文本里的引号反过来把构造弄坏。
      */
     public static AgentEvent failed(String reason) {
-        return new AgentEvent(Type.FAILED, 0, 0L, 0L, null, 0, reason);
+        return failed(null, null, reason);
+    }
+
+    /**
+     * 直接构造一个带稳定分类的失败事件。
+     *
+     * <p>{@code reason} 仍只用于本地诊断；统计代码应只读取 stage/code。
+     */
+    public static AgentEvent failed(String failureStage, String failureCode, String reason) {
+        return new AgentEvent(Type.FAILED, 0, 0L, 0L, null, 0,
+                failureStage, failureCode, reason);
     }
 
     /**
@@ -97,6 +112,8 @@ public final class AgentEvent {
                 longOf(m, "rttMs"),
                 m.get("version"),
                 (int) longOf(m, "online"),
+                m.get("failureStage"),
+                m.get("failureCode"),
                 m.get("reason"));
     }
 
@@ -140,7 +157,17 @@ public final class AgentEvent {
         return online;
     }
 
-    /** 失败原因，仅 FAILED/STOPPED 可能有值。 */
+    /** 失败发生的稳定阶段；旧版 agent 未提供时为 null。 */
+    public String failureStage() {
+        return failureStage;
+    }
+
+    /** 稳定、低基数的失败码；旧版 agent 未提供时为 null。 */
+    public String failureCode() {
+        return failureCode;
+    }
+
+    /** 供本地日志展示的自由文本原因，仅 FAILED/STOPPED 可能有值。 */
     public String reason() {
         return reason;
     }
@@ -148,6 +175,9 @@ public final class AgentEvent {
     @Override
     public String toString() {
         return "AgentEvent{" + type + " port=" + port + " elapsedMs=" + elapsedMs
-                + " rttMs=" + rttMs + (reason == null ? "" : " reason=" + reason) + "}";
+                + " rttMs=" + rttMs
+                + (failureStage == null ? "" : " failureStage=" + failureStage)
+                + (failureCode == null ? "" : " failureCode=" + failureCode)
+                + (reason == null ? "" : " reason=" + reason) + "}";
     }
 }

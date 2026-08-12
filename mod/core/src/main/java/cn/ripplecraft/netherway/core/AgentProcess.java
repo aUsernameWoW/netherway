@@ -235,7 +235,7 @@ public final class AgentProcess implements Closeable {
             sb.append("：").append(tail);
         }
         // 走 AgentEvent.parse 会碰上引号转义问题，这里直接构造
-        return AgentEvent.failed(sb.toString());
+        return AgentEvent.failed("start", "agent_early_exit", sb.toString());
     }
 
     /** 返回 stderr 最近若干行，用于诊断。 */

@@ -34,6 +34,8 @@ import org.apache.logging.log4j.Logger;
 public final class ForgeClientBridge implements ClientBridge {
 
     private static final Logger LOG = LogManager.getLogger(Netherway.MODID);
+    /** 回环目标正常只需数 tick；这里留足慢机器启动网络栈的余量。 */
+    private static final long REDIRECT_TIMEOUT_NANOS = 30L * 1000L * 1000L * 1000L;
 
     private final ConcurrentLinkedQueue<Runnable> tasks = new ConcurrentLinkedQueue<Runnable>();
     private final FMLEventChannel channel;
@@ -41,6 +43,18 @@ public final class ForgeClientBridge implements ClientBridge {
 
     /** 升级重定向的目标端口；0 表示当前没有进行中的重定向。 */
     private volatile int redirectPort;
+
+    /**
+     * 最近一次收到 connected 事件的连接。Forge 的 connected/disconnected
+     * 事件可能交错到达，不能用一个布尔标志猜某次断开属于旧连接还是新连接。
+     */
+    private NetworkManager activeManager;
+
+    /** 本轮切换发起时的旧连接；只在等待目标连接期间保留。 */
+    private NetworkManager redirectOriginManager;
+
+    /** {@link System#nanoTime()} 时间基准上的切换截止时刻。 */
+    private long redirectDeadlineNanos;
 
     /**
      * 发起切换时玩家所在服务器的地址。{@code loadWorld(null)} 会连带清掉
@@ -73,63 +87,140 @@ public final class ForgeClientBridge implements ClientBridge {
         }
     }
 
-    boolean redirectInFlight() {
-        return redirectPort != 0;
+    enum ConnectResult {
+        ORDINARY,
+        REDIRECT_LANDED,
+        REDIRECT_MISSED
+    }
+
+    enum DisconnectResult {
+        ACTIVE,
+        STALE,
+        REDIRECT_ORIGIN
     }
 
     /**
      * 新连接建立时由 {@link ClientEvents} 调用：
-     * 是我们发起的重定向则返回 true 并结束跟踪。
+     * 同时更新当前活动 manager，并判断它是否为本轮重定向目标。
      *
-     * <p>比对回环地址与端口，而不是只信一个布尔标志——重定向失败后
-     * 玩家手动连别的服务器时，标志还立着，只有地址能识破这不是我们的连接。
+     * <p>目标连接可能先报 connected，旧连接之后才报 disconnected。先把
+     * {@link #activeManager} 换成目标 manager，迟到的旧断开就会被识别为
+     * {@link DisconnectResult#STALE}，不会误停刚落地的 agent。
      */
-    boolean redirectLanded(NetworkManager manager) {
+    synchronized ConnectResult connectionOpened(NetworkManager manager) {
         int expected = redirectPort;
         if (expected == 0) {
             // 玩家自己发起的连接：切换前记住的地址（若有残留）已经过时
+            activeManager = manager;
             switchOrigin = null;
+            return ConnectResult.ORDINARY;
+        }
+
+        boolean landed = isRedirectTarget(manager, expected);
+        SocketAddress remote = manager == null ? null : manager.getSocketAddress();
+        activeManager = manager;
+        clearRedirectTracking();
+        if (landed) {
+            debug("新连接 " + remote + " 是我们发起的直连切换");
+            return ConnectResult.REDIRECT_LANDED;
+        }
+
+        switchOrigin = null;
+        debug("新连接 " + remote
+                + " 与直连切换无关（期望回环端口 " + expected + "）");
+        return ConnectResult.REDIRECT_MISSED;
+    }
+
+    /**
+     * 断开事件按 manager 身份归类。等待目标期间，旧 manager 的断开只表示
+     * 切换按计划推进。目标 manager 在 connected 以前无法可靠取得，因此其
+     * 他 manager 不能冒充失败信号——它也可能是更旧连接的迟到事件；统一交给
+     * 三十秒 timeout 收口。没有切换时，只有活动 manager 的断开才是真正退出。
+     */
+    synchronized DisconnectResult connectionClosed(NetworkManager manager) {
+        if (redirectPort != 0) {
+            if (manager != null && (manager == redirectOriginManager
+                    || manager == activeManager)) {
+                if (activeManager == manager) {
+                    activeManager = null;
+                }
+                return DisconnectResult.REDIRECT_ORIGIN;
+            }
+
+            return DisconnectResult.STALE;
+        }
+
+        if (manager != null && manager == activeManager) {
+            activeManager = null;
+            switchOrigin = null;
+            return DisconnectResult.ACTIVE;
+        }
+        return DisconnectResult.STALE;
+    }
+
+    /** tick 上的有界兜底；返回 true 只发生一次，由事件层完成 controller 收口。 */
+    synchronized boolean redirectTimedOut() {
+        if (redirectPort == 0 || System.nanoTime() - redirectDeadlineNanos < 0L) {
             return false;
         }
-        redirectPort = 0;
-        SocketAddress remote = manager == null ? null : manager.getSocketAddress();
-        if (remote instanceof InetSocketAddress) {
-            InetSocketAddress addr = (InetSocketAddress) remote;
-            boolean landed = addr.getPort() == expected
-                    && addr.getAddress() != null
-                    && addr.getAddress().isLoopbackAddress();
-            if (!landed) {
-                switchOrigin = null;
-            }
-            debug("新连接 " + addr + (landed
-                    ? " 是我们发起的直连切换"
-                    : " 与直连切换无关（期望回环端口 " + expected + "）"));
-            return landed;
-        }
+        int expected = redirectPort;
+        clearRedirectTracking();
         switchOrigin = null;
-        debug("新连接的地址类型无法识别，视作与直连切换无关（期望回环端口 " + expected + "）");
-        return false;
+        debug("等待回环端口 " + expected + " 的连接超时");
+        return true;
+    }
+
+    private static boolean isRedirectTarget(NetworkManager manager, int expectedPort) {
+        SocketAddress remote = manager == null ? null : manager.getSocketAddress();
+        if (!(remote instanceof InetSocketAddress)) {
+            return false;
+        }
+        InetSocketAddress addr = (InetSocketAddress) remote;
+        return addr.getPort() == expectedPort
+                && addr.getAddress() != null
+                && addr.getAddress().isLoopbackAddress();
+    }
+
+    private void clearRedirectTracking() {
+        redirectPort = 0;
+        redirectOriginManager = null;
+        redirectDeadlineNanos = 0L;
     }
 
     @Override
     public void connectTo(String host, int port) {
         debug("断开当前连接，重连到 " + host + ":" + port);
-        // 标志必须在断开动作之前立起来：断开事件在 netty 线程异步到达，
-        // 到达时 ClientEvents 要靠它认出「这是我们自己造成的断开」
-        redirectPort = port;
         // 下面的 loadWorld(null) 会把 currentServerData 清成 null（退出世界
         // 分支的连带动作），之后就再也推导不出玩家原来连的是哪台服务器——
         // 而重定向落地后服务端还会重发一次凭证需要它。必须赶在清掉之前存好。
-        switchOrigin = currentServerAddress();
-
-        Minecraft mc = Minecraft.getMinecraft();
-        WorldClient world = mc.theWorld;
-        if (world != null) {
-            world.sendQuittingDisconnectingPacket();
+        ServerCandidates.Address origin = currentServerAddress();
+        // 跟踪必须在断开动作之前立起来：断开事件在 netty 线程异步到达。
+        // manager 身份能覆盖两种合法顺序：旧断开→新连接，以及新连接→旧断开。
+        synchronized (this) {
+            redirectPort = port;
+            redirectOriginManager = activeManager;
+            redirectDeadlineNanos = System.nanoTime() + REDIRECT_TIMEOUT_NANOS;
+            switchOrigin = origin;
         }
-        mc.loadWorld((WorldClient) null);
-        mc.displayGuiScreen(new GuiConnecting(
-                new GuiMultiplayer(new GuiMainMenu()), mc, host, port));
+
+        try {
+            Minecraft mc = Minecraft.getMinecraft();
+            WorldClient world = mc.theWorld;
+            if (world != null) {
+                world.sendQuittingDisconnectingPacket();
+            }
+            mc.loadWorld((WorldClient) null);
+            mc.displayGuiScreen(new GuiConnecting(
+                    new GuiMultiplayer(new GuiMainMenu()), mc, host, port));
+        } catch (RuntimeException e) {
+            // controller 会在上层把 redirectPending 记为失败；bridge 自己也必须
+            // 同步撤销 tracker，不能让接下来 30 秒的普通连接被误认作旧重定向。
+            synchronized (this) {
+                clearRedirectTracking();
+                switchOrigin = null;
+            }
+            throw e;
+        }
     }
 
     /**

@@ -2,6 +2,9 @@ package cn.ripplecraft.netherway.core;
 
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicBoolean;
+import cn.ripplecraft.netherway.core.telemetry.QualityObserver;
+import cn.ripplecraft.netherway.core.telemetry.QualitySummary;
+import cn.ripplecraft.netherway.core.telemetry.QualityWindow;
 
 /**
  * 启动期预热：游戏加载时就提前打洞，玩家在服务器列表里直接选直连条目
@@ -75,6 +78,9 @@ public final class WarmupController {
     private final int bindPort;
     /** 每轮开始前预取凭证；null 表示没有可问的服务器地址。 */
     private final Prefetcher prefetcher;
+    private final QualityObserver quality;
+    /** 无限重试只按窗口生成摘要，不能让失败轮次无限占满 collector。 */
+    private final QualityWindow qualityWindow;
 
     private final AtomicBoolean started = new AtomicBoolean(false);
     private volatile boolean stopped;
@@ -89,12 +95,21 @@ public final class WarmupController {
 
     public WarmupController(ClientBridge bridge, CredentialCache cache, Timings timings,
                             Listener listener, int bindPort, Prefetcher prefetcher) {
+        this(bridge, cache, timings, listener, bindPort, prefetcher, QualityObserver.NOOP);
+    }
+
+    public WarmupController(ClientBridge bridge, CredentialCache cache, Timings timings,
+                            Listener listener, int bindPort, Prefetcher prefetcher,
+                            QualityObserver quality) {
         this.bridge = bridge;
         this.cache = cache;
         this.timings = timings == null ? Timings.defaults() : timings.normalized();
         this.listener = listener;
         this.bindPort = bindPort;
         this.prefetcher = prefetcher;
+        this.quality = quality == null ? QualityObserver.NOOP : quality;
+        this.qualityWindow = new QualityWindow(QualitySummary.Path.WARMUP,
+                QualitySummary.Source.COLD_AGENT);
     }
 
     /**
@@ -122,6 +137,10 @@ public final class WarmupController {
             platform = Platform.detect();
         } catch (Platform.UnsupportedPlatformException e) {
             bridge.debug("当前系统不支持直连，跳过预热: " + e.getMessage());
+            observe(QualitySummary.of(QualitySummary.Path.WARMUP,
+                    QualitySummary.Stage.ROUND_FINISHED, QualitySummary.Outcome.FAILED)
+                    .withFailure(QualitySummary.FailureStage.PLATFORM,
+                            QualitySummary.FailureCode.PLATFORM_UNSUPPORTED));
             return;
         }
         Path cacheDir = bridge.cacheDirectory();
@@ -130,13 +149,18 @@ public final class WarmupController {
             exe = new BinaryStore(cacheDir, platform).ensureExtracted();
         } catch (Exception e) {
             bridge.warn("释放 agent 二进制失败，本会话预热不可用（不影响正常游戏）", e);
+            observe(QualitySummary.of(QualitySummary.Path.WARMUP,
+                    QualitySummary.Stage.ROUND_FINISHED, QualitySummary.Outcome.FAILED)
+                    .withFailure(QualitySummary.FailureStage.EXTRACT,
+                            QualitySummary.FailureCode.BINARY_EXTRACT_FAILED));
             return;
         }
         // 与升级流程的 tunnel.log 分开：预热还没出结果时玩家就经中转
         // 进服的话，两个 agent 会同时在跑，共用一个日志文件会互相踩踏
         Path agentLog = cacheDir.resolve("tunnel-warmup.log");
 
-        int attempt = 0;
+        // 只控制重试退避，不得拿来当遥测里的真实打洞次数。
+        int backoffAttempt = 0;
         boolean loggedIdle = false;
         while (!stopped) {
             try {
@@ -173,12 +197,12 @@ public final class WarmupController {
                     continue;
                 } else if (runAttempt(cred, exe, cacheDir, agentLog)) {
                     // 就绪过又退出：清零退避，尽快恢复直连条目
-                    attempt = 0;
+                    backoffAttempt = 0;
                 }
                 if (stopped) {
                     return;
                 }
-                long delay = timings.warmupRetryDelayMs(attempt++);
+                long delay = timings.warmupRetryDelayMs(backoffAttempt++);
                 bridge.debug("预热将在 " + (delay / 1000) + " 秒后重试");
                 Thread.sleep(delay);
             } catch (InterruptedException e) {
@@ -187,7 +211,7 @@ public final class WarmupController {
             } catch (Exception e) {
                 bridge.warn("预热一轮异常（继续重试，不影响正常游戏）", e);
                 try {
-                    Thread.sleep(timings.warmupRetryDelayMs(attempt++));
+                    Thread.sleep(timings.warmupRetryDelayMs(backoffAttempt++));
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     return;
@@ -212,35 +236,57 @@ public final class WarmupController {
         long waitMs = timings.outcomeWaitMs(cred.punchTimeoutMs());
         punchWaitMs = waitMs;
         punching = true;
-        AgentProcess proc = AgentProcess.start(exe, cred, timings, cacheDir, agentLog, bindPort,
-                new AgentProcess.Listener() {
-                    @Override
-                    public void onEvent(AgentEvent event) {
-                        bridge.debug("预热 agent 事件: " + event);
-                        if (event.type() == AgentEvent.Type.STARTING
-                                && event.port() > 0 && listener != null) {
-                            listener.onTunnelStarting(cred, event.port());
-                        }
-                    }
-
-                    @Override
-                    public void onStderrLine(String line) {
-                        bridge.debug("预热 agent: " + line);
-                    }
-                });
-        agent = proc;
+        AgentProcess proc = null;
         try {
+            try {
+                proc = AgentProcess.start(exe, cred, timings, cacheDir, agentLog, bindPort,
+                        new AgentProcess.Listener() {
+                            @Override
+                            public void onEvent(AgentEvent event) {
+                                bridge.debug("预热 agent 事件: " + event);
+                                if (event.type() == AgentEvent.Type.STARTING) {
+                                    // 只数 agent 确实宣布开始的打洞；退避轮次、无凭证
+                                    // 和进程未启动成功都不能冒充 punch attempt。
+                                    qualityWindow.markAttempts(1);
+                                    if (event.port() > 0 && listener != null) {
+                                        listener.onTunnelStarting(cred, event.port());
+                                    }
+                                }
+                            }
+
+                            @Override
+                            public void onStderrLine(String line) {
+                                bridge.debug("预热 agent: " + line);
+                            }
+                        });
+            } catch (java.io.IOException e) {
+                observe(qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
+                        QualitySummary.FailureStage.START,
+                        QualitySummary.FailureCode.AGENT_START_FAILED));
+                throw e;
+            } catch (RuntimeException e) {
+                observe(qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
+                        QualitySummary.FailureStage.START,
+                        QualitySummary.FailureCode.AGENT_START_FAILED));
+                throw e;
+            }
+            agent = proc;
             AgentEvent outcome = proc.awaitOutcome(waitMs);
             punching = false;
             if (outcome != null && outcome.type() == AgentEvent.Type.READY) {
                 ready = new Ready(cred, outcome, proc);
                 bridge.info("预热直连就绪，端口 " + outcome.port() + "，延迟 "
                         + outcome.rttMs() + "ms——服务器列表里的直连条目可用");
+                observe(qualityWindow.succeeded(QualitySummary.Stage.TUNNEL_READY,
+                        outcome.elapsedMs(), outcome.rttMs()));
                 // 守望：进程退出（掉线、frps 重启、被杀）才回到重试循环
                 proc.awaitExit();
                 ready = null;
                 if (!stopped) {
                     bridge.info("预热隧道进程退出，将重新打洞");
+                    observe(qualityWindow.failed(QualitySummary.Stage.TUNNEL_LOST,
+                            QualitySummary.FailureStage.BACKEND,
+                            QualitySummary.FailureCode.BACKEND_EXITED));
                 }
                 return true;
             }
@@ -249,13 +295,24 @@ public final class WarmupController {
             String why = outcome == null ? "等待打洞结果超时"
                     : (outcome.reason() == null ? "打洞未成功" : outcome.reason());
             bridge.info("预热未成功（" + why + "）——继续按退避重试，不影响正常游戏");
+            if (outcome == null) {
+                observe(qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
+                        QualitySummary.FailureStage.PROBE,
+                        QualitySummary.FailureCode.READY_PROBE_TIMEOUT));
+            } else {
+                observe(qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
+                        QualitySummary.FailureStage.fromWire(outcome.failureStage()),
+                        QualitySummary.FailureCode.fromWire(outcome.failureCode())));
+            }
             return false;
         } finally {
             punching = false;
             punchWaitMs = 0;
             ready = null;
             agent = null;
-            proc.close();
+            if (proc != null) {
+                proc.close();
+            }
         }
     }
 
@@ -356,5 +413,16 @@ public final class WarmupController {
     /** 仅测试：注入就绪状态，免得真起进程。 */
     void injectReadyForTest(Credentials cred, AgentEvent event) {
         ready = new Ready(cred, event, null);
+    }
+
+    private void observe(QualitySummary summary) {
+        if (summary == null) {
+            return;
+        }
+        try {
+            quality.record(summary);
+        } catch (RuntimeException ignored) {
+            // 遥测回调绝不能影响无限重试循环。
+        }
     }
 }

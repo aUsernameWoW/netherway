@@ -2,6 +2,8 @@ package cn.ripplecraft.netherway.core;
 
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicReference;
+import cn.ripplecraft.netherway.core.telemetry.QualityObserver;
+import cn.ripplecraft.netherway.core.telemetry.QualitySummary;
 
 /**
  * 客户端升级流程的状态机：收到凭证 → 打洞 → 成功则切换连接。
@@ -30,6 +32,7 @@ public final class UpgradeController {
     private final CredentialCache cache;
     /** 预热控制器；null 表示无预热。就绪的预热隧道会被升级流程直接复用。 */
     private final WarmupController warmup;
+    private final QualityObserver quality;
     private final AtomicReference<State> state = new AtomicReference<State>(State.IDLE);
 
     /**
@@ -61,17 +64,29 @@ public final class UpgradeController {
     private volatile boolean upgradeReported;
     /** 经直连条目进服（采认）为 true：首个回执时顺带提示玩家一句。 */
     private volatile boolean adoptedDirect;
+    /** READY 后已经发起重连、但平台层尚未确认落地。 */
+    private volatile boolean redirectPending;
+    /** READY 后已排队到游戏线程、但重定向任务尚未执行。guarded by transition。 */
+    private boolean redirectScheduled;
+    private volatile QualitySummary.Source telemetrySource = QualitySummary.Source.UNKNOWN;
 
     public UpgradeController(ClientBridge bridge, Timings timings) {
-        this(bridge, timings, null, null);
+        this(bridge, timings, null, null, QualityObserver.NOOP);
     }
 
     public UpgradeController(ClientBridge bridge, Timings timings,
                              CredentialCache cache, WarmupController warmup) {
+        this(bridge, timings, cache, warmup, QualityObserver.NOOP);
+    }
+
+    public UpgradeController(ClientBridge bridge, Timings timings,
+                             CredentialCache cache, WarmupController warmup,
+                             QualityObserver quality) {
         this.bridge = bridge;
         this.timings = timings == null ? Timings.defaults() : timings.normalized();
         this.cache = cache;
         this.warmup = warmup;
+        this.quality = quality == null ? QualityObserver.NOOP : quality;
         if (warmup != null) {
             // 反向观察口：预热每轮打洞前让路给正在打洞的升级。两个方向合起来
             // 才堵得住「同 NAT 并发打两个洞互相干扰」——谁后到谁等。
@@ -149,6 +164,9 @@ public final class UpgradeController {
             return false;
         }
 
+        observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                QualitySummary.Stage.STARTED, QualitySummary.Outcome.STARTED));
+
         Thread worker = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -173,6 +191,12 @@ public final class UpgradeController {
         if (awaitWarmupAttempt() && reuseWarmTunnel(cred, gen)) {
             return;
         }
+        // 从这里开始已确定不走预热复用；平台检测、解压和进程
+        // 启动都可能在 STARTING 事件前失败，所以要先固定失败来源。
+        if (!selectColdAgent(gen)) {
+            bridge.debug("忽略过期升级：复位后不再启动冷 agent");
+            return;
+        }
         AgentProcess proc = null;
         try {
             Platform platform = Platform.detect();
@@ -182,17 +206,33 @@ public final class UpgradeController {
             bridge.debug("收到的凭证: " + cred);
 
             Path cacheDir = bridge.cacheDirectory();
-            Path exe = new BinaryStore(cacheDir, platform).ensureExtracted();
+            Path exe;
+            try {
+                exe = new BinaryStore(cacheDir, platform).ensureExtracted();
+            } catch (Throwable t) {
+                bridge.warn("释放 agent 二进制失败", t);
+                giveUp(proc, cred, t.getMessage(), gen,
+                        QualitySummary.FailureStage.EXTRACT,
+                        QualitySummary.FailureCode.BINARY_EXTRACT_FAILED);
+                return;
+            }
             Path agentLog = cacheDir.resolve("tunnel.log");
             bridge.debug("agent 二进制: " + exe);
             bridge.debug("启动 agent: " + AgentProcess.describeCommand(
                     AgentProcess.buildCommand(exe, cred, timings, agentLog)));
 
-            proc = AgentProcess.start(exe, cred, timings, cacheDir, agentLog,
-                    new AgentProcess.Listener() {
+            try {
+                proc = AgentProcess.start(exe, cred, timings, cacheDir, agentLog,
+                        new AgentProcess.Listener() {
                         @Override
                         public void onEvent(AgentEvent event) {
                             bridge.debug("agent 事件: " + event);
+                            if (event.type() == AgentEvent.Type.STARTING && isCurrent(gen)) {
+                                observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                                        QualitySummary.Stage.PUNCH_STARTED,
+                                        QualitySummary.Outcome.STARTED)
+                                        .withSource(QualitySummary.Source.COLD_AGENT));
+                            }
                         }
 
                         @Override
@@ -200,6 +240,13 @@ public final class UpgradeController {
                             bridge.debug("agent: " + line);
                         }
                     });
+            } catch (Throwable t) {
+                bridge.warn("启动 agent 失败", t);
+                giveUp(proc, cred, t.getMessage(), gen,
+                        QualitySummary.FailureStage.START,
+                        QualitySummary.FailureCode.AGENT_START_FAILED);
+                return;
+            }
             if (!attach(proc, gen)) {
                 // 启动进程期间 shutdown 已复位：这个 agent 没登记进任何人的
                 // 视野，不就地收掉就只剩 JVM 退出时的 shutdown hook 兜底
@@ -216,25 +263,33 @@ public final class UpgradeController {
             AgentEvent outcome = proc.awaitOutcome(waitMs);
 
             if (outcome == null) {
-                giveUp(proc, cred, "等待直连结果超时", gen);
+                giveUp(proc, cred, "等待直连结果超时", gen,
+                        QualitySummary.FailureStage.PROBE,
+                        QualitySummary.FailureCode.READY_PROBE_TIMEOUT);
                 return;
             }
             if (outcome.type() != AgentEvent.Type.READY) {
                 String why = outcome.reason() == null ? "打洞未成功" : outcome.reason();
-                giveUp(proc, cred, why, gen);
+                giveUp(proc, cred, why, gen,
+                        QualitySummary.FailureStage.fromWire(outcome.failureStage()),
+                        QualitySummary.FailureCode.fromWire(outcome.failureCode()));
                 return;
             }
 
             // 到这里隧道已经通过 Minecraft 握手验证过，切换是安全的
             final int port = outcome.port();
             long rtt = outcome.rttMs();
-            if (!markUpgraded(outcome, gen)) {
+            if (!markUpgraded(outcome, gen, QualitySummary.Source.COLD_AGENT)) {
                 proc.close();
                 bridge.debug("忽略过期升级：复位后不再切换（房间 " + cred.room() + "）");
                 return;
             }
             bridge.info("直连就绪，端口 " + port + "，延迟 " + rtt + "ms，用时 "
                     + outcome.elapsedMs() + "ms");
+            observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                    QualitySummary.Stage.TUNNEL_READY, QualitySummary.Outcome.SUCCESS)
+                    .withSource(QualitySummary.Source.COLD_AGENT)
+                    .withTimings(outcome.elapsedMs(), outcome.rttMs()));
 
             final String msg = rtt > 0
                     ? "已建立直连（延迟 " + rtt + "ms），正在切换…"
@@ -242,23 +297,28 @@ public final class UpgradeController {
             bridge.runOnGameThread(new Runnable() {
                 @Override
                 public void run() {
-                    bridge.notifyPlayer(msg);
-                    bridge.connectTo("127.0.0.1", port);
+                    runRedirect(gen, QualitySummary.Source.COLD_AGENT, msg, port);
                 }
             });
 
         } catch (Platform.UnsupportedPlatformException e) {
             // 没有对应平台的二进制，重试也没意义
-            giveUp(proc, cred, "当前系统不支持直连: " + e.getMessage(), gen);
+            giveUp(proc, cred, "当前系统不支持直连: " + e.getMessage(), gen,
+                    QualitySummary.FailureStage.PLATFORM,
+                    QualitySummary.FailureCode.PLATFORM_UNSUPPORTED);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            giveUp(proc, cred, "升级过程被中断", gen);
+            giveUp(proc, cred, "升级过程被中断", gen,
+                    QualitySummary.FailureStage.INTERNAL,
+                    QualitySummary.FailureCode.INTERRUPTED);
         } catch (Throwable t) {
             // Exception 之外还必须接住 Error：1.7.10 挤着几百个 mod 的类路径上
             // NoClassDefFoundError/LinkageError 并不罕见，逃逸出去状态就永远
             // 停在 PUNCHING，本会话再也无法升级
             bridge.warn("建立直连失败", t);
-            giveUp(proc, cred, t.getMessage(), gen);
+            giveUp(proc, cred, t.getMessage(), gen,
+                    QualitySummary.FailureStage.INTERNAL,
+                    QualitySummary.FailureCode.INTERNAL_ERROR);
         }
     }
 
@@ -274,12 +334,16 @@ public final class UpgradeController {
     }
 
     /** worker 申请把状态置为 UPGRADED；shutdown 复位过（换代）则拒绝。 */
-    private boolean markUpgraded(AgentEvent ready, long gen) {
+    private boolean markUpgraded(AgentEvent ready, long gen, QualitySummary.Source source) {
         synchronized (transition) {
             if (gen != epoch) {
                 return false;
             }
             lastReady = ready;
+            telemetrySource = source;
+            // READY 与“将发起重定向”必须是同一次状态提交；否则 shutdown
+            // 落在两者之间会看见 UPGRADED 却误以为没有未完成的尝试。
+            redirectScheduled = true;
             state.set(State.UPGRADED);
             return true;
         }
@@ -328,20 +392,23 @@ public final class UpgradeController {
         final int port = readyEv.port();
         long rtt = readyEv.rttMs();
         // agent 字段保持 null：隧道归 WarmupController 管，shutdown() 不会误杀
-        if (!markUpgraded(readyEv, gen)) {
+        if (!markUpgraded(readyEv, gen, QualitySummary.Source.WARMUP_REUSE)) {
             // 本轮升级已被 shutdown 作废，也别落回冷启动流程
             bridge.debug("忽略过期升级：复位后不再复用预热隧道");
             return true;
         }
         bridge.info("复用预热隧道，端口 " + port + "，延迟 " + rtt + "ms，正在切换");
+        observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                QualitySummary.Stage.TUNNEL_READY, QualitySummary.Outcome.SUCCESS)
+                .withSource(QualitySummary.Source.WARMUP_REUSE)
+                .withTimings(readyEv.elapsedMs(), readyEv.rttMs()));
         final String msg = rtt > 0
                 ? "已建立直连（延迟 " + rtt + "ms，预热），正在切换…"
                 : "已建立直连（预热），正在切换…";
         bridge.runOnGameThread(new Runnable() {
             @Override
             public void run() {
-                bridge.notifyPlayer(msg);
-                bridge.connectTo("127.0.0.1", port);
+                runRedirect(gen, QualitySummary.Source.WARMUP_REUSE, msg, port);
             }
         });
         return true;
@@ -368,6 +435,7 @@ public final class UpgradeController {
                 activeKey = cred.dedupKey();
                 lastReady = ready;
                 adoptedDirect = true;
+                telemetrySource = QualitySummary.Source.DIRECT_ENTRY;
             }
         }
         if (!adopted) {
@@ -376,6 +444,10 @@ public final class UpgradeController {
         }
         bridge.info("本次连接经直连条目建立（房间 " + cred.room() + "，端口 "
                 + ready.port() + "），视作已升级");
+        observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                QualitySummary.Stage.REDIRECT_LANDED, QualitySummary.Outcome.SUCCESS)
+                .withSource(QualitySummary.Source.DIRECT_ENTRY)
+                .withTimings(ready.elapsedMs(), ready.rttMs()));
         return true;
     }
 
@@ -436,13 +508,19 @@ public final class UpgradeController {
         worker.start();
     }
 
-    private void giveUp(AgentProcess proc, Credentials cred, String reason, long gen) {
+    private void giveUp(AgentProcess proc, Credentials cred, String reason, long gen,
+                        QualitySummary.FailureStage failureStage,
+                        QualitySummary.FailureCode failureCode) {
         boolean stale;
+        QualitySummary.Source source;
         synchronized (transition) {
             stale = gen != epoch;
+            source = telemetrySource;
             if (!stale) {
                 state.set(State.GAVE_UP);
                 agent = null;
+                redirectScheduled = false;
+                redirectPending = false;
             }
         }
         // close 最长阻塞 3 秒，放在转移锁外；重复 close 是幂等的
@@ -459,6 +537,10 @@ public final class UpgradeController {
         // 升级失败对玩家无感：他仍在原有的中转连接上正常游戏，
         // 所以只记日志，不去打扰他。
         bridge.info("放弃直连，继续使用当前线路（" + reason + "）");
+        observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                QualitySummary.Stage.ROUND_FINISHED, QualitySummary.Outcome.FAILED)
+                .withSource(source)
+                .withFailure(failureStage, failureCode));
         // 此刻中转连接还活着，回执能稳稳送出去；服主在服务端日志里
         // 就能看到失败原因，不用挨个找玩家要客户端日志。
         sendReport(UpgradeReport.gaveUp(cred.room(), reason));
@@ -512,6 +594,48 @@ public final class UpgradeController {
         shutdown();
     }
 
+    /** 平台层确认我们发起的回环重连已经建立。 */
+    public void onRedirectLanded() {
+        QualitySummary.Source source;
+        synchronized (transition) {
+            if (!redirectPending) {
+                return;
+            }
+            redirectPending = false;
+            source = telemetrySource;
+        }
+        observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                QualitySummary.Stage.REDIRECT_LANDED, QualitySummary.Outcome.SUCCESS)
+                .withSource(source));
+    }
+
+    /** 平台层建立了别的连接，说明预期的回环重连没有落地。 */
+    public void onRedirectNotLanded() {
+        QualitySummary.Source source;
+        synchronized (transition) {
+            if (!redirectPending) {
+                return;
+            }
+            redirectPending = false;
+            source = telemetrySource;
+        }
+        observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                QualitySummary.Stage.ROUND_FINISHED, QualitySummary.Outcome.FAILED)
+                .withSource(source)
+                .withFailure(QualitySummary.FailureStage.REDIRECT,
+                        QualitySummary.FailureCode.REDIRECT_FAILED));
+    }
+
+    /**
+     * 平台层在 bridge tracker 尚未来得及立起的极窄窗口内，也可据此识别
+     * “旧连接因切换而断开”。只表示重定向已经提交，不能当作落地成功。
+     */
+    public boolean redirectInProgress() {
+        synchronized (transition) {
+            return redirectPending;
+        }
+    }
+
     /**
      * 彻底停止并复位，游戏退出或玩家切换服务器时调用。
      *
@@ -520,21 +644,93 @@ public final class UpgradeController {
      */
     public void shutdown() {
         AgentProcess proc;
+        boolean interrupted;
+        QualitySummary.Source source;
         synchronized (transition) {
             // 换代：还在跑的旧 worker 之后的任何状态转移都会被拒
             epoch++;
             proc = agent;
+            interrupted = state.get() == State.PUNCHING
+                    || redirectScheduled || redirectPending;
+            source = telemetrySource;
             agent = null;
             activeKey = null;
             punchWaitBoundMs = 0;
             lastReady = null;
             upgradeReported = false;
             adoptedDirect = false;
+            redirectScheduled = false;
+            redirectPending = false;
+            telemetrySource = QualitySummary.Source.UNKNOWN;
             state.set(State.IDLE);
         }
         // close 最长阻塞 3 秒，不能占着转移锁
         if (proc != null) {
             proc.close();
+        }
+        if (interrupted) {
+            observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                    QualitySummary.Stage.ROUND_FINISHED, QualitySummary.Outcome.INTERRUPTED)
+                    .withSource(source)
+                    .withFailure(QualitySummary.FailureStage.INTERNAL,
+                            QualitySummary.FailureCode.INTERRUPTED));
+        }
+    }
+
+    private boolean isCurrent(long gen) {
+        synchronized (transition) {
+            return gen == epoch;
+        }
+    }
+
+    /** 冷启动路径一旦确定就固定 source，覆盖 STARTING 前的失败。 */
+    private boolean selectColdAgent(long gen) {
+        synchronized (transition) {
+            if (gen != epoch || state.get() != State.PUNCHING) {
+                return false;
+            }
+            telemetrySource = QualitySummary.Source.COLD_AGENT;
+            return true;
+        }
+    }
+
+    /** 游戏线程执行排队任务时再验代，过期任务不产生任何副作用。 */
+    private boolean markRedirectStarted(long gen, QualitySummary.Source source) {
+        synchronized (transition) {
+            if (gen != epoch || state.get() != State.UPGRADED || !redirectScheduled) {
+                return false;
+            }
+            redirectScheduled = false;
+            redirectPending = true;
+            telemetrySource = source;
+        }
+        observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                QualitySummary.Stage.REDIRECT_STARTED, QualitySummary.Outcome.STARTED)
+                .withSource(source));
+        return true;
+    }
+
+    /** 游戏线程上的重定向提交；平台实现抛错时也必须把 pending 状态收口。 */
+    private void runRedirect(long gen, QualitySummary.Source source, String message, int port) {
+        if (!markRedirectStarted(gen, source)) {
+            bridge.debug("忽略过期重定向：任务排队后升级已复位");
+            return;
+        }
+        try {
+            bridge.notifyPlayer(message);
+            bridge.connectTo("127.0.0.1", port);
+        } catch (RuntimeException e) {
+            bridge.warn("发起直连切换失败", e);
+            onRedirectNotLanded();
+            shutdown();
+        }
+    }
+
+    private void observe(QualitySummary summary) {
+        try {
+            quality.record(summary);
+        } catch (RuntimeException ignored) {
+            // 遥测回调绝不能影响直连状态机。
         }
     }
 }
