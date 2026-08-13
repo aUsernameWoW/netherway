@@ -29,15 +29,15 @@ import java.util.Map;
 public final class Credentials {
 
     /**
-     * 格式版本。v1 是 frp 专用的固定字段布局，v2 起为通用参数表。
-     * v3 曾在参数表后追加过「客户端策略」段，现已移除——decode 仍能读 v3
-     * 并丢弃那段，保持对老缓存凭证的兼容。
+     * 格式版本。v1 是 frp 专用的固定字段布局，v2 起为通用参数表；
+     * v3 曾追加「客户端策略」段（现只保留兼容解码）；v4 在其后记录
+     * 客户端观测到的 Minecraft 入口，使相同 backend/room 的多台服务器可并存。
      */
-    private static final byte FORMAT_VERSION = 2;
+    private static final byte FORMAT_VERSION = 4;
 
     /**
      * 还认得的最低通用布局版本。v2 的凭证仍会被老服务端下发，也仍躺在
-     * 玩家的缓存目录里——不能因为本侧升到 v3 就把它们当成损坏数据。
+     * 玩家的缓存目录里——不能因为本侧升到 v4 就把它们当成损坏数据。
      */
     private static final int MIN_FORMAT_VERSION = 2;
 
@@ -59,8 +59,20 @@ public final class Credentials {
     /** 保序（下发顺序），使 encode 与命令行输出确定、可测。 */
     private final Map<String, String> params;
     private final int punchTimeoutMs;
+    /**
+     * 这份凭证来自的 Minecraft 入口。它是纯客户端元数据：不传给
+     * backend，只用于在多服务器之间分隔缓存、预热隧道与直连条目。
+     * 服务端下发时留空，客户端在预取或实际连接上下文中补齐。
+     */
+    private final String originHost;
+    private final int originPort;
 
     public Credentials(String backendId, Map<String, String> params, int punchTimeoutMs) {
+        this(backendId, params, punchTimeoutMs, "", 0);
+    }
+
+    private Credentials(String backendId, Map<String, String> params, int punchTimeoutMs,
+                        String originHost, int originPort) {
         this.backendId = require(backendId, "backendId");
         if (params == null) {
             throw new IllegalArgumentException("params 不能为 null");
@@ -86,6 +98,14 @@ public final class Credentials {
         this.params = Collections.unmodifiableMap(copy);
         require(this.params.get(PARAM_ROOM), PARAM_ROOM);
         this.punchTimeoutMs = punchTimeoutMs;
+        String host = originHost == null ? "" : originHost.trim();
+        if (host.isEmpty() || originPort <= 0 || originPort > 65535) {
+            this.originHost = "";
+            this.originPort = 0;
+        } else {
+            this.originHost = host.toLowerCase(java.util.Locale.ROOT);
+            this.originPort = originPort;
+        }
     }
 
     /**
@@ -160,6 +180,11 @@ public final class Credentials {
                 out.writeUTF(e.getKey());
                 out.writeUTF(e.getValue());
             }
+            // v3 曾在这里放过 policy 表。v4 保留一个空表头，
+            // 让 v2/v3 客户端读到 v4 服务端凭证时能安全忽略后缀。
+            out.writeShort(0);
+            out.writeUTF(originHost);
+            out.writeInt(originPort);
             out.flush();
         } catch (IOException e) {
             // ByteArrayOutputStream 不会真的抛 IO 异常
@@ -198,8 +223,10 @@ public final class Credentials {
             String key = in.readUTF();
             params.put(key, in.readUTF());
         }
-        // v3 的参数表后曾有一段「客户端策略」（policy）。该机制已移除，
-        // 但玩家缓存目录里可能还躺着 v3 凭证——读到时整段跳过即可。
+        // v3 的参数表后曾有一段「客户端策略」（policy）。v4 仍保留
+        // 这个表头（固定为空），再追加客户端观测到的 MC 入口。
+        String originHost = "";
+        int originPort = 0;
         if (version >= 3 && in.available() >= 2) {
             int policyCount = in.readUnsignedShort();
             for (int i = 0; i < policyCount; i++) {
@@ -207,9 +234,15 @@ public final class Credentials {
                 in.readUTF(); // value，丢弃
             }
         }
+        if (version >= 4 && in.available() >= 2) {
+            originHost = in.readUTF();
+            if (in.available() >= 4) {
+                originPort = in.readInt();
+            }
+        }
         // 版本更高时后面可能还有字段，直接不读，保持向后兼容
         try {
-            return new Credentials(backendId, params, punchTimeoutMs);
+            return new Credentials(backendId, params, punchTimeoutMs, originHost, originPort);
         } catch (IllegalArgumentException e) {
             // 数据完整但内容非法（如缺 room），统一按损坏凭证处理
             throw new IOException("凭证内容非法: " + e.getMessage());
@@ -241,7 +274,7 @@ public final class Credentials {
     public Credentials withExtraParams(Map<String, String> extra) {
         Map<String, String> merged = new LinkedHashMap<String, String>(params);
         merged.putAll(extra);
-        return new Credentials(backendId, merged, punchTimeoutMs);
+        return new Credentials(backendId, merged, punchTimeoutMs, originHost, originPort);
     }
 
     /**
@@ -264,7 +297,30 @@ public final class Credentials {
                 merged.put(e.getKey(), e.getValue());
             }
         }
-        return new Credentials(backendId, merged, punchTimeoutMs);
+        return new Credentials(backendId, merged, punchTimeoutMs, originHost, originPort);
+    }
+
+    /**
+     * 附上这份凭证的 Minecraft 入口（原对象不变）。
+     *
+     * <p>这不是 backend 参数，也不代表 Netherway 在管理服务器；它只是
+     * 最小的客户端命名空间。两台服务器可以合理地使用完全相同的
+     * backend/room，没有来源地址就无法在本地同时保留两份凭证。
+     */
+    public Credentials withOrigin(String host, int port) {
+        return new Credentials(backendId, params, punchTimeoutMs, host, port);
+    }
+
+    public boolean hasOrigin() {
+        return !originHost.isEmpty() && originPort > 0;
+    }
+
+    public String originHost() {
+        return originHost;
+    }
+
+    public int originPort() {
+        return originPort;
     }
 
     /**
@@ -326,10 +382,21 @@ public final class Credentials {
     }
 
     /**
-     * 重复凭证识别键。切换连接后玩家会重新登录，服务端会再下发一次凭证，
-     * {@link UpgradeController} 靠这个键识别「同一个目标」以避免升级死循环。
+     * 重复凭证识别键。新凭证用「backend + MC 入口 + room」，因此不同
+     * 服务器即使使用相同房间名也不会互相覆盖。切换连接后服务端重发凭证时，
+     * {@link UpgradeController} 靠这个键避免重复升级死循环。
      */
     public String dedupKey() {
+        if (hasOrigin()) {
+            return backendId + ":" + originHost + ":" + originPort + ":" + room();
+        }
+        // 兼容旧缓存。新的预取/登录路径都会先补 origin，
+        // 这个退路只用于让升级后的首次启动仍能尝试老凭证。
+        return legacyDedupKey();
+    }
+
+    /** 旧版只按 backend/room 命名；仅用于缓存迁移。 */
+    String legacyDedupKey() {
         return backendId + ":" + room();
     }
 

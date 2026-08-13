@@ -1,4 +1,4 @@
-# platform/forge-1.7.10 — GTNH 目标版本的适配层
+# platform/forge-1.7.10 — Forge 1.7.10 适配层
 
 core 的 Forge 1.7.10 接线。同一个 jar 同时装在服务端与客户端：
 
@@ -6,17 +6,17 @@ core 的 Forge 1.7.10 接线。同一个 jar 同时装在服务端与客户端�
   经自定义频道 `netherway` 下发。走的是 Minecraft 原生 plugin channel，
   将来换 Bukkit/Sponge 插件下发也不用改客户端。
 - **客户端半边**（`ClientProxy` 接线）：收到凭证交给 core 的 `UpgradeController`，
-  打洞成功后经 `ForgeClientBridge` 切换连接。凭证同时落进本地缓存：下次启动时
-  FML 加载期就用它预热隧道（core 的 `WarmupController`），并在服务器列表里
-  维护一个直连条目（`DirectServerEntry`，默认名 `[P2P直连] <房间>`）——
-  玩家可直接选它进服；就算故意走中转，进服后也会复用预热隧道切回直连。
+  打洞成功后经 `ForgeClientBridge` 切换连接。凭证按 Minecraft 入口分开缓存；
+  FML 加载期并行预取所有候选，`WarmupController` 再串行打洞、同时守望
+  已建立的多条隧道。`DirectServerEntry` 为每个服务维护一条
+  `[P2P直连] <房间> (<入口>)`；只提供建联入口，不排名、不自动选服。
 
 没装 mod 的客户端照常进服（`acceptableRemoteVersions = "*"`），
 凭证包会被它们静默忽略——本 mod 是纯增强，不构成准入门槛。
 
 ## 构建
 
-1.7.10 的构建绕不开反混淆/重混淆，用的是 GTNH 自家的
+1.7.10 的构建绕不开反混淆/重混淆，用的是
 [RetroFuturaGradle](https://github.com/GTNewHorizons/RetroFuturaGradle)
 （老 ForgeGradle 1.2 的下载源早已失效）。Gradle 进程需要 Java 21+，
 编译产物经 toolchain 固定为 Java 8 字节码，两不相干。
@@ -41,78 +41,46 @@ curl -L -C - -O $BASE/retrofuturagradle-1.4.9.jar -O $BASE/retrofuturagradle-1.4
 
 ## 服务端配置
 
-**不必为了生成配置骨架先空跑一次服务端**：启动前直接把下面的内容存成
-`config/netherway.cfg`（跟 mods 目录平级的那个 config），改好占位符再启动，
-一次到位。没写的键按默认值处理；语法写错也不会炸服——mod 会记一条
-错误日志并按默认值运行（即不下发凭证），改好后重启生效。
+首次启动会生成 `config/netherway.cfg`（跟 mods 目录平级的那个 config）。
+新配置默认开启内嵌会合点，关键部分如下；公网侧只需把玩家使用的 TCP 入口
+转发到 Minecraft 端口，不需要自建 frps，也不需要修改这些值：
 
 ```
-# netherway 服务端配置。此文件含密钥，注意文件权限。
-
 server {
     B:enabled=true
-    S:backend=frp-xtcp
-
-    # 随服务端启动内置 serve，用下面的 params 把本地端口注册为房间代理。
-    # 已在宿主机单独运行 netherway serve、或托管环境禁止子进程时设为 false。
     B:runAgent=true
-    # 内置 serve 发布的本地端口，0 表示用服务器实际监听的端口
-    I:localPort=0
-
-    # 内嵌会合点：不再连公网 frps，改在本机起一个只监听回环的会合点，
-    # 玩家的 frp 控制连接由本 mod 从 Minecraft 端口转发进去。开启后公网那台
-    # 机器只需要把 TCP 转到 Minecraft 端口——不装插件、不必支持 xtcp、
-    # 不必与本 mod 同版本，租来的隧道服务也能用。需要 runAgent=true。
-    # 开启时下面 params 里的 server / serverPort 会被忽略（客户端自己推导）；
-    # token 不必是真的（只有内嵌会合点会校验它），写 auto 即每次启动随机轮换。
-    B:rendezvous=false
-
-    # backend 参数，每行一个 key=value；# 开头的行会被忽略
+    B:rendezvous=true
     S:params <
-        server=frps.example.com
-        serverPort=7000
-        token=换成frps的auth.token
-        stun=stun.miwifi.com:3478,stun.easyvoip.com:3478,stun.qq.com:3478
-        room=gtnh
-        # 写具体值须与宿主机 serve 端一致；runAgent=true 时推荐写 auto——
-        # 每次启动随机生成，玩家缓存的旧凭证随重启失效，走一次中转自动更新
+        # 默认内嵌会合点所需参数，保持原样即可
+        token=auto
+        room=minecraft
         secret=auto
      >
-
-    # 建议客户端使用的打洞超时秒数；0 表示由客户端自己配置
-    I:punchTimeoutSeconds=0
-
-    # ---- 以下三项配合 frps 侧的 authplugin（可选，见下节）----
-    # 每玩家令牌的签发密钥，非空即启用；须与 authplugin 的 -key 一致
-    S:tokenSigningKey=
-    # 每玩家令牌的有效天数，每次登录自动续签
-    I:tokenTtlDays=30
-    # 内置 serve 向 authplugin 表明身份的静态令牌（-static-token 同值）
-    S:serveAuthToken=
-
-    # ---- PROXY protocol（可选）----
-    # 让隧道进程连本地 MC 端口前先发 PROXY protocol 头（填 v1 或 v2，留空关闭）。
-    # 开启后 mod 自动给服务端接入链装剥头组件，登录日志与封禁看到的是玩家
-    # 真实来源地址而不是 127.0.0.1。当前 frp 只有 stcp 中转路径实际带头，
-    # xtcp 的 P2P 流等上游支持（fatedier/frp#2748）后自动生效。
-    # runAgent=false 时须给独立运行的 serve 手动加同值的 -proxy-protocol 旗标。
-    S:proxyProtocol=
 }
 ```
 
+`token=auto` 和 `secret=auto` 会在内存中生成本次启动使用的随机值，cfg 文件里
+仍保持 `auto`；`room` 只是显示和命名用，想改名时只改它即可。高级鉴权用的
+`server.tokenSigningKey` / `server.serveAuthToken` 默认不会生成，以免和
+`server.params` 里的登录令牌混淆；需要时按下节手工加入。
+
+自建 frps 时才把 `server.rendezvous` 改成 `false`，并把整个 `server.params`
+列表替换为 README 顶层文档中的自建 frps 示例。
+
 注意 cfg 的语法细节：键有类型前缀（`B:` 布尔、`S:` 字符串、`I:` 整数），
 列表以 `S:params <` 开始、单独一行的 `>` 结束。配置只在启动时读取，
-改动需重启。
+改动需重启。语法错误不会炸服：mod 会记录错误并在本次启动关闭服务端直连，
+修正后重启即可。
 
 `params` 是通用 key=value 列表：凭证本来就是「backend 标识 + 参数表」，
 换隧道方案时这里跟着换键名即可，mod 代码零改动。键名契约与 Go 侧
 backend 实现（如 `internal/backend/frpxtcp`）保持一致。
 
 **客户端零配置即用**，什么都不用填。默认 `client.prewarm=true` 且 `client.prefetch=true`：
-游戏启动时自动向服务器列表（server.dat）里的服务器预取凭证并后台打洞，
-首次启动即直连——不必先经中转进服拿凭证。要关掉预热/直连条目、改条目名
-（`directEntryName`）、固定预热端口（`prewarmPort`）或调时间参数，同一路径
-的 cfg 里写 `client` 类目（键见 `ModConfig`），也是启动前手写即可。
+游戏启动时向 server.dat 里的候选并行预取，为每个成功应答的服务保留独立凭证。
+打洞阶段严格串行，已建立的隧道可并存；一个服务的失败/退避不阻塞其他服务。
+要关掉预热/直连条目、改条目前缀（`directEntryName`）、固定首选预热端口
+（`prewarmPort`）或调时间参数，在同一 cfg 的 `client` 类目中配置即可。
 
 ## 每玩家令牌（可选，frps 侧 authplugin）
 

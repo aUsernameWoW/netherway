@@ -23,6 +23,12 @@ import org.apache.logging.log4j.Logger;
 public final class ModConfig {
 
     private static final Logger LOG = LogManager.getLogger(Netherway.MODID);
+    private static final String[] DEFAULT_RENDEZVOUS_PARAMS = {
+        "# 默认内嵌会合点所需参数，保持原样即可",
+        "token=auto",
+        "room=minecraft",
+        "secret=auto"
+    };
 
     // ---- server ----
     private final boolean serverEnabled;
@@ -81,32 +87,29 @@ public final class ModConfig {
         }
 
         cfg.setCategoryComment("server",
-                "服务端专用：开启后在玩家登录时下发直连凭证。\n"
-                + "params 的键名契约由 backend 决定，frp-xtcp 需要:\n"
-                + "  server=<frps地址> serverPort=<frps端口> token=<frps令牌>\n"
-                + "  stun=<STUN候选,逗号分隔> room=<房间名> secret=<房间密钥>\n"
-                + "secret=auto 表示每次启动随机生成密钥（推荐，须 runAgent=true）：\n"
-                + "玩家缓存的旧凭证随服务端重启失效，走一次中转即自动拿到新密钥。\n"
-                + "注意: 此文件含密钥，权限只给服务端进程；客户端永远不需要填这些。");
-        serverEnabled = cfg.getBoolean("enabled", "server", false,
-                "是否在玩家登录后下发直连凭证（仅服务端有意义）");
+                "服务端专用。新生成的配置就是推荐的内嵌会合点模式，通常无需修改：\n"
+                + "只要玩家正在使用的公网 TCP 地址能转发到 Minecraft 端口即可。\n"
+                + "需要自建 frps 或更换隧道 backend 时再看 README 的高级配置。\n"
+                + "注意：此文件含自动生成密钥的配置，权限只给服务端进程；\n"
+                + "客户端不需要填写 server 类目。");
+        // 新配置开箱即用；解析失败时仍然 fail closed，不能拿一套与服主原意
+        // 可能完全不同的默认凭证对外提供服务。
+        serverEnabled = cfg.getBoolean("enabled", "server", loadedOk,
+                "服务端直连总开关。默认开启；设为 false 可完全关闭");
         serverRunAgent = cfg.getBoolean("runAgent", "server", true,
-                "随服务端启动内置 serve，用 params 里的参数把本地端口注册为房间代理。\n"
+                "随服务端启动内置 serve。默认模式必须保持 true。\n"
                 + "已在宿主机单独运行 netherway serve、或托管环境禁止启动子进程时设为 false");
         serverLocalPort = cfg.getInt("localPort", "server", 0, 0, 65535,
                 "内置 serve 发布的 Minecraft 本地端口，0 表示使用服务器实际监听的端口");
         backendId = cfg.getString("backend", "server", Credentials.BACKEND_FRP_XTCP,
-                "隧道方案标识，与 agent 的 -backend 一致");
+                "隧道方案标识。保持默认即可；只有实现了其它隧道方案时才修改");
         // 会合点开关必须先于 params 读出来：token=auto 只在会合点模式下成立
         // （经典模式的 token 是公网 frps 的 auth.token，本机生成毫无意义）。
-        boolean rendezvousWanted = cfg.getBoolean("rendezvous", "server", false,
-                "内嵌会合点：不再连公网 frps，改在本机起一个只监听回环的会合点，\n"
-                + "玩家的 frp 控制连接由本 mod 从 Minecraft 端口转发进去。\n"
-                + "公网那台机器因此只需要把 TCP 转到 Minecraft 端口——不装插件、\n"
-                + "不必支持 xtcp、不必与本 mod 同版本，租来的隧道服务也能用。\n"
-                + "需要 runAgent=true。开启后 params 里的 server/serverPort 会被忽略：\n"
-                + "会合点就在本服 Minecraft 端口后面，客户端按自己正连着的地址补齐，\n"
-                + "服务端未必知道自己的公网入口。token 可填 auto 随重启轮换");
+        boolean rendezvousWanted = cfg.getBoolean("rendezvous", "server", true,
+                "推荐且默认模式：在服务端进程内运行会合点。\n"
+                + "玩家的控制连接从 Minecraft 公网入口进入，无需自建 frps 或部署 authplugin。\n"
+                + "保持 runAgent=true；server.params 已带齐开箱即用的参数。\n"
+                + "只有改用自建 frps 时才设为 false，并按 README 替换整个 params 列表");
         if (rendezvousWanted && !serverRunAgent) {
             // 光警告不够：serverCredentials 会据此摘掉地址，若这里仍按开启处理，
             // 就会下发「缺地址却没有会合点」的凭证，玩家全员打洞失败，
@@ -117,7 +120,10 @@ public final class ModConfig {
         serverRendezvous = rendezvousWanted && serverRunAgent;
 
         Map<String, String> params = parseParams(cfg.getStringList("params", "server",
-                new String[0], "backend 参数，每行一个 key=value"), backendId);
+                DEFAULT_RENDEZVOUS_PARAMS.clone(),
+                "隧道参数，每行一个 key=value。默认三项已经可用。\n"
+                + "自建 frps 时才按 README 替换整个列表；高级鉴权项不写在这里"),
+                backendId);
         // secret=auto：每次启动生成随机密钥，等于给玩家侧缓存的凭证上了
         // 「服务端重启周期」的有效期。前提是 runAgent=true——serve 与下发
         // 同源，独立运行的 serve 拿不到这里生成的值。
@@ -151,15 +157,27 @@ public final class ModConfig {
         serverParams = params;
         serverPunchTimeoutSeconds = cfg.getInt("punchTimeoutSeconds", "server", 0, 0, 3600,
                 "建议客户端使用的打洞超时秒数，0 表示由客户端自己配置");
-        tokenSigningKey = cfg.getString("tokenSigningKey", "server", "",
-                "每玩家令牌的签发密钥，非空即启用；须与 frps 侧 authplugin 的 -key 一致。\n"
-                + "启用后每次登录都为该玩家签发绑定其 UUID、带有效期的令牌（user/userToken 参数）");
-        tokenTtlDays = cfg.getInt("tokenTtlDays", "server", 30, 1, 3650,
-                "每玩家令牌的有效天数；每次登录自动续签，只需覆盖玩家两次游玩的间隔");
-        serveAuthToken = cfg.getString("serveAuthToken", "server", "",
-                "内置 serve 向 authplugin 表明身份的静态令牌（与 authplugin 的 -static-token 同值），\n"
-                + "刻意不放进 params——它只属于 serve，绝不能随凭证下发给玩家；\n"
-                + "frps 未部署 authplugin 时留空");
+        // 每玩家鉴权是高级功能。默认配置不生成这三项，避免它们与
+        // server.params 里的会合点令牌挤在一起，让新手误以为必须挑一处填写。
+        // 用户手工加入任意一项后再全部交给 Forge 管理、补注释和范围校验。
+        boolean advancedAuthConfigured = cfg.hasKey("server", "tokenSigningKey")
+                || cfg.hasKey("server", "tokenTtlDays")
+                || cfg.hasKey("server", "serveAuthToken");
+        if (advancedAuthConfigured) {
+            tokenSigningKey = cfg.getString("tokenSigningKey", "server", "",
+                    "【高级鉴权项】每玩家令牌签发密钥。内嵌会合点可直接使用；\n"
+                    + "自建 frps 时须与 authplugin 的 -key 一致。\n"
+                    + "它不是 server.params 中的会合点令牌；具体部署见 README");
+            tokenTtlDays = cfg.getInt("tokenTtlDays", "server", 30, 1, 3650,
+                    "【高级鉴权项】每玩家令牌的有效天数；每次登录自动续签");
+            serveAuthToken = cfg.getString("serveAuthToken", "server", "",
+                    "【自建 frps 高级项】内置 serve 的静态身份令牌，\n"
+                    + "须与 authplugin 的 -static-token 一致，绝不能放进 server.params");
+        } else {
+            tokenSigningKey = "";
+            tokenTtlDays = 30;
+            serveAuthToken = "";
+        }
         String pp = cfg.getString("proxyProtocol", "server", "",
                 "让隧道进程连本地 MC 端口前先发 PROXY protocol 头（填 v1 或 v2，留空关闭）。\n"
                 + "开启后本 mod 会给服务端接入链装嗅探式剥头组件，登录日志与封禁\n"
@@ -178,6 +196,12 @@ public final class ModConfig {
                 + "开启后玩家首次启动、密钥轮换之后都无需先经中转进服。\n"
                 + "不做身份验证——准入交给 MC 服务端自己的白名单与正版验证。\n"
                 + "注意：交换帧不加密，凭证以明文过网");
+        // Forge 默认按字母排序，导致新人先看到 backend/localPort，再在文件末尾
+        // 才发现模式开关。把「能否直接用」的四项放在 server 类目最前面。
+        cfg.setCategoryPropertyOrder("server", java.util.Arrays.asList(
+                "enabled", "rendezvous", "runAgent", "params",
+                "backend", "localPort", "preauth", "punchTimeoutSeconds",
+                "proxyProtocol", "tokenSigningKey", "tokenTtlDays", "serveAuthToken"));
 
         cfg.setCategoryComment("client",
                 "客户端专用：时间参数默认值来自实测，顺利时建链约 2-5 秒。\n"
@@ -186,15 +210,14 @@ public final class ModConfig {
         clientEnabled = cfg.getBoolean("enabled", "client", true,
                 "是否响应服务端下发的凭证并尝试直连");
         clientPrewarm = cfg.getBoolean("prewarm", "client", true,
-                "游戏启动时预热直连隧道（凭证来自预取或上次缓存），并在服务器列表里\n"
-                + "维护一个直连条目，打通后直接选它进服；打不通会按退避周期持续重试。\n"
-                + "关闭后已添加的条目不会被自动删除，手动删即可");
+                "游戏启动时为每份已知服务凭证预热一条直连隧道，并在服务器列表里\n"
+                + "维护对应直连条目。打洞严格串行以避免同 NAT 干扰，已建立隧道可同时存活；\n"
+                + "失败服务各自按退避周期持续重试。关闭后已添加条目需手动删除");
         prewarmPort = cfg.getInt("prewarmPort", "client", 25595, 0, 65535,
                 "预热隧道的本地端口，被占用时自动改用空闲端口（条目地址会跟着更新）；\n"
                 + "0 表示每次随机");
         directEntryName = cfg.getString("directEntryName", "client", "[P2P直连]",
-                "服务器列表中直连条目的名字前缀，同时用于识别并更新该条目；\n"
-                + "整合包可改成服务器名让条目看起来就是「那个服务器」。\n"
+                "服务器列表中直连条目的名字前缀；每个服务会追加房间与来源入口。\n"
                 + "改动后旧名字的条目不再被维护，需手动删除");
         clientPrefetch = cfg.getBoolean("prefetch", "client", true,
                 "启动时直接向 Minecraft 服务器端口预取凭证，\n"
@@ -203,7 +226,7 @@ public final class ModConfig {
         prefetchServers = cfg.getStringList("prefetchServers", "client", new String[0],
                 "预取凭证时要问的 Minecraft 服务器地址，每行一个 host 或 host:port\n"
                 + "（不填端口按 25565）。留空则用服务器列表（server.dat）里的条目。\n"
-                + "整合包可以在这里预置服务器地址，玩家连服务器列表都不必自己加");
+                + "所有成功应答的地址都会被缓存并建立各自的直连条目");
         verboseLogging = cfg.getBoolean("verboseLogging", "client", true,
                 "把直连过程的详细日志（agent 事件、参数键、诊断输出）以 INFO 级别写进游戏日志；\n"
                 + "关闭后这些内容降为 DEBUG 级别（默认日志配置下不可见）");

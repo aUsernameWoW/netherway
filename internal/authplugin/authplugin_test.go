@@ -158,7 +158,7 @@ func TestNewProxyPolicy(t *testing.T) {
 		{"无令牌 legacy 可注册", lenient, "", false},
 	}
 	for _, c := range cases {
-		res := post(t, c.h, "NewProxy", newProxy(c.token, "gtnh-p2p"))
+		res := post(t, c.h, "NewProxy", newProxy(c.token, "survival-p2p"))
 		if res.Reject != c.reject {
 			t.Errorf("%s: reject=%v (原因 %q), want %v",
 				c.name, res.Reject, res.RejectReason, c.reject)

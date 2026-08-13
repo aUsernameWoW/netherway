@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 管理 agent 子进程：启动、读取状态、停止。
  *
  * <p>只用 {@link ProcessBuilder} 和标准 IO，不碰任何 JDK 内部 API——
- * 这套代码编译成 Java 8 字节码，但在 GTNH 的 lwjgl3ify 下会运行在 Java 17+ 上，
+ * 这套代码编译成 Java 8 字节码，也允许兼容层把旧版游戏运行在现代 JVM 上；
  * Java 16 起对内部 API 的强封装会让反射那类做法直接失败。
  */
 public final class AgentProcess implements Closeable {

@@ -26,8 +26,8 @@ public final class ServerCandidates {
      * 候选上限。每个候选都要试着连一次（各带超时），server.dat 很长时
      * 不能把启动期的预取拖成分钟级。
      *
-     * <p>上限只截断 server.dat 推来的猜测：cfg 里显式给出的地址是整合包
-     * 作者的明确指定，一条都不丢，哪怕它们自己就超过了这个数。
+     * <p>上限只截断 server.dat 推来的猜测：cfg 里显式给出的地址是部署者的
+     * 明确指定，一条都不丢，哪怕它们自己就超过了这个数。
      */
     static final int MAX_CANDIDATES = 8;
 

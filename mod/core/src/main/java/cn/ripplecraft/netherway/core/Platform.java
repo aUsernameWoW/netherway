@@ -6,8 +6,7 @@ import java.util.Locale;
  * 识别当前系统，用于从 jar 里挑出正确的 agent 二进制。
  *
  * <p>只依赖 {@code os.name} / {@code os.arch} 两个标准系统属性，
- * 不碰任何 JDK 内部 API——这套代码要在 Java 8 到 21 上都能跑
- * （GTNH 的 lwjgl3ify 会让 1.7.10 运行在 Java 17+ 上）。
+ * 不碰任何 JDK 内部 API——这套代码要在 Java 8 到现代 JVM 上都能跑。
  */
 public final class Platform {
 

@@ -1,8 +1,8 @@
 // Forge 1.7.10 适配层。
 //
 // 1.7.10 的构建绕不开反混淆/重混淆工作区，唯一还活着的工具链是
-// GTNH 的 RetroFuturaGradle（老 ForgeGradle 1.2 依赖的下载源早已失效）。
-// 目标服务器正是 GTNH，与其生态保持一致。
+// RetroFuturaGradle（老 ForgeGradle 1.2 依赖的下载源早已失效）。
+// 这里采用它纯粹是为了获得仍可工作的 Forge 1.7.10 构建工具链。
 //
 // Gradle 本身需要 Java 17+ 运行；编译产物经 toolchain 固定为 Java 8 字节码。
 plugins {

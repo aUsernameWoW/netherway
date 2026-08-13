@@ -15,12 +15,12 @@ import net.minecraft.client.multiplayer.ServerList;
  * 打洞没成时条目 ping 不通，玩家一眼可辨，不需要额外的状态展示；
  * 打通后列表里显示的就是真实的 P2P 延迟。
  *
- * <p>这是玩家视角的唯一入口：预取 + 预热 + 无限重试都收敛到这个条目上，
- * 名字前缀由整合包配置成服务器名后，玩家看到的就是「那个服务器」本身，
- * 与中转在界面上再无关联（中转条目仍留在列表里作为手动退路）。
+ * <p>每份已知服务凭证都有自己的条目。名称只展示房间与凭证来源入口，
+ * 方便玩家区分；Netherway 不排名、不自动选服，仍由玩家点击哪一个条目。
  *
- * <p>按名字前缀识别自己的条目：找到就更新，找不到就新增。玩家改名后
- * mod 不再维护那个条目（视作玩家自己的），下次启动会按前缀重新添加；
+ * <p>按完整名字识别自己的条目：找到就更新端口，找不到就新增。不能只按
+ * 前缀匹配，否则第二个服务会把第一个条目覆盖。玩家改名后 mod 不再维护
+ * 那个条目（视作玩家自己的），下次启动会重新添加；
  * 彻底不要这个条目就关掉 client.prewarm。
  */
 final class DirectServerEntry implements WarmupController.Listener {
@@ -42,19 +42,26 @@ final class DirectServerEntry implements WarmupController.Listener {
         bridge.runOnGameThread(new Runnable() {
             @Override
             public void run() {
-                upsert(cred.room(), port);
+                upsert(cred, port);
             }
         });
     }
 
-    private void upsert(String room, int port) {
-        String name = namePrefix + " " + room;
+    private void upsert(Credentials cred, int port) {
+        String name = entryName(cred);
+        String legacyName = namePrefix + " " + cred.room();
         String address = "127.0.0.1:" + port;
         ServerList list = new ServerList(Minecraft.getMinecraft());
+        ServerData legacy = null;
         for (int i = 0; i < list.countServers(); i++) {
             ServerData entry = list.getServerData(i);
-            if (entry == null || entry.serverName == null
-                    || !entry.serverName.startsWith(namePrefix)) {
+            if (entry == null) {
+                continue;
+            }
+            if (!name.equals(entry.serverName)) {
+                if (legacy == null && legacyName.equals(entry.serverName)) {
+                    legacy = entry;
+                }
                 continue;
             }
             if (name.equals(entry.serverName) && address.equals(entry.serverIP)) {
@@ -67,8 +74,29 @@ final class DirectServerEntry implements WarmupController.Listener {
             bridge.info("已更新服务器列表的直连条目: " + name + " → " + address);
             return;
         }
+        // 旧版名称没有 origin。第一份同房间的新凭证到来时就地升级，
+        // 后续同名房间会正常新增各自的条目，不留一条永久失效的旧入口。
+        if (legacy != null && cred.hasOrigin()) {
+            legacy.serverName = name;
+            legacy.serverIP = address;
+            list.saveServerList();
+            bridge.info("已将旧版直连条目升级为: " + name + " → " + address);
+            return;
+        }
         list.addServerData(new ServerData(name, address));
         list.saveServerList();
         bridge.info("已在服务器列表添加直连条目: " + name + " → " + address);
+    }
+
+    private String entryName(Credentials cred) {
+        StringBuilder name = new StringBuilder(namePrefix).append(' ').append(cred.room());
+        if (cred.hasOrigin()) {
+            name.append(" (").append(cred.originHost());
+            if (cred.originPort() != 25565) {
+                name.append(':').append(cred.originPort());
+            }
+            name.append(')');
+        }
+        return name.toString();
     }
 }

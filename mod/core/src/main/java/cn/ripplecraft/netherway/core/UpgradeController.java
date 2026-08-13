@@ -51,6 +51,8 @@ public final class UpgradeController {
 
     private volatile AgentProcess agent;
     private volatile String activeKey;
+    /** 当前目标的完整客户端凭证，含 MC 入口；直连条目进服后用它补回来源。 */
+    private volatile Credentials activeCredentials;
     /**
      * 本轮升级等待终态的上限（凭证优先，见 {@link Timings#outcomeWaitMs(long)}），
      * 经 {@link WarmupController.UpgradeGate} 公布给预热的让路等待定界。
@@ -124,7 +126,7 @@ public final class UpgradeController {
         // 内嵌会合点模式下服务端不写地址（它未必知道自己的公网入口），
         // 由这里用玩家正连着的地址补齐。必须赶在落盘之前：缓存里那份将来
         // 要供预热直接使用，而预热跑在玩家还没连任何服务器的时候。
-        final Credentials cred = withRendezvousAddress(raw);
+        final Credentials cred = withServerOrigin(raw);
 
         // 每次下发（含重复下发）都刷新缓存：参数可能轮换过，文件修改时间
         // 也用作「最近用过的房间」排序。写盘在后台线程做，netty 线程不碰磁盘。
@@ -153,6 +155,7 @@ public final class UpgradeController {
         synchronized (transition) {
             if (state.compareAndSet(State.IDLE, State.PUNCHING)) {
                 activeKey = cred.dedupKey();
+                activeCredentials = cred;
                 punchWaitBoundMs = timings.outcomeWaitMs(cred.punchTimeoutMs());
                 gen = epoch;
             } else {
@@ -185,20 +188,21 @@ public final class UpgradeController {
         if (reuseWarmTunnel(cred, gen)) {
             return;
         }
-        // 预热正有一轮打洞在飞时先等它出结果：同 NAT 并发打两个洞会互相
-        // 干扰（2026-08-09 实测两边都受伤）。等出来若恰好就绪就直接复用，
-        // 失败则接着走自己的流程——玩家此刻在中转连接上正常游戏，等得起。
-        if (awaitWarmupAttempt() && reuseWarmTunnel(cred, gen)) {
-            return;
-        }
-        // 从这里开始已确定不走预热复用；平台检测、解压和进程
-        // 启动都可能在 STARTING 事件前失败，所以要先固定失败来源。
-        if (!selectColdAgent(gen)) {
-            bridge.debug("忽略过期升级：复位后不再启动冷 agent");
-            return;
-        }
+        // 多服务预热会依次打洞。升级侧在起自己的 agent 前先预留门闩：
+        // 等当前预热收尾，同时阻止它抢先开始下一个服务。
+        final boolean reservedWarmup = warmup != null && warmup.reserveUpgradePunch();
         AgentProcess proc = null;
         try {
+            // 等待期间当前房间可能恰好 READY，再试一次复用。
+            if (reuseWarmTunnel(cred, gen)) {
+                return;
+            }
+            // 从这里开始已确定不走预热复用；平台检测、解压和进程
+            // 启动都可能在 STARTING 事件前失败，所以要先固定失败来源。
+            if (!selectColdAgent(gen)) {
+                bridge.debug("忽略过期升级：复位后不再启动冷 agent");
+                return;
+            }
             Platform platform = Platform.detect();
             bridge.info("准备直连：平台 " + platform + "，房间 " + cred.room()
                     + "（" + cred.backendId() + "）");
@@ -319,6 +323,10 @@ public final class UpgradeController {
             giveUp(proc, cred, t.getMessage(), gen,
                     QualitySummary.FailureStage.INTERNAL,
                     QualitySummary.FailureCode.INTERNAL_ERROR);
+        } finally {
+            if (reservedWarmup) {
+                warmup.releaseUpgradePunch();
+            }
         }
     }
 
@@ -347,31 +355,6 @@ public final class UpgradeController {
             state.set(State.UPGRADED);
             return true;
         }
-    }
-
-    /**
-     * 预热正在打洞时等它出结果（成败皆可），上限取预热公布的这轮预算
-     * （{@link WarmupController#punchWaitBoundMs}）——预热的 agent 超时可能
-     * 来自服务端下发的凭证，远长于本地配置；用本地配置定界会提前到点、
-     * 起自己的 agent 与预热并发打洞，正是让路要避免的事。轮询在预热出
-     * 结果时立即退出，界只兜预热卡死的底。返回 true 表示确实等过——
-     * 调用方应再试一次复用（预热可能恰好就绪了）。
-     */
-    private boolean awaitWarmupAttempt() {
-        if (warmup == null || !warmup.punching()) {
-            return false;
-        }
-        bridge.info("预热正在打洞，等它出结果再决定（避免并发打洞互相干扰）");
-        long deadline = System.currentTimeMillis() + warmup.punchWaitBoundMs();
-        while (warmup.punching() && System.currentTimeMillis() < deadline) {
-            try {
-                Thread.sleep(timings.probeIntervalMs());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return true;
-            }
-        }
-        return true;
     }
 
     /**
@@ -433,6 +416,7 @@ public final class UpgradeController {
             adopted = state.compareAndSet(State.IDLE, State.UPGRADED);
             if (adopted) {
                 activeKey = cred.dedupKey();
+                activeCredentials = cred;
                 lastReady = ready;
                 adoptedDirect = true;
                 telemetrySource = QualitySummary.Source.DIRECT_ENTRY;
@@ -451,46 +435,57 @@ public final class UpgradeController {
         return true;
     }
 
-    /** 后台把凭证写进缓存；缓存是尽力而为的优化，失败绝不影响升级流程。 */
     /**
-     * 凭证缺会合点地址时，用玩家正连着的服务器地址补齐。
+     * 把玩家当前选中的 Minecraft 入口附到凭证，并顺便补齐内嵌会合点地址。
      *
-     * <p>地址取自平台层的「玩家选中的那台服务器」而不是当前 socket 的对端：
+     * <p>入口不是 backend 配置，只是多服务器客户端的本地命名空间。
+     * 它取自平台层的「玩家选中的那台服务器」而不是当前 socket 的对端：
      * 升级成功后玩家会重连到本机直连条目，那时对端是回环地址，服务端此刻
      * 还会再下发一次凭证（重复分支），用对端地址补就会把回环写进缓存，
      * 下一轮预热便会让 agent 去连自己的回环。{@link ClientBridge#currentServerAddress}
      * 的契约要求实现返回原始服务器，拿不准时返回 null。
      *
-     * <p>补不上也照常往下走：agent 那边缺 {@code server} 会响亮报错，
-     * 比在这里悄悄拦下更好排查——而缺 {@code serverPort} 反而会静默落到
-     * frp 的默认 7000，所以两个键必须一起补，绝不能只补一个。
+     * <p>经预热条目进服时平台层只能看到回环。此时用采认时保存的
+     * {@link #activeCredentials} 回补；这份状态只属于当前连接，换服时会被清空。
      */
-    private Credentials withRendezvousAddress(Credentials cred) {
-        if (!cred.needsRendezvousAddress()) {
-            return cred;
-        }
+    private Credentials withServerOrigin(Credentials cred) {
         ServerCandidates.Address at = bridge.currentServerAddress();
+        Credentials active = activeCredentials;
+        if (at == null && active != null && active.hasOrigin()
+                && active.backendId().equals(cred.backendId())
+                && active.room().equals(cred.room())) {
+            at = ServerCandidates.Address.of(active.originHost(), active.originPort());
+        }
         if (at == null) {
-            bridge.warn("凭证未带会合点地址，而当前连接的服务器地址也推导不出来，"
-                    + "直连多半会失败（服务端若开着 server.rendezvous，"
-                    + "请确认玩家是从服务器列表进服的）", null);
+            if (cred.needsRendezvousAddress()) {
+                bridge.warn("凭证未带会合点地址，而当前连接的服务器地址也推导不出来，"
+                        + "直连多半会失败", null);
+            } else {
+                bridge.debug("无法确定凭证的 Minecraft 入口，本次不写多服务缓存");
+            }
             return cred;
         }
-        bridge.debug("凭证未带会合点地址，按当前连接补为 " + at);
-        return cred.rendezvousAt(at.host, at.port);
+        Credentials withOrigin = cred.withOrigin(at.host, at.port);
+        if (withOrigin.needsRendezvousAddress()) {
+            bridge.debug("凭证未带会合点地址，按当前连接补为 " + at);
+            withOrigin = withOrigin.rendezvousAt(at.host, at.port);
+        }
+        return withOrigin;
     }
 
+    /** 后台把凭证写进缓存；缓存是尽力而为的优化，失败绝不影响升级流程。 */
     private void rememberAsync(final Credentials cred) {
         if (cache == null) {
             return;
         }
-        // 没补上会合点地址的凭证绝不落盘：缓存按房间同文件覆盖，这份残废版
-        // 会把之前带地址的好凭证盖掉，下次启动预热直接瘫痪（2026-08-09 实测：
+        // 没补上会合点地址或入口的凭证绝不落盘：这种不完整版本既无法参与
+        // 多服务命名，也可能盖掉之前的可用凭证（2026-08-09 实测：
         // 切换后地址推导不出，重复下发的凭证把缓存污染，预热从此起不来）。
         // 跳过的代价可忽略——补不上地址意味着推导失败，参数真轮换过的新凭证
         // 一定是经真实服务器地址的连接送达的，那条路补得上。
-        if (cred.needsRendezvousAddress()) {
-            bridge.debug("凭证缺会合点地址，不写入缓存（保留缓存中已有的版本）");
+        if (cred.needsRendezvousAddress() || !cred.hasOrigin()) {
+            bridge.debug("凭证缺会合点地址或 Minecraft 入口，"
+                    + "不写入多服务缓存（保留已有版本）");
             return;
         }
         Thread worker = new Thread(new Runnable() {
@@ -655,6 +650,7 @@ public final class UpgradeController {
             source = telemetrySource;
             agent = null;
             activeKey = null;
+            activeCredentials = null;
             punchWaitBoundMs = 0;
             lastReady = null;
             upgradeReported = false;

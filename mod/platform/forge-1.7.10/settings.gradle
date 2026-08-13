@@ -1,11 +1,11 @@
-// RetroFuturaGradle 及其依赖都发布在 GTNH 的 nexus 上；
+// RetroFuturaGradle 及其依赖都发布在上游 nexus 上；
 // 放在最前，plugins.gradle.org 只作后备（国内网络下它常不可达）。
 pluginManagement {
     repositories {
         // 网络不稳时可先用 curl 断点续传把大件补进 ~/.m2（gradle 自己不会续传）
         mavenLocal()
         maven {
-            name = 'GTNH'
+            name = 'RFG upstream'
             url = 'https://nexus.gtnewhorizons.com/repository/public/'
         }
         gradlePluginPortal()

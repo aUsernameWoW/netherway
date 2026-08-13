@@ -19,10 +19,9 @@ import java.util.Set;
 /**
  * 凭证的本地缓存：把服务端下发的凭证落盘，供下次启动时预热直连。
  *
- * <p>玩家首次进服仍要等服务端下发；从第二次启动起，游戏加载期间就能用
- * 缓存凭证提前打洞（{@link WarmupController}）。凭证轮换（如 secret 随
- * 服务端重启更换）后缓存自然失效：预热打不通 → 玩家走一次中转 → 登录后
- * 拿到新凭证覆盖缓存——整个闭环不需要玩家或服主做任何事。
+ * <p>每个 Minecraft 入口各有一份缓存，{@link WarmupController} 会为它们
+ * 串行打洞、同时守望已建立的多条隧道。凭证轮换（如 secret 随服务端
+ * 重启更换）后，预取或下次登录会只替换该入口的凭证，其他服务不受影响。
  *
  * <p><b>刻意不加密。</b>解密密钥必须与密文放在同一台机器上，加密对玩家
  * 本人只是混淆。凭证本来就会完整出现在玩家的内存与 agent 命令行里，
@@ -31,8 +30,8 @@ import java.util.Set;
  */
 public final class CredentialCache {
 
-    /** 连过几个服就有几份缓存；只留最近几份，目录不会无限膨胀。 */
-    private static final int MAX_ENTRIES = 4;
+    /** 多服务器客户端会为每个入口保留一份；仍设高位上限防止无界增长。 */
+    private static final int MAX_ENTRIES = 32;
     private static final String SUFFIX = ".cred";
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
@@ -48,10 +47,10 @@ public final class CredentialCache {
     }
 
     /**
-     * 写入（或覆盖）一份凭证。同一房间（{@link Credentials#dedupKey()}）
+     * 写入（或覆盖）一份凭证。同一建联目标（{@link Credentials#dedupKey()}）
      * 始终落在同一个文件上，文件修改时间即「最近使用」的排序依据。
      */
-    public void store(Credentials cred) throws IOException {
+    public synchronized void store(Credentials cred) throws IOException {
         Files.createDirectories(dir);
         Path target = dir.resolve(fileNameOf(cred.dedupKey()));
         // 先写临时文件再原子改名：与 BinaryStore 同一纪律，
@@ -70,6 +69,14 @@ public final class CredentialCache {
         } finally {
             Files.deleteIfExists(tmp);
         }
+        // v1.0 之前只按 backend/room 命名。新凭证已附带 MC 入口时，
+        // 旧文件已经被这份更精确的凭证取代，留着只会多起一条重复隧道。
+        if (cred.hasOrigin()) {
+            Path legacy = dir.resolve(fileNameOf(cred.legacyDedupKey()));
+            if (!legacy.equals(target)) {
+                deleteQuietly(legacy);
+            }
+        }
         prune(target);
     }
 
@@ -79,15 +86,26 @@ public final class CredentialCache {
      * <p>损坏的缓存文件直接删掉并尝试下一份——缓存丢了最多退化成
      * 「首次进服」的体验，绝不能因为一个坏文件卡住预热流程。
      */
-    public Credentials loadMostRecent() throws IOException {
+    public synchronized Credentials loadMostRecent() throws IOException {
+        List<Credentials> all = loadAll();
+        return all.isEmpty() ? null : all.get(0);
+    }
+
+    /**
+     * 按最近使用顺序读出全部可用凭证。多服务器预热以此为输入，
+     * 但缓存仍只是建联材料，不在这里引入“服务器管理”概念。
+     * 损坏文件与单份读取一样直接清理并跳过。
+     */
+    public synchronized List<Credentials> loadAll() throws IOException {
+        List<Credentials> out = new ArrayList<Credentials>();
         for (Path f : listNewestFirst()) {
             try {
-                return Credentials.decode(Files.readAllBytes(f));
+                out.add(Credentials.decode(Files.readAllBytes(f)));
             } catch (IOException corrupt) {
                 deleteQuietly(f);
             }
         }
-        return null;
+        return out;
     }
 
     /** 按修改时间从新到旧列出缓存文件。 */

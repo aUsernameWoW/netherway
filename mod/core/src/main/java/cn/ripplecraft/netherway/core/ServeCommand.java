@@ -12,7 +12,7 @@ import java.util.Map;
  * <p>serve 是 frp 专用的独立工具、不走 backend 抽象，所以这里的键名映射
  * 是 frp-xtcp 专属的：把服务端配置里的参数表翻译成 serve 的旗标。
  * 关键在于参数表与下发给客户端的凭证**同源**——凭证和代理注册永远一致，
- * 不会出现「客户端拿着 test 房间的凭证，宿主机却注册着 gtnh-p2p」的漂移。
+ * 不会出现「客户端拿着 test 房间的凭证，宿主机却注册着 production-p2p」的漂移。
  */
 public final class ServeCommand {
 

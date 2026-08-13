@@ -28,7 +28,7 @@ PKG=github.com/aUsernameWoW/netherway/internal/config
 
 : "${SERVER_ADDR:?请设置 SERVER_ADDR（frps 公网地址），经环境变量或 build.env}"
 SERVER_PORT="${SERVER_PORT:-7000}"
-ROOM="${ROOM:-gtnh}"
+ROOM="${ROOM:-minecraft}"
 # 逗号分隔的候选列表，与 internal/config 的默认一致：单台 STUN 会间歇性
 # 超时，agent 启动前会并行探测并选用当场验证过的一台。
 STUN="${STUN:-stun.miwifi.com:3478,stun.easyvoip.com:3478,stun.qq.com:3478}"

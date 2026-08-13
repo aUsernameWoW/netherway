@@ -55,6 +55,7 @@ public final class SelfTest {
         testCredentialCacheRoundTrip();
         testCredentialCacheKeepsMostRecent();
         testCredentialCacheSkipsCorrupt();
+        testCredentialCacheMigratesLegacyKey();
         testCredentialCachePrunes();
         testBuildCommandBindPort();
         testAdoptDirectConnection();
@@ -70,6 +71,7 @@ public final class SelfTest {
         testServerCandidatesFromServerList();
         testServerCandidatesConfigFirst();
         testServerCandidatesCap();
+        testPrefetchStoresAllServices();
         testPreauthFrameRoundTrip();
         testPreauthFrameSniff();
         testPreauthFrameIncremental();
@@ -234,7 +236,7 @@ public final class SelfTest {
 
     private static void testCredentialsRoundTrip() throws Exception {
         Credentials orig = Credentials.frpXtcp("203.0.113.10", 7000, "tok3n",
-                "stun.miwifi.com:3478", "gtnh", "s3cr3t", 15000);
+                "stun.miwifi.com:3478", "survival", "s3cr3t", 15000);
         Credentials back = Credentials.decode(orig.encode());
 
         check("往返 backend", Credentials.BACKEND_FRP_XTCP.equals(back.backendId()));
@@ -242,7 +244,7 @@ public final class SelfTest {
         check("往返 serverPort 参数", "7000".equals(back.param("serverPort")));
         check("往返 token 参数", "tok3n".equals(back.param("token")));
         check("往返 stun 参数", "stun.miwifi.com:3478".equals(back.param("stun")));
-        check("往返 room", back.room().equals("gtnh"));
+        check("往返 room", back.room().equals("survival"));
         check("往返 secret 参数", "s3cr3t".equals(back.param("secret")));
         check("往返 timeout", back.punchTimeoutMs() == 15000);
         check("参数保持下发顺序",
@@ -254,19 +256,25 @@ public final class SelfTest {
         Credentials cnBack = Credentials.decode(cn.encode());
         check("往返中文房间名", cnBack.room().equals("青金石小镇"));
         check("往返中文密钥", "密钥#1".equals(cnBack.param("secret")));
+
+        Credentials withOrigin = orig.withOrigin("Play.Example.COM", 25566);
+        Credentials originBack = Credentials.decode(withOrigin.encode());
+        check("往返凭证来源主机", originBack.hasOrigin()
+                && "play.example.com".equals(originBack.originHost()));
+        check("往返凭证来源端口", originBack.originPort() == 25566);
     }
 
     private static void testCredentialsGenericBackend() throws Exception {
         // 核心承诺：新增隧道方案时 core 无需任何改动。
         // 用一个 core 从未听说过的 backend 走一遍编解码验证这一点。
         java.util.Map<String, String> p = new java.util.LinkedHashMap<String, String>();
-        p.put(Credentials.PARAM_ROOM, "gtnh");
+        p.put(Credentials.PARAM_ROOM, "survival");
         p.put("endpoint", "relay.example.com:443");
         p.put("auth", "k3y");
         Credentials back = Credentials.decode(new Credentials("hysteria2", p, 8000).encode());
         check("未知 backend 原样往返", back.backendId().equals("hysteria2"));
         check("未知参数原样往返", "relay.example.com:443".equals(back.param("endpoint")));
-        check("未知 backend 也有房间名", back.room().equals("gtnh"));
+        check("未知 backend 也有房间名", back.room().equals("survival"));
     }
 
     private static void testCredentialsV1Compat() throws Exception {
@@ -278,7 +286,7 @@ public final class SelfTest {
         out.writeInt(7000);
         out.writeUTF("tok");
         out.writeUTF("stun:1");
-        out.writeUTF("gtnh");
+        out.writeUTF("survival");
         out.writeUTF("sec");
         out.writeInt(3000);
 
@@ -286,19 +294,71 @@ public final class SelfTest {
         check("v1 识别为 frp-xtcp", Credentials.BACKEND_FRP_XTCP.equals(v1.backendId()));
         check("v1 字段映射到参数", "1.2.3.4".equals(v1.param("server"))
                 && "sec".equals(v1.param("secret")));
-        check("v1 房间名", v1.room().equals("gtnh"));
+        check("v1 房间名", v1.room().equals("survival"));
         check("v1 超时", v1.punchTimeoutMs() == 3000);
     }
 
     private static void testCredentialsForwardCompat() throws Exception {
-        // 未来版本在尾部追加字段时，老客户端读已知前缀、忽略其余
-        byte[] v2 = Credentials.frpXtcp("h", 1, "t", "s:1", "gtnh", "k", 0).encode();
-        byte[] v3 = new byte[v2.length + 5];
-        System.arraycopy(v2, 0, v3, 0, v2.length);
-        v3[0] = 3;
-        Credentials fut = Credentials.decode(v3);
-        check("未来版本读已知前缀", fut.room().equals("gtnh"));
+        // 未来版本在 v4 尾部追加字段时，当前客户端读已知前缀、忽略其余。
+        byte[] v4 = Credentials.frpXtcp("h", 1, "t", "s:1", "survival", "k", 0)
+                .withOrigin("play.example.com", 25565).encode();
+        byte[] v5 = new byte[v4.length + 5];
+        System.arraycopy(v4, 0, v5, 0, v4.length);
+        v5[0] = 5;
+        Credentials fut = Credentials.decode(v5);
+        check("未来版本读已知前缀", fut.room().equals("survival"));
         check("未来版本参数完整", "t".equals(fut.param("token")));
+        check("未来版本保留已知 origin", fut.hasOrigin()
+                && "play.example.com".equals(fut.originHost()));
+
+        // v3 的尾部是已废弃的 policy 表。玩家缓存里可能仍有这种凭证，
+        // 必须完整跳过，而不能把 policy 错当成 v4 origin。
+        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+        java.io.DataOutputStream out = new java.io.DataOutputStream(buf);
+        out.writeByte(3);
+        out.writeUTF(Credentials.BACKEND_FRP_XTCP);
+        out.writeInt(1234);
+        out.writeShort(1);
+        out.writeUTF(Credentials.PARAM_ROOM);
+        out.writeUTF("legacy-room");
+        out.writeShort(1);
+        out.writeUTF("oldPolicy");
+        out.writeUTF("ignored");
+        out.flush();
+        Credentials v3 = Credentials.decode(buf.toByteArray());
+        check("v3 policy 尾部仍能解码", "legacy-room".equals(v3.room()));
+        check("v3 policy 不会冒充 origin", !v3.hasOrigin());
+
+        // 当前服务端也会 encode v4（origin 留空）。v4 故意保留零长度 policy
+        // 表头，使上一代 decoder 能读完已知前缀并忽略 origin 后缀。
+        check("上一代 decoder 可接受 v4 凭证", "survival".equals(
+                decodeWithLegacyV3Layout(Credentials.frpXtcp(
+                        "h", 1, "t", "s:1", "survival", "k", 0).encode())));
+    }
+
+    private static String decodeWithLegacyV3Layout(byte[] data) throws Exception {
+        java.io.DataInputStream in = new java.io.DataInputStream(
+                new java.io.ByteArrayInputStream(data));
+        int version = in.readUnsignedByte();
+        in.readUTF();
+        in.readInt();
+        int count = in.readUnsignedShort();
+        String room = null;
+        for (int i = 0; i < count; i++) {
+            String key = in.readUTF();
+            String value = in.readUTF();
+            if (Credentials.PARAM_ROOM.equals(key)) {
+                room = value;
+            }
+        }
+        if (version >= 3 && in.available() >= 2) {
+            int policies = in.readUnsignedShort();
+            for (int i = 0; i < policies; i++) {
+                in.readUTF();
+                in.readUTF();
+            }
+        }
+        return room;
     }
 
     private static void testCredentialsValidation() {
@@ -367,18 +427,24 @@ public final class SelfTest {
     }
 
     private static void testCredentialsDedupKey() {
-        Credentials a = Credentials.frpXtcp("h1", 1, "t1", "s:1", "gtnh", "k1", 0);
-        Credentials b = Credentials.frpXtcp("h2", 2, "t2", "s:2", "gtnh", "k2", 9);
+        Credentials a = Credentials.frpXtcp("h1", 1, "t1", "s:1", "survival", "k1", 0);
+        Credentials b = Credentials.frpXtcp("h2", 2, "t2", "s:2", "survival", "k2", 9);
         Credentials c = Credentials.frpXtcp("h1", 1, "t1", "s:1", "other", "k1", 0);
         check("同 backend 同房间去重键一致", a.dedupKey().equals(b.dedupKey()));
         check("不同房间去重键不同", !a.dedupKey().equals(c.dedupKey()));
+        Credentials a1 = a.withOrigin("one.example.com", 25565);
+        Credentials a2 = a.withOrigin("two.example.com", 25565);
+        check("同 backend/room 的不同服务入口不再冲突",
+                !a1.dedupKey().equals(a2.dedupKey()));
+        check("来源主机大小写归一",
+                a1.dedupKey().equals(a.withOrigin("ONE.EXAMPLE.COM", 25565).dedupKey()));
     }
 
     // ---------- AgentProcess 命令行 ----------
 
     private static void testBuildCommand() {
         Credentials cred = Credentials.frpXtcp("1.2.3.4", 7000, "tok",
-                "stun.miwifi.com:3478", "gtnh", "sec", 0);
+                "stun.miwifi.com:3478", "survival", "sec", 0);
         List<String> cmd = AgentProcess.buildCommand(
                 Paths.get("/tmp/netherway"), cred, Timings.defaults(),
                 Paths.get("/tmp/tunnel.log"));
@@ -388,7 +454,7 @@ public final class SelfTest {
         int at = cmd.indexOf("-backend");
         check("指定 backend", at >= 0 && Credentials.BACKEND_FRP_XTCP.equals(cmd.get(at + 1)));
         check("server 经 -O 传递", cmd.contains("-O") && cmd.contains("server=1.2.3.4"));
-        check("room 经 -O 传递", cmd.contains("room=gtnh"));
+        check("room 经 -O 传递", cmd.contains("room=survival"));
         check("secret 经 -O 传递", cmd.contains("secret=sec"));
         check("默认超时 15s", cmd.contains("15.000"));
         check("固定开启 agent 详细日志", cmd.contains("-v"));
@@ -397,7 +463,7 @@ public final class SelfTest {
 
         // 服务端下发的超时应当覆盖客户端默认值
         Credentials override = Credentials.frpXtcp("1.2.3.4", 7000, "tok",
-                "stun:1", "gtnh", "sec", 3000);
+                "stun:1", "survival", "sec", 3000);
         List<String> cmd2 = AgentProcess.buildCommand(
                 Paths.get("/tmp/netherway"), override, Timings.defaults(), null);
         check("服务端超时优先", cmd2.contains("3.000") && !cmd2.contains("15.000"));
@@ -406,7 +472,7 @@ public final class SelfTest {
 
     private static void testDescribeCommandMasksValues() {
         Credentials cred = Credentials.frpXtcp("203.0.113.7", 7000, "SUPER_TOKEN",
-                "stun:1", "gtnh", "SUPER_SECRET", 0);
+                "stun:1", "survival", "SUPER_SECRET", 0);
         String desc = AgentProcess.describeCommand(AgentProcess.buildCommand(
                 Paths.get("/tmp/netherway"), cred, Timings.defaults(),
                 Paths.get("/tmp/tunnel.log")));
@@ -432,15 +498,15 @@ public final class SelfTest {
 
     private static void testUpgradeReportRoundTrip() throws Exception {
         UpgradeReport ok = UpgradeReport.decode(
-                UpgradeReport.upgraded("gtnh", 31, 1792).encode());
+                UpgradeReport.upgraded("survival", 31, 1792).encode());
         check("成功回执往返", ok.isUpgraded());
-        check("成功回执房间", "gtnh".equals(ok.room()));
+        check("成功回执房间", "survival".equals(ok.room()));
         check("成功回执延迟", ok.rttMs() == 31);
         check("成功回执耗时", ok.elapsedMs() == 1792);
         check("成功回执无原因", ok.reason().isEmpty());
 
         UpgradeReport bad = UpgradeReport.decode(
-                UpgradeReport.gaveUp("gtnh", "打洞超时").encode());
+                UpgradeReport.gaveUp("survival", "打洞超时").encode());
         check("失败回执往返", !bad.isUpgraded());
         check("失败回执原因", "打洞超时".equals(bad.reason()));
     }
@@ -462,12 +528,12 @@ public final class SelfTest {
 
     private static void testUpgradeReportForwardCompat() throws Exception {
         // 未来版本在尾部追加字段，老服务端读已知前缀仍能解出
-        byte[] v1 = UpgradeReport.upgraded("gtnh", 31, 1792).encode();
+        byte[] v1 = UpgradeReport.upgraded("survival", 31, 1792).encode();
         byte[] extended = new byte[v1.length + 4];
         System.arraycopy(v1, 0, extended, 0, v1.length);
         extended[0] = 9; // 假装是版本 9，尾部多 4 字节新字段
         UpgradeReport r = UpgradeReport.decode(extended);
-        check("高版本回执读已知前缀", r.isUpgraded() && "gtnh".equals(r.room()));
+        check("高版本回执读已知前缀", r.isUpgraded() && "survival".equals(r.room()));
 
         boolean threw = false;
         try {
@@ -510,7 +576,7 @@ public final class SelfTest {
 
     private static void testCredentialsRendezvousAddress() throws Exception {
         Credentials viaRz = Credentials.frpXtcpViaRendezvous(
-                "TOKEN", "stun.example.com:3478", "gtnh", "SECRET", 15000);
+                "TOKEN", "stun.example.com:3478", "survival", "SECRET", 15000);
         check("会合点凭证不含 server", !viaRz.params().containsKey("server"));
         check("会合点凭证不含 serverPort", !viaRz.params().containsKey("serverPort"));
         check("会合点凭证自报缺地址", viaRz.needsRendezvousAddress());
@@ -524,7 +590,7 @@ public final class SelfTest {
 
         // 服务端明确指定了地址就以服务端为准——它可能有意指向别的入口
         Credentials explicit = Credentials.frpXtcp("frps.example.com", 7000, "T",
-                "stun.example.com:3478", "gtnh", "S", 15000);
+                "stun.example.com:3478", "survival", "S", 15000);
         check("经典凭证不缺地址", !explicit.needsRendezvousAddress());
         Credentials untouched = explicit.rendezvousAt("mc.example.com", 25565);
         check("已有地址不被覆盖",
@@ -540,7 +606,7 @@ public final class SelfTest {
 
         // 别的 backend 的地址键名由它们自己的契约决定，这里不该乱猜
         java.util.Map<String, String> other = new java.util.LinkedHashMap<String, String>();
-        other.put(Credentials.PARAM_ROOM, "gtnh");
+        other.put(Credentials.PARAM_ROOM, "survival");
         Credentials generic = new Credentials("some-other-backend", other, 15000);
         check("非 frp-xtcp 不报缺地址", !generic.needsRendezvousAddress());
         check("非 frp-xtcp 不被塞入 server",
@@ -549,7 +615,7 @@ public final class SelfTest {
         // 编解码要能原样往返（少两个键不影响格式）
         Credentials back = Credentials.decode(viaRz.encode());
         check("会合点凭证编解码往返", back.needsRendezvousAddress()
-                && "gtnh".equals(back.params().get(Credentials.PARAM_ROOM)));
+                && "survival".equals(back.params().get(Credentials.PARAM_ROOM)));
 
         // withDefaultParams 的语义：只补空缺，不覆盖
         java.util.Map<String, String> d = new java.util.LinkedHashMap<String, String>();
@@ -668,7 +734,7 @@ public final class SelfTest {
         // 与 buildCommand 组装的 -timeout 同源：凭证说 1 小时，
         // 命令行就该是 3600 秒，而等待窗口必须比它更长
         Credentials cred = Credentials.frpXtcp("1.2.3.4", 7000, "tok",
-                "stun:1", "gtnh", "sec", 3600000);
+                "stun:1", "survival", "sec", 3600000);
         List<String> cmd = AgentProcess.buildCommand(
                 Paths.get("/tmp/netherway"), cred, t, null);
         int at = cmd.indexOf("-timeout");
@@ -909,6 +975,10 @@ public final class SelfTest {
         return Credentials.frpXtcp("1.2.3.4", 7000, "tok", "stun:1", room, secret, 15000);
     }
 
+    private static Credentials sampleCredAt(String room, String secret) {
+        return sampleCred(room, secret).withOrigin("mc.example.com", 25565);
+    }
+
     private static java.util.List<Path> listCredFiles(Path dir) throws Exception {
         java.util.List<Path> out = new ArrayList<Path>();
         if (!Files.isDirectory(dir)) {
@@ -940,13 +1010,13 @@ public final class SelfTest {
         CredentialCache cache = new CredentialCache(dir);
         check("空缓存返回 null", cache.loadMostRecent() == null);
 
-        cache.store(sampleCred("gtnh", "s1"));
+        cache.store(sampleCred("survival", "s1"));
         Credentials back = cache.loadMostRecent();
-        check("缓存往返房间名", back != null && back.room().equals("gtnh"));
+        check("缓存往返房间名", back != null && back.room().equals("survival"));
         check("缓存往返密钥", back != null && "s1".equals(back.param("secret")));
 
         // 同一房间重复缓存应覆盖同一个文件，而不是越攒越多
-        cache.store(sampleCred("gtnh", "s2"));
+        cache.store(sampleCred("survival", "s2"));
         check("同房间覆盖后取到新值", "s2".equals(cache.loadMostRecent().param("secret")));
         check("同房间只留一个文件", listCredFiles(dir).size() == 1);
     }
@@ -976,21 +1046,39 @@ public final class SelfTest {
         check("坏文件已被清除", !Files.exists(bad));
     }
 
+    private static void testCredentialCacheMigratesLegacyKey() throws Exception {
+        Path dir = Files.createTempDirectory("netherway-cache-migrate");
+        CredentialCache cache = new CredentialCache(dir);
+        cache.store(sampleCred("shared-room", "legacy"));
+        check("迁移前只有 legacy 缓存", listCredFiles(dir).size() == 1);
+
+        cache.store(sampleCred("shared-room", "one")
+                .withOrigin("one.example.com", 25565));
+        List<Credentials> migrated = cache.loadAll();
+        check("带入口凭证会移除同房间 legacy 缓存", migrated.size() == 1);
+        check("迁移后保留入口信息", migrated.get(0).hasOrigin()
+                && "one.example.com".equals(migrated.get(0).originHost()));
+
+        cache.store(sampleCred("shared-room", "two")
+                .withOrigin("two.example.com", 25566));
+        check("同 backend/room 的第二台服务可并存", cache.loadAll().size() == 2);
+    }
+
     private static void testCredentialCachePrunes() throws Exception {
         Path dir = Files.createTempDirectory("netherway-cache4");
         CredentialCache cache = new CredentialCache(dir);
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < 36; i++) {
             cache.store(sampleCred("room-" + i, "k"));
             touch(dir, "room-" + i, 1000L * (i + 1));
         }
-        check("超出上限的旧缓存被清理", listCredFiles(dir).size() <= 4);
-        check("最新的房间仍在", cache.loadMostRecent().room().equals("room-5"));
+        check("超出上限的旧缓存被清理", listCredFiles(dir).size() <= 32);
+        check("最新的房间仍在", cache.loadMostRecent().room().equals("room-35"));
     }
 
     // ---------- 预热与采认 ----------
 
     private static void testBuildCommandBindPort() {
-        Credentials cred = sampleCred("gtnh", "sec");
+        Credentials cred = sampleCred("survival", "sec");
         List<String> cmd = AgentProcess.buildCommand(
                 Paths.get("/tmp/netherway"), cred, Timings.defaults(), null, 25595);
         int at = cmd.indexOf("-port");
@@ -1006,7 +1094,7 @@ public final class SelfTest {
         FakeBridge bridge = new FakeBridge(tmp);
         UpgradeController c = new UpgradeController(bridge, Timings.defaults());
 
-        Credentials cred = sampleCred("room-adopt", "k");
+        Credentials cred = sampleCredAt("room-adopt", "k");
         AgentEvent ready = AgentEvent.parse(
                 "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31,\"elapsedMs\":1792}");
         check("空参不采认", !c.adoptDirectConnection(null, ready));
@@ -1040,16 +1128,23 @@ public final class SelfTest {
         WarmupController warmup = new WarmupController(bridge,
                 new CredentialCache(tmp.resolve("credentials")),
                 Timings.defaults(), null, 0, null);
-        Credentials cred = sampleCred("room-warm", "k");
+        Credentials cred = sampleCredAt("room-warm", "k");
+        Credentials second = sampleCred("room-warm", "k")
+                .withOrigin("second.example.com", 25565);
         AgentEvent ready = AgentEvent.parse(
                 "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31,\"elapsedMs\":1792}");
 
         check("未就绪时查询端口为 null", warmup.readyPort(cred.dedupKey()) == null);
         warmup.injectReadyForTest(cred, ready);
+        warmup.injectReadyForTest(second, AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":25596,\"rttMs\":45,\"elapsedMs\":2000}"));
         check("就绪后按去重键查到端口",
                 Integer.valueOf(25595).equals(warmup.readyPort(cred.dedupKey())));
         check("其他房间查不到", warmup.readyPort("frp-xtcp:other") == null);
         check("按端口反查得到凭证", warmup.credentialsForPort(25595) == cred);
+        check("多服务就绪状态同时保留",
+                Integer.valueOf(25596).equals(warmup.readyPort(second.dedupKey()))
+                        && warmup.credentialsForPort(25596) == second);
         check("错误端口反查为 null", warmup.credentialsForPort(1) == null);
 
         // 玩家经中转进服、服务端下发同房间凭证：应复用预热隧道直接切换，
@@ -1104,7 +1199,7 @@ public final class SelfTest {
     }
 
     private static void testCredentialsWithExtraParams() throws Exception {
-        Credentials base = sampleCred("gtnh", "sec");
+        Credentials base = sampleCred("survival", "sec");
         java.util.Map<String, String> extra = new java.util.LinkedHashMap<String, String>();
         extra.put(Credentials.PARAM_USER, "uuid-1");
         extra.put(Credentials.PARAM_USER_TOKEN, "1893456000.abcd");
@@ -1330,13 +1425,52 @@ public final class SelfTest {
                 new String[] {"cfg.example.com"}, many);
         check("cfg 地址排第一", withCfg.get(0).host.equals("cfg.example.com"));
         check("cfg 地址计入总上限", withCfg.size() == 8);
-        // cfg 自己就超过上限时一条都不能丢：那是整合包作者的明确指定
+        // cfg 自己就超过上限时一条都不能丢：那是部署者的明确指定
         String[] manyCfg = new String[12];
         for (int i = 0; i < manyCfg.length; i++) {
             manyCfg[i] = "cfg" + i + ".example.com";
         }
         check("cfg 地址永不被上限截断",
                 ServerCandidates.build(manyCfg, many).size() == 12);
+    }
+
+    private static void testPrefetchStoresAllServices() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-prefetch-many");
+        FakeBridge bridge = new FakeBridge(tmp);
+        final List<ServerCandidates.Address> candidates = ServerCandidates.build(
+                new String[] {"one.example.com", "two.example.com:25566", "silent.example.com"},
+                null);
+        Prefetcher prefetcher = new Prefetcher(bridge,
+                SessionIdentity.of("Alice", "069a79f444e94726a5befca90e38aaf5"),
+                candidates, Timings.defaults().withPrefetchTimeout(1000L),
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Source.CONFIG,
+                cn.ripplecraft.netherway.core.telemetry.QualityObserver.NOOP,
+                new Prefetcher.Fetcher() {
+                    @Override
+                    public Credentials fetch(ServerCandidates.Address addr, SessionIdentity id,
+                                             int timeoutMs) throws java.io.IOException {
+                        if (addr.host.startsWith("silent")) {
+                            throw new java.io.IOException("synthetic no response");
+                        }
+                        // 两台独立服务刻意使用同一 backend/room，只靠 origin 分隔。
+                        return sampleCred("shared-room", addr.host);
+                    }
+                });
+        CredentialCache cache = new CredentialCache(tmp.resolve("credentials"));
+
+        check("多服务预取至少一份成功", prefetcher.refresh(cache));
+        List<Credentials> all = cache.loadAll();
+        check("预取保留所有成功服务", all.size() == 2);
+        java.util.Set<String> origins = new java.util.HashSet<String>();
+        java.util.Set<String> keys = new java.util.HashSet<String>();
+        for (Credentials cred : all) {
+            origins.add(cred.originHost() + ":" + cred.originPort());
+            keys.add(cred.dedupKey());
+        }
+        check("每份预取凭证记住自己的 MC 入口",
+                origins.contains("one.example.com:25565")
+                        && origins.contains("two.example.com:25566"));
+        check("同 backend/room 的两台服务拥有独立缓存键", keys.size() == 2);
     }
 
     private static void testPreauthFrameRoundTrip() throws Exception {
@@ -1457,7 +1591,7 @@ public final class SelfTest {
 
     private static void testCredentialV2StillDecodes() throws Exception {
         // 手工拼一份 v2 凭证：老服务端仍会下发，玩家缓存目录里也躺着这种。
-        // 本侧回退到 v2 之后绝不能把它们当成损坏数据。
+        // 本侧升到 v4 之后仍不能把它们当成损坏数据。
         java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
         java.io.DataOutputStream out = new java.io.DataOutputStream(buf);
         out.writeByte(2);
@@ -1465,13 +1599,13 @@ public final class SelfTest {
         out.writeInt(15_000);
         out.writeShort(2);
         out.writeUTF(Credentials.PARAM_ROOM);
-        out.writeUTF("gtnh");
+        out.writeUTF("survival");
         out.writeUTF("secret");
         out.writeUTF("s3cret");
         out.flush();
 
         Credentials v2 = Credentials.decode(buf.toByteArray());
-        check("v2 凭证仍能解码", v2.room().equals("gtnh"));
+        check("v2 凭证仍能解码", v2.room().equals("survival"));
         check("v2 参数完整", v2.param("secret").equals("s3cret"));
     }
 
@@ -1851,7 +1985,8 @@ public final class SelfTest {
                 new CredentialCache(tmp.resolve("credentials")), Timings.defaults(),
                 null, 0, null);
         Credentials cred = Credentials.frpXtcp("203.0.113.10", 7000, "secret-token",
-                "stun.example:3478", "private-room", "secret-key", 1000);
+                "stun.example:3478", "private-room", "secret-key", 1000)
+                .withOrigin("mc.example.com", 25565);
         warmup.injectReadyForTest(cred, AgentEvent.parse(
                 "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31,\"elapsedMs\":1792}"));
         UpgradeController controller = new UpgradeController(bridge, Timings.defaults(),
@@ -1901,7 +2036,8 @@ public final class SelfTest {
                 new CredentialCache(tmp.resolve("credentials")), Timings.defaults(),
                 null, 0, null);
         Credentials cred = Credentials.frpXtcp("203.0.113.11", 7000, "token",
-                "stun.example:3478", "room", "key", 1000);
+                "stun.example:3478", "room", "key", 1000)
+                .withOrigin("mc.example.com", 25565);
         warmup.injectReadyForTest(cred, AgentEvent.parse(
                 "{\"event\":\"ready\",\"port\":25596,\"rttMs\":40,\"elapsedMs\":2000}"));
         UpgradeController controller = new UpgradeController(bridge, Timings.defaults(),
@@ -1946,7 +2082,8 @@ public final class SelfTest {
                 new CredentialCache(tmp.resolve("credentials")), Timings.defaults(),
                 null, 0, null);
         Credentials cred = Credentials.frpXtcp("203.0.113.12", 7000, "token",
-                "stun.example:3478", "room", "key", 1000);
+                "stun.example:3478", "room", "key", 1000)
+                .withOrigin("mc.example.com", 25565);
         warmup.injectReadyForTest(cred, AgentEvent.parse(
                 "{\"event\":\"ready\",\"port\":25597,\"rttMs\":40,\"elapsedMs\":2000}"));
         UpgradeController controller = new UpgradeController(bridge, Timings.defaults(),

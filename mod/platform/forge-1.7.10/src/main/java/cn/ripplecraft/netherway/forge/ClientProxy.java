@@ -60,8 +60,8 @@ public final class ClientProxy extends CommonProxy {
         channel.register(events);
         FMLCommonHandler.instance().bus().register(events);
 
-        // FML 加载期就开始预热：GTNH 加载要几分钟，预取加打洞只要几秒，
-        // 到主菜单时直连条目已就绪。全程在后台线程，不碰加载主线程。
+        // FML 加载期就开始预热：短 TCP 预取在后台有界并行，真正的 NAT 打洞
+        // 严格串行；都不碰加载主线程，已建立的多条隧道则可同时守望。
         if (config.clientPrewarm()) {
             warmup.start();
         }
@@ -102,7 +102,7 @@ public final class ClientProxy extends CommonProxy {
             bridge.debug("没有可预取的服务器地址，跳过凭证预取");
             return null;
         }
-        bridge.debug("预取候选（依次尝试）: " + candidates);
+        bridge.debug("预取候选（有界并行）: " + candidates);
         QualitySummary.Source source = configured.length == 0
                 ? QualitySummary.Source.SERVER_LIST : QualitySummary.Source.CONFIG;
         return new Prefetcher(bridge, id, candidates, config.clientTimings(), source, telemetry);

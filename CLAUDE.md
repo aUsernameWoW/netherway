@@ -5,9 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 项目概述
 
 让 Minecraft 玩家通过 frp 的 xtcp 打洞 P2P 直连服务器，绕过中转节点。
-目标服务器是 GTNH（GregTech New Horizons，Forge 1.7.10，跑在现代 JVM 上）。
+产品定位是通用的建联 mod：只把服务凭证变成本地 TCP 入口，不做选服、
+排名、游戏内容或服务器管理。Forge 1.7.10 是当前第一个平台适配，
+先前的大型整合环境只用于压力/兼容性验证，不是产品边界。
 
-实测收益：P2P 直连 SLP 往返 **31–49 ms**，对比中转节点 156–214 ms。
+端到端测量数据见 `docs/field-notes.md`。
 
 命名已全量统一为 **netherway**（2026-08-01，原名 xtcpinmc）：二进制名、
 Go/Java 包名、MC 自定义频道、缓存目录（`.minecraft/netherway/`）、cfg 文件名、
@@ -61,7 +63,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.nethe
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 354 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 428 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -74,7 +76,7 @@ java -cp mod/build/classes:mod/build/testres \
 
 ### Forge 1.7.10 mod（`mod/platform/forge-1.7.10`）
 
-1.7.10 需要反混淆/重混淆工作区，用 GTNH 的 RetroFuturaGradle（老 ForgeGradle 1.2
+1.7.10 需要反混淆/重混淆工作区，用 RetroFuturaGradle（老 ForgeGradle 1.2
 的下载源已失效）。Gradle 进程需要 Java 21+，编译产物仍是 Java 8 字节码：
 
 ```bash
@@ -146,7 +148,7 @@ core 与平台适配层不解释参数，无需改动。约束：**backend 实�
 组播广播于 2026-08 一并移除，实测留档在 docs/field-notes.md）。
 `serve` 是独立运行的 frp 工具，不走 backend 抽象。
 
-### 内嵌会合点（`server.rendezvous`，默认关）
+### 内嵌会合点（`server.rendezvous`，默认开）
 
 xtcp 打洞里 frps 只负责在两条控制连接之间转发信令：地址发现靠外部 STUN
 （`internal/stunpick`），打通后的数据流根本不经过它。既然会合点只需要收发
@@ -175,17 +177,20 @@ core 的 `TlsRecord`）。
 - **`token=auto` 才会轮换**，与 `secret=auto` 同构、同样在 `ModConfig` 里生成
   （serve 与下发凭证同源）。写死的 token 就是钉死的；而 params 里完全不写
   token 会让凭证缺令牌、客户端回落到构建期默认值（jar 里为空）导致全员失败——
-  所以 rendezvous 模式下 token 仍是必填项，只是填什么都行。
+  所以 rendezvous 模式下 token 仍是必填项；新配置默认生成的 params 已带
+  `token=auto`、`room=minecraft`、`secret=auto`，无需服主手工补。
   serve 自己那句「未指定即随机生成」只在手工跑 `netherway serve -rendezvous`
   时才够得着。
 - 凭证因此**不带 `server`/`serverPort`**，见下节。
 
-### 凭证里的会合点地址由客户端补
+### 凭证的服务入口与会合点地址由客户端补
 
 内嵌会合点就在这台服务器的 Minecraft 端口后面，客户端知道自己连的是哪；
 服务端反而未必知道自己的公网入口（NAT 后、多入口、域名与实际入口不一致）。
 所以 `rendezvous=true` 时 `ModConfig.serverCredentials` 会摘掉这两个键，
-由客户端在交给 agent 之前用 `Credentials.rendezvousAt` 补齐。
+由客端在交给 agent 之前用 `Credentials.rendezvousAt` 补齐。不论是否
+使用内嵌会合点，客户端还会用 `Credentials.withOrigin` 附上这份凭证
+来自的 Minecraft 入口。该 origin 不传给 backend，只用于在本地分隔多服务缓存。
 
 补齐的优先级与 `withExtraParams` 刻意相反：`withDefaultParams` **只补空缺、
 不覆盖**。前者是服务端往凭证里塞东西（该覆盖），后者是客户端补服务端没说的
@@ -195,8 +200,8 @@ core 的 `TlsRecord`）。
 
 | 路径 | 地址来源 |
 |---|---|
-| 升级（`UpgradeController.onCredentials`） | `ClientBridge.currentServerAddress()`，补齐**发生在落盘之前** |
-| 预取（`Prefetcher.refresh`） | 循环里的候选 `addr`——全流程唯一确切知道凭证来自哪台服务器的地方 |
+| 升级（`UpgradeController.onCredentials`） | `ClientBridge.currentServerAddress()`，origin/会合点补齐**发生在落盘之前** |
+| 预取（`Prefetcher.refresh`） | 每个候选 `addr`：全部并行请求，成功凭证全部附 origin 落盘 |
 | 预热（`WarmupController`） | 不推导，只使用；缓存里仍缺地址就硬拦下来并提示 |
 
 **`currentServerAddress()` 必须返回玩家最初选中的那台服务器，不是当前 socket
@@ -210,10 +215,10 @@ core 的 `TlsRecord`）。
 新连接被识别为与切换无关时立即作废，绝不能拿 A 服的地址补 B 服的凭证。
 仍额外挡掉回环，因为玩家也可能是从直连条目进服的。
 
-**补不上地址的凭证绝不落盘**（`rememberAsync` 里拦截）：缓存按房间同文件
-覆盖，残废版会把带地址的好凭证盖掉，下次启动预热直接瘫痪——2026-08-09
-就是这么坏的。跳过没有代价：参数真轮换过的新凭证一定经真实服务器地址的
-连接送达，那条路补得上。
+**补不上 origin/会合点地址的凭证绝不落盘**（`rememberAsync` 里拦截）。
+缓存文件按「backend + origin + room」命名；两台服务即使共用 backend/room
+也不会覆盖。v1.0 之前的旧缓存只按 backend/room，第一份带 origin 的
+新凭证落盘时会自动清理对应旧文件。
 
 `server` 与 `serverPort` **必须一起补**：Go 侧缺 `server` 会响亮报错，而缺
 `serverPort` 会静默落到 frp 的默认 7000，只补一个的失败查不出所以然。
@@ -237,18 +242,18 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 
 ### 预热与凭证缓存
 
-每次下发的凭证都会写进本地缓存（`CredentialCache`，`.minecraft/netherway/credentials/`）。
-`WarmupController` 在 FML 加载期启动**无限重试的预热循环**（打不通就一直打，
-指数退避见 `Timings.warmupRetryDelayMs`，就绪后守望 agent 进程、死了重打；
-刻意无任何中转兜底），并经 `DirectServerEntry` 在服务器列表里维护一个直连
-条目（agent 的 STARTING 事件一报出端口就更新地址，重试每轮都会再报）。
+每次下发的凭证都会按 Minecraft 入口写进本地缓存
+（`CredentialCache`，`.minecraft/netherway/credentials/`）。`WarmupController` 在 FML
+加载期为所有凭证建立独立状态：**打洞严格串行，READY 隧道同时守望**。
+每个服务有自己的退避/失败窗口与 agent 日志，一个服务打不通不阻塞其它服务。
+`DirectServerEntry` 为每份凭证维护一个带 origin 的条目。
 
-凭证来源除缓存外还有 mod 内建预取（`Prefetcher`，每轮预热前跑一次）：
+凭证来源除缓存外还有 mod 内建预取（`Prefetcher`）：
 平台层把游戏会话（`SessionIdentity`）与候选地址交给 core，候选由
 `ServerCandidates` 组装——客户端 cfg 的 `client.prefetchServers` 优先，
 其余来自服务器列表（server.dat，`prefetchServers` 留空时自动扫描）。
-全程在 JVM 内完成，不起子进程。首次启动即可直连；
-密钥轮换后下一轮预取自动取到新密钥，无需先经中转。
+所有候选用有界线程池并行请求，成功结果全部入缓存；预认证不打洞，
+因此这种并行不干扰 NAT。密钥轮换后只重建对应服务的隧道。
 玩家可三种方式进服，互为兜底：
 
 - **直连条目**：进服后平台层按「回环地址 + 预热端口」识别（`ClientEvents.warmupMatch`），
@@ -260,7 +265,7 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
   密钥；没有可预取的地址时仍走「打洞失败→中转→新凭证覆盖」闭环恢复，
   玩家与服主都无需操作。
 
-预热隧道生命周期是整个游戏进程（断开、回主菜单都不停，它承载着直连条目），
+所有预热隧道的生命周期是整个游戏进程（断开、回主菜单都不停），
 退出由 `AgentProcess` 的 shutdown hook 兜底。
 
 ### 预认证（在 MC 端口上换凭证）
@@ -321,8 +326,8 @@ MC 登录，隧道只通向 MC 端口）。
 （`Json`，约 150 行）。Minecraft 自带 Gson，但依赖它就等于依赖 Minecraft；而
 1.7.10 的类路径上挤着几百个 mod，多一个库就多一分冲突风险。
 
-**Java 代码编译成 Java 8 字节码，但必须能在 Java 8–25 上运行。** GTNH 用
-lwjgl3ify 让 1.7.10 跑在 Java 17+ 上，服务端实测用的是 GraalVM 25。只用
+**Java 代码编译成 Java 8 字节码，但必须能在 Java 8–25 上运行。**
+Forge 1.7.10 玩家可能通过各种现代运行时方案使用 Java 17+。只用
 `ProcessBuilder`、`java.nio.file`、`java.net` 这类公共稳定 API；**绝不能碰
 `sun.misc.*` 或反射访问 JDK 内部**，Java 16+ 的强封装会直接拒绝。
 
