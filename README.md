@@ -41,3 +41,13 @@ Download the Netherway build matching your Minecraft version and platform:
 - Bukkit: place the JAR in the server's `plugins/` folder.
 
 Only the Forge 1.7.10 build is currently available; builds for the other platforms have not been released yet. See the [complete English documentation](docs/en/README.md) for installation, default configuration, self-hosted frps setup, and troubleshooting.
+
+---
+
+## 项目维护 / Maintainers
+
+商定的版本发布路线、人工检查清单与发布后验证命令见
+[发布文档](docs/releasing.md)。
+
+See the [release guide](docs/releasing.md) for the agreed release route, maintainer
+checklist, and post-release verification commands.
