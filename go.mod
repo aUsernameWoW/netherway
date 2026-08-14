@@ -1,6 +1,6 @@
 module github.com/aUsernameWoW/netherway
 
-go 1.25.1
+go 1.26.4
 
 require (
 	github.com/fatedier/frp v0.70.1
