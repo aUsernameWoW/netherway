@@ -3,6 +3,8 @@ package cn.ripplecraft.netherway.forge;
 import cn.ripplecraft.netherway.core.Credentials;
 import cn.ripplecraft.netherway.core.Timings;
 import java.io.File;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import net.minecraftforge.common.config.Configuration;
@@ -71,20 +73,39 @@ public final class ModConfig {
     /** 是否包含详细的连接质量维度；这个开关正常生成在 cfg 中。 */
     private final boolean telemetryEnhanced;
 
-    public ModConfig(File file) {
-        // 服主会按 README 手写这个文件（免得为生成骨架先空跑一次游戏），
-        // 手写就可能有语法错误——1.7.10 的 Configuration 解析失败会直接抛
-        // RuntimeException，不接住的话整个游戏/服务端就起不来了。
-        // 退回默认值（不下发凭证、客户端默认参数）比炸掉体面得多。
-        Configuration cfg;
-        boolean loadedOk = true;
+    /**
+     * 游戏入口统一走这里。即使 Forge 的配置 API 遇到未预料到的旧字段或坏值，
+     * 也只会停用服务端功能并让客户端使用默认值，不能把整个游戏启动过程带崩。
+     */
+    public static ModConfig loadSafely(File file) {
         try {
-            cfg = new Configuration(file);
+            return new ModConfig(file);
+        } catch (RuntimeException e) {
+            LOG.error("配置应用失败，本次服务端功能关闭、客户端使用默认值: " + file, e);
+            return new ModConfig(new LoadedConfiguration(new Configuration(), false));
+        }
+    }
+
+    public ModConfig(File file) {
+        this(loadConfiguration(file));
+    }
+
+    private static LoadedConfiguration loadConfiguration(File file) {
+        // 服主会按 README 手写这个文件（免得为生成骨架先空跑一次游戏），
+        // 手写就可能有语法错误。Forge 会尝试备份并重建纯语法错误的文件，
+        // 但其余装载期 RuntimeException 仍可能逃逸，不能让它带崩游戏/服务端。
+        // 退回默认值（不下发凭证、客户端默认参数）比炸掉体面得多。
+        try {
+            return new LoadedConfiguration(new Configuration(file), true);
         } catch (RuntimeException e) {
             LOG.error("配置文件解析失败，本次以默认值运行（改好语法后重启生效）: " + file, e);
-            cfg = new Configuration();
-            loadedOk = false;
+            return new LoadedConfiguration(new Configuration(), false);
         }
+    }
+
+    private ModConfig(LoadedConfiguration loaded) {
+        Configuration cfg = loaded.configuration;
+        boolean loadedOk = loaded.loadedOk;
 
         cfg.setCategoryComment("server",
                 "服务端专用。新生成的配置就是推荐的内嵌会合点模式，通常无需修改：\n"
@@ -198,10 +219,13 @@ public final class ModConfig {
                 + "注意：交换帧不加密，凭证以明文过网");
         // Forge 默认按字母排序，导致新人先看到 backend/localPort，再在文件末尾
         // 才发现模式开关。把「能否直接用」的四项放在 server 类目最前面。
-        cfg.setCategoryPropertyOrder("server", java.util.Arrays.asList(
+        // Forge 1.7.10 会把配置里未列出的旧字段/拼错字段追加到传入列表。
+        // Arrays.asList 返回定长列表，此时 add 会抛 UnsupportedOperationException；
+        // 必须交给它一个真正可变的副本。
+        cfg.setCategoryPropertyOrder("server", new ArrayList<String>(Arrays.asList(
                 "enabled", "rendezvous", "runAgent", "params",
                 "backend", "localPort", "preauth", "punchTimeoutSeconds",
-                "proxyProtocol", "tokenSigningKey", "tokenTtlDays", "serveAuthToken"));
+                "proxyProtocol", "tokenSigningKey", "tokenTtlDays", "serveAuthToken")));
 
         cfg.setCategoryComment("client",
                 "客户端专用：时间参数默认值来自实测，顺利时建链约 2-5 秒。\n"
@@ -258,6 +282,16 @@ public final class ModConfig {
         // 解析失败时绝不能回写：会用默认值覆盖服主手里只是语法有瑕疵的文件
         if (loadedOk && cfg.hasChanged()) {
             cfg.save();
+        }
+    }
+
+    private static final class LoadedConfiguration {
+        private final Configuration configuration;
+        private final boolean loadedOk;
+
+        private LoadedConfiguration(Configuration configuration, boolean loadedOk) {
+            this.configuration = configuration;
+            this.loadedOk = loadedOk;
         }
     }
 

@@ -48,7 +48,7 @@ public final class Netherway {
 
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
-        config = new ModConfig(event.getSuggestedConfigurationFile());
+        config = ModConfig.loadSafely(event.getSuggestedConfigurationFile());
         FMLEventChannel channel = NetworkRegistry.INSTANCE.newEventDrivenChannel(CHANNEL);
 
         // 服务端半边。客户端上它也在（省一个 proxy 分支），但只有真正启动

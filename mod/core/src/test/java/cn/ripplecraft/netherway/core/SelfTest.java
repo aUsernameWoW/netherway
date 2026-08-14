@@ -102,6 +102,7 @@ public final class SelfTest {
         check("macOS/aarch64 别名", Platform.detect("Mac OS X", "aarch64").toString().equals("macos-arm64"));
         check("macOS/arm64", Platform.detect("Mac OS X", "arm64").toString().equals("macos-arm64"));
         check("Linux/amd64", Platform.detect("Linux", "amd64").toString().equals("linux-amd64"));
+        check("Linux/aarch64 别名", Platform.detect("Linux", "aarch64").toString().equals("linux-arm64"));
 
         boolean threwOs = false;
         try {
@@ -132,6 +133,10 @@ public final class SelfTest {
         check("macOS 资源路径无后缀",
                 mac.resourcePath().equals("natives/macos-arm64/netherway"));
         check("macOS 非 Windows", !mac.isWindows());
+
+        Platform linuxArm64 = Platform.detect("Linux", "aarch64");
+        check("Linux ARM64 资源路径",
+                linuxArm64.resourcePath().equals("natives/linux-arm64/netherway"));
     }
 
     // ---------- Json ----------

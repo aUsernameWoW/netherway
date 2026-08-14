@@ -65,6 +65,7 @@ build darwin  arm64 netherway-macos-arm64
 build darwin  amd64 netherway-macos-amd64
 # 服务器侧
 build linux   amd64 netherway-linux-amd64
+build linux   arm64 netherway-linux-arm64
 
 echo
 echo "完成。产物："

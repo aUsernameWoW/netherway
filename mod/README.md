@@ -80,7 +80,7 @@ core 与适配层同样零改动。
 
 ## 验证状态
 
-`SelfTest` 共 428 项，覆盖平台识别、JSON 转义、事件解析容错、凭证往返（含中文与
+`SelfTest` 共 430 项，覆盖平台识别、JSON 转义、事件解析容错、凭证往返（含中文与
 任意 backend）、v1 兼容与前向兼容、命令行构造、时间参数回填、状态机去重与
 复位竞态（shutdown 后过期 worker 不得覆写状态）、凭证缓存（往返/最近优先/
 损坏清理/上限/旧键迁移）、多服务预取、并存预热隧道的复用与采认、每玩家令牌
@@ -94,7 +94,7 @@ $JAVA8/bin/java -cp build/classes cn.ripplecraft.netherway.core.SelfTest
 ```
 
 **兼容性已实测**：用 Java 8 编译的字节码曾在 **Java 8 / 17 / 21 / 25**
-上全部通过（早期 87 项）；当前 428 项在 Java 8 上验证全过，CI 在 8/17/21/25
+上全部通过（早期 87 项）；当前 430 项在 Java 8 上验证全过，CI 在 8/17/21/25
 四个 JVM 上跑。Forge 1.7.10 客户端无论仍使用 Java 8，还是借助兼容工具链运行在
 现代 JVM 上，都只会经过这些公共稳定 API。
 代码只用 `ProcessBuilder`、`java.nio.file`、`java.net` 这类公共稳定 API，

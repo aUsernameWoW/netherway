@@ -31,6 +31,7 @@ build darwin  arm64 macos ''
 build darwin  amd64 macos ''
 # 玩家也可能在 Linux 上玩
 build linux   amd64 linux ''
+build linux   arm64 linux ''
 
 echo
 echo "完成。产物（不含任何密钥，可随 jar 分发）："

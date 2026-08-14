@@ -18,13 +18,16 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # 正式发布流水线复用这里的全部门禁，避免维护第二份测试清单。
+  workflow_call:
 
-# 三条流水线都不需要写权限，checkout/缓存/artifact 用的都是运行时令牌
+# 日常 CI 只读；正式发布所需的签名与 Release 写权限只放在 release.yml。
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # 固定 build 前缀，避免被 release.yml 复用时与外层 release-* 分组冲突。
+  group: build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -185,8 +188,22 @@ jobs:
         working-directory: mod/platform/forge-1.7.10
         # fromEnv 让 Gradle 的 toolchain 探测认到 setup-java 装的 JDK 8
         run: ./gradlew build -Dorg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64 --console=plain
+      - name: 定位唯一的发布版 JAR
+        id: release-jar
+        shell: bash
+        run: |
+          mapfile -t jars < <(
+            find "$GITHUB_WORKSPACE/mod/platform/forge-1.7.10/build/libs" \
+              -maxdepth 1 -type f -name '*.jar' ! -name '*-dev.jar' -print
+          )
+          if [ "${#jars[@]}" -ne 1 ]; then
+            printf '预期恰好一个非 -dev 发布 JAR，实际找到 %d 个：\n' "${#jars[@]}"
+            printf '%s\n' "${jars[@]}"
+            exit 1
+          fi
+          printf 'path=%s\n' "${jars[0]}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         with:
-          name: netherway-forge-1.7.10
-          path: mod/platform/forge-1.7.10/build/libs/*.jar
+          path: ${{ steps.release-jar.outputs.path }}
+          archive: false
           if-no-files-found: error

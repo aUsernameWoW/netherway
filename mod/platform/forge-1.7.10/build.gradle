@@ -35,6 +35,24 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
+// 不启动游戏，直接用 Forge 1.7.10 的 Configuration 读取真实 cfg，覆盖手写配置容错。
+tasks.register('configSelfTest', JavaExec) {
+    group = 'verification'
+    description = 'Runs ModConfig regression tests with the real Forge configuration parser.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'cn.ripplecraft.netherway.forge.ModConfigSelfTest'
+    doFirst {
+        File testWorkDir = layout.buildDirectory.dir('config-self-test').get().asFile
+        testWorkDir.mkdirs()
+        workingDir testWorkDir
+    }
+}
+
+tasks.named('check') {
+    dependsOn configSelfTest
+}
+
 // agent 二进制由 ../../build-natives.sh 产出。那个脚本刻意不注入 TOKEN/SECRET：
 // mod jar 会分发给所有玩家，里面绝不能有任何密钥——凭证由服务端登录后下发。
 def nativesDir = file('../../build/natives')

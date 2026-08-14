@@ -1,0 +1,109 @@
+# 正式发布只由已经存在的 SemVer tag 触发。它先复用 build.yml 的完整门禁，
+# 再下载那次构建产生的同一个原始 JAR，签发 provenance，最后创建 Draft
+# Release。Draft 必须由维护者人工检查并发布；这里绝不自动 Publish。
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # 同一 tag 的重跑不得把正在创建 Draft 的那次强行取消。
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: 完整发布校验
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+
+  draft:
+    name: 签名并创建 Draft Release
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # tag 是发布入口，gradle.properties 是源码里的版本事实；两者不一致时
+      # 宁可停住，也不能发布一个文件名、mcmod.info 与 tag 对不上的 JAR。
+      - name: 校验 tag 与项目版本
+        id: version
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "tag 必须是 SemVer，例如 v0.1.0 或 v0.2.0-rc.1；实际为 $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+          version="${GITHUB_REF_NAME#v}"
+          configured=$(sed -n 's/^modVersion=//p' mod/platform/forge-1.7.10/gradle.properties)
+          if [ "$configured" != "$version" ]; then
+            echo "tag $GITHUB_REF_NAME 与 modVersion=$configured 不一致"
+            exit 1
+          fi
+
+          printf 'jar=netherway-forge-1.7.10-%s.jar\n' "$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo 'prerelease=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'prerelease=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      # build.yml 使用 archive:false，artifact 名就是 JAR 文件名；v8 能把
+      # 这个非 ZIP artifact 原样下载，后续签名与上传操作的是同一组字节。
+      - name: 下载已通过完整校验的发布 JAR
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ steps.version.outputs.jar }}
+          path: release
+
+      - name: 确认发布资产
+        id: asset
+        shell: bash
+        env:
+          JAR_NAME: ${{ steps.version.outputs.jar }}
+        run: |
+          path="$GITHUB_WORKSPACE/release/$JAR_NAME"
+          if [ ! -f "$path" ]; then
+            echo "未找到发布 JAR：$path"
+            exit 1
+          fi
+          printf 'path=%s\n' "$path" >> "$GITHUB_OUTPUT"
+
+      - name: 生成发布 JAR 的构建来源证明
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ steps.asset.outputs.path }}
+
+      - name: 创建待人工确认的 Draft Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ASSET: ${{ steps.asset.outputs.path }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          args=(
+            release create "$GITHUB_REF_NAME" "$RELEASE_ASSET"
+            --verify-tag
+            --draft
+            --generate-notes
+            --fail-on-no-commits
+            --title "Netherway $GITHUB_REF_NAME"
+          )
+          if [ "$PRERELEASE" = true ]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}"
+          echo "::notice::Draft Release 已创建；检查资产与说明后再到 Releases 页面手工 Publish。"
