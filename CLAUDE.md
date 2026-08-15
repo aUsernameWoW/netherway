@@ -63,7 +63,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.nethe
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 428 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 432 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -205,7 +205,7 @@ core 的 `TlsRecord`）。
 | 预热（`WarmupController`） | 不推导，只使用；缓存里仍缺地址就硬拦下来并提示 |
 
 **`currentServerAddress()` 必须返回玩家最初选中的那台服务器，不是当前 socket
-的对端。** 升级成功后玩家会重连到本机直连条目，服务端此时还会再下发一次凭证
+的对端。** 升级成功后玩家会重连到本机隧道，服务端此时还会再下发一次凭证
 （重复分支），用对端地址补就会把回环写进缓存，下一轮预热便让 agent 去连自己
 的回环。Forge 实现取 `Minecraft.currentServerData`，但**切换后它是 null**：
 `connectTo` 里的 `loadWorld(null)` 走「退出世界」分支时会连带
@@ -213,7 +213,8 @@ core 的 `TlsRecord`）。
 仍在」，2026-08-09 实测证明是错的）——所以 `connectTo` 在清掉之前把地址存进
 `switchOrigin`，推导失败时回退到它；该字段只在本次重定向的生命周期内有效，
 新连接被识别为与切换无关时立即作废，绝不能拿 A 服的地址补 B 服的凭证。
-仍额外挡掉回环，因为玩家也可能是从直连条目进服的。
+仍额外挡掉回环，因为玩家也可能经运行期入口覆盖或独立直连条目进服；这两条路径
+由 `adoptDirectConnection` 保存的完整凭证回补 origin。
 
 **补不上 origin/会合点地址的凭证绝不落盘**（`rememberAsync` 里拦截）。
 缓存文件按「backend + origin + room」命名；两台服务即使共用 backend/room
@@ -246,7 +247,10 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 （`CredentialCache`，`.minecraft/netherway/credentials/`）。`WarmupController` 在 FML
 加载期为所有凭证建立独立状态：**打洞严格串行，READY 隧道同时守望**。
 每个服务有自己的退避/失败窗口与 agent 日志，一个服务打不通不阻塞其它服务。
-`DirectServerEntry` 为每份凭证维护一个带 origin 的条目。
+默认 `WarmupEntryRouter` 只在内存中发布「真实 origin → READY 回环端口」映射；
+`RouteAwareGuiHandler` 在玩家点击原版服务器列表时用临时 `ServerData` 副本连接，
+绝不把回环写进 `servers.dat`。`client.replaceServerEntries=false` 时才由
+`DirectServerEntry` 为每份凭证维护一个带 origin 的独立条目。
 
 凭证来源除缓存外还有 mod 内建预取（`Prefetcher`）：
 平台层把游戏会话（`SessionIdentity`）与候选地址交给 core，候选由
@@ -256,11 +260,16 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 因此这种并行不干扰 NAT。密钥轮换后只重建对应服务的隧道。
 玩家可三种方式进服，互为兜底：
 
-- **直连条目**：进服后平台层按「回环地址 + 预热端口」识别（`ClientEvents.warmupMatch`），
+- **原条目运行期覆盖（默认）**：点击时目标隧道已经 READY，就把这一次连接直接
+  解析到回环端口；持久列表仍保存真实入口。Forge 1.7.10 没有连接前事件，所以只
+  替换原版 `GuiMultiplayer`，其他 mod 的自定义子类原样放行。
+- **独立直连条目（覆盖关闭）**：与默认覆盖一样，进服后平台层按「回环地址 +
+  预热端口」识别（`ClientEvents.warmupMatch`），
   调 `adoptDirectConnection` 把状态机置为 UPGRADED——随后服务端照常下发的凭证
   命中重复分支并回执成功，零新协议。
 - **中转进服**：既有升级流程，但 `runUpgrade` 先查预热隧道，就绪则直接复用
-  （`reuseWarmTunnel`），不再对同一房间起第二个 agent。
+  （`reuseWarmTunnel`），不再对同一房间起第二个 agent；若玩家在预热 READY 前
+  已进入服务器，READY 后仍立即切换。
 - **预热失败/无缓存**：一切如旧。凭证轮换后优先由下一轮预取直接取回新
   密钥；没有可预取的地址时仍走「打洞失败→中转→新凭证覆盖」闭环恢复，
   玩家与服主都无需操作。
@@ -366,7 +375,8 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 
 **预热失败绝不能进 `GAVE_UP`。** 那个状态的语义是「本会话不再重试」，会把玩家
 进服后的正常升级一并锁死——预热因此是独立的 `WarmupController`，失败当无事发生。
-同理，平台层采认直连条目的连接前必须先 `controller.shutdown()` 复位到 IDLE。
+同理，平台层采认经入口覆盖或独立直连条目建立的连接前必须先
+`controller.shutdown()` 复位到 IDLE。
 
 **预热与升级的 agent 各写各的日志文件**（`tunnel-warmup.log` / `tunnel.log`）。
 预热未出结果时玩家就经中转进服的话，两个 agent 会同时在跑，共用文件会互相踩踏。

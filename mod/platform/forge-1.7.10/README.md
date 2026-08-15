@@ -8,8 +8,9 @@ core 的 Forge 1.7.10 接线。同一个 jar 同时装在服务端与客户端�
 - **客户端半边**（`ClientProxy` 接线）：收到凭证交给 core 的 `UpgradeController`，
   打洞成功后经 `ForgeClientBridge` 切换连接。凭证按 Minecraft 入口分开缓存；
   FML 加载期并行预取所有候选，`WarmupController` 再串行打洞、同时守望
-  已建立的多条隧道。`DirectServerEntry` 为每个服务维护一条
-  `[P2P直连] <房间> (<入口>)`；只提供建联入口，不排名、不自动选服。
+  已建立的多条隧道。默认由 `WarmupEntryRouter` 在运行期把玩家选中的原条目
+  解析到 READY 隧道，不修改 `servers.dat`；关闭入口覆盖后才由
+  `DirectServerEntry` 维护独立的 `[P2P直连] <房间> (<入口>)`。
 
 没装 mod 的客户端照常进服（`acceptableRemoteVersions = "*"`），
 凭证包会被它们静默忽略——本 mod 是纯增强，不构成准入门槛。
@@ -79,8 +80,11 @@ backend 实现（如 `internal/backend/frpxtcp`）保持一致。
 **客户端零配置即用**，什么都不用填。默认 `client.prewarm=true` 且 `client.prefetch=true`：
 游戏启动时向 server.dat 里的候选并行预取，为每个成功应答的服务保留独立凭证。
 打洞阶段严格串行，已建立的隧道可并存；一个服务的失败/退避不阻塞其他服务。
-要关掉预热/直连条目、改条目前缀（`directEntryName`）、固定首选预热端口
-（`prewarmPort`）或调时间参数，在同一 cfg 的 `client` 类目中配置即可。
+默认 `client.replaceServerEntries=true`：隧道 READY 后，点击原服务器条目会直接
+使用本地隧道，但磁盘上的真实入口保持不变。若玩家在 READY 前已经从原入口进服，
+预热成功后仍会立即切换。把该项设为 `false` 才会维护额外的直连条目；这时
+`directEntryName` 控制其前缀。`prewarmPort` 可固定首选预热端口，其他时间参数也在
+同一 cfg 的 `client` 类目中配置。
 
 ## 每玩家令牌（可选，frps 侧 authplugin）
 
@@ -160,11 +164,18 @@ ops = ["Login", "NewProxy"]
 **真退出时用 `shutdown()` 而不是 `onDisconnected()`**：后者在 UPGRADED
 状态下会以为断开是升级自己造成的而放过 agent。
 
-**采认直连条目的连接要在 `shutdown()` 之后**（`ClientEvents.onConnected`）：
+**采认经运行期覆盖或独立直连条目建立的连接要在 `shutdown()` 之后**
+（`ClientEvents.onConnected`）：
 采认要求状态机在 IDLE。识别只认「回环地址 + 预热隧道端口」，单人游戏的
 本地通道（非 `InetSocketAddress`）与玩家手动连的其他本地服都不会误判。
 预热隧道本身不归 `UpgradeController` 管：它活到游戏进程结束（承载着服务器
-列表里的直连条目），断开、换服都不停，退出由 shutdown hook 兜底。
+列表连接），断开、换服都不停，退出由 shutdown hook 兜底。
+
+**入口覆盖只发生在内存里。** Forge 1.7.10 没有连接前事件，
+`RouteAwareGuiHandler` 只接管原版 `GuiMultiplayer` 的最终选择动作，用临时
+`ServerData` 副本连接回环端口；原列表对象从不改写，所以图标保存、编辑、排序、
+崩溃和移除 mod 都不会把 localhost 留进 `servers.dat`。其他 mod 自定义的多人
+界面不被替换，仍可在进服后走既有升级流程。
 
 **PROXY protocol 剥头挂在 accept 链上**（`ConnectionSniffer`，仅服务端、
 仅 `server.proxyProtocol` 非空时；它同时也管预认证帧与内嵌会合点的中继，

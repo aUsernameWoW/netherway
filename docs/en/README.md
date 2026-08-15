@@ -145,7 +145,7 @@ server {
 - `secret=auto`: rotates the room secret whenever the server restarts. Keep the default.
 - `room=minecraft`: the xtcp room name. If changed, use an ASCII name without spaces.
 
-Multiple Netherway servers may run on the same machine. They can share the default room name as long as each server has a distinct and stable public `host:port` endpoint. The client stores credentials and direct-connect entries separately by server endpoint.
+Multiple Netherway servers may run on the same machine. They can share the default room name as long as each server has a distinct and stable public `host:port` endpoint. The client stores credentials and warm-up state separately by server endpoint.
 
 ## Client
 
@@ -153,7 +153,9 @@ After installing the Netherway build for the client's platform, no client config
 
 At startup, the client fetches credentials from all candidates in the multiplayer server list concurrently. NAT traversal itself is performed serially for each successful service so that simultaneous attempts do not interfere with mappings on the same NAT. Established tunnels can remain active at the same time.
 
-The multiplayer screen maintains one `[P2P直连] <room> (<endpoint>)` entry for every service. Netherway does not rank or automatically choose servers. If one service cannot establish a direct connection, it retries with backoff without affecting other services. The original relayed entry remains available.
+By default, once warm-up succeeds, selecting the original multiplayer entry connects through the local P2P tunnel. Its real address is never replaced in `servers.dat`, so it remains available on the next launch, after a prefetch failure, or after removing the mod. If the player joins before warm-up finishes, Netherway switches the active connection as soon as the tunnel becomes ready. Failures retry with per-service backoff without affecting other services.
+
+Set `client.replaceServerEntries` to `false` to keep separate `[P2P直连] <room> (<endpoint>)` entries visible alongside the original entries.
 
 ## Optional features
 

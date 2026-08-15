@@ -118,7 +118,7 @@ public final class ServerCandidates {
      * 预取要拿的凭证建起来的。IPv6 字面量同样跳过：带方括号的写法解析起来
      * 啰嗦，而它在 MC 服务器列表里极罕见，不值得占一个候选名额。
      */
-    static Address parse(String address) {
+    public static Address parse(String address) {
         String s = address == null ? "" : address.trim();
         if (s.isEmpty() || s.startsWith("[")) {
             return null;

@@ -60,6 +60,7 @@ public final class SelfTest {
         testBuildCommandBindPort();
         testAdoptDirectConnection();
         testUpgradeReusesWarmTunnel();
+        testWarmupListenerLifecycle();
         testTokenIssuer();
         testCredentialsWithExtraParams();
         testServeCommandMetaToken();
@@ -1170,6 +1171,36 @@ public final class SelfTest {
         check("升级复位不影响预热隧道", warmup.readyPort(cred.dedupKey()) != null);
         warmup.shutdown();
         check("预热 shutdown 后查询为 null", warmup.readyPort(cred.dedupKey()) == null);
+    }
+
+    private static void testWarmupListenerLifecycle() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-warm-listener");
+        final List<String> lifecycle = new ArrayList<String>();
+        WarmupController.Listener listener = new WarmupController.Listener() {
+            @Override
+            public void onTunnelStarting(Credentials cred, int port) {
+                lifecycle.add("starting:" + port);
+            }
+
+            @Override
+            public void onTunnelReady(Credentials cred, AgentEvent event) {
+                lifecycle.add("ready:" + event.port());
+            }
+
+            @Override
+            public void onTunnelClosed(Credentials cred, int port) {
+                lifecycle.add("closed:" + port);
+            }
+        };
+        WarmupController warmup = new WarmupController(new FakeBridge(tmp),
+                new CredentialCache(tmp.resolve("credentials")), Timings.defaults(),
+                listener, 0, null);
+        Credentials cred = sampleCredAt("room-listener", "key");
+        warmup.injectReadyForTest(cred, AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":25595}"));
+        check("预热 READY 通知平台层", lifecycle.contains("ready:25595"));
+        warmup.shutdown();
+        check("预热关闭通知平台层撤销入口", lifecycle.contains("closed:25595"));
     }
 
     // ---------- 每玩家令牌 ----------

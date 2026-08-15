@@ -1,5 +1,7 @@
 package cn.ripplecraft.netherway.forge;
 
+import cn.ripplecraft.netherway.core.AgentEvent;
+import cn.ripplecraft.netherway.core.Credentials;
 import cpw.mods.fml.relauncher.FMLInjectionData;
 import java.io.File;
 import java.lang.reflect.Field;
@@ -21,6 +23,8 @@ public final class ModConfigSelfTest {
             setMinecraftHome(root.toFile());
             extraServerPropertyDoesNotCrash(root);
             invalidScalarValuesUseDefaults(root);
+            replacementCanBeDisabled(root);
+            runtimeRoutesExistOnlyWhileReady();
             System.out.println("ModConfigSelfTest passed");
         } finally {
             deleteRecursively(root);
@@ -59,6 +63,45 @@ public final class ModConfigSelfTest {
         check(config.clientEnabled(), "非法布尔值应回退到默认 true");
         check(config.clientTimings().punchTimeoutMs() == 15_000L,
                 "非法整数应回退到默认 15 秒");
+        check(config.replaceServerEntries(), "入口运行期覆盖应默认开启");
+    }
+
+    private static void replacementCanBeDisabled(Path root) throws Exception {
+        Path file = root.resolve("replacement-disabled.cfg");
+        Files.write(file, (
+                "client {\n"
+                + "    B:replaceServerEntries=false\n"
+                + "}\n").getBytes(StandardCharsets.UTF_8));
+
+        ModConfig config = new ModConfig(file.toFile());
+        check(!config.replaceServerEntries(), "应能关闭原条目的运行期覆盖");
+    }
+
+    private static void runtimeRoutesExistOnlyWhileReady() {
+        WarmupEntryRouter router = new WarmupEntryRouter(true, null, null);
+        Credentials cred = Credentials.frpXtcp("203.0.113.10", 7000, "token",
+                "stun.example:3478", "room", "secret", 1000)
+                .withOrigin("Play.Example.COM", 25565);
+        AgentEvent ready = AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31}");
+
+        check(router.resolve("play.example.com") == null,
+                "STARTING/未就绪时必须保留真实入口");
+        router.onTunnelReady(cred, ready);
+        WarmupEntryRouter.Route route = router.resolve("PLAY.EXAMPLE.COM:25565");
+        check(route != null && route.port == 25595,
+                "READY 后应按标准化真实入口解析到本地端口");
+        router.onTunnelClosed(cred, 25596);
+        check(router.resolve("play.example.com") != null,
+                "迟到的旧端口关闭通知不能撤掉当前路由");
+        router.onTunnelClosed(cred, 25595);
+        check(router.resolve("play.example.com") == null,
+                "隧道关闭后应立即恢复真实入口");
+
+        WarmupEntryRouter disabled = new WarmupEntryRouter(false, null, null);
+        disabled.onTunnelReady(cred, ready);
+        check(disabled.resolve("play.example.com") == null,
+                "关闭覆盖时不得发布运行期路由");
     }
 
     private static void setMinecraftHome(File root) throws Exception {

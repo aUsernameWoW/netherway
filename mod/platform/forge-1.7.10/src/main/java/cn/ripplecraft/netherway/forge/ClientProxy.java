@@ -22,6 +22,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.ServerList;
 import net.minecraft.util.Session;
+import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.client.ClientCommandHandler;
 
 /** 物理客户端的接线：把 core 的状态机挂到 Forge 的事件与频道上。 */
@@ -49,8 +50,11 @@ public final class ClientProxy extends CommonProxy {
         ClientCommandHandler.instance.registerCommand(new TelemetryCommand(telemetry, bridge));
         CredentialCache cache = new CredentialCache(
                 bridge.cacheDirectory().resolve("credentials"));
+        WarmupEntryRouter entryRouter = new WarmupEntryRouter(
+                config.replaceServerEntries(),
+                new DirectServerEntry(bridge, config.directEntryName()), bridge);
         WarmupController warmup = new WarmupController(bridge, cache, config.clientTimings(),
-                new DirectServerEntry(bridge, config.directEntryName()),
+                entryRouter,
                 config.prewarmPort(), buildPrefetcher(bridge, config, telemetry), telemetry);
         UpgradeController controller = new UpgradeController(
                 bridge, config.clientTimings(), cache, warmup, telemetry);
@@ -59,6 +63,9 @@ public final class ClientProxy extends CommonProxy {
         // 凭证包走频道自己的事件总线，tick 与连接事件走 FML 总线
         channel.register(events);
         FMLCommonHandler.instance().bus().register(events);
+        if (entryRouter.replacesEntries() && config.clientPrewarm()) {
+            MinecraftForge.EVENT_BUS.register(new RouteAwareGuiHandler(entryRouter, bridge));
+        }
 
         // FML 加载期就开始预热：短 TCP 预取在后台有界并行，真正的 NAT 打洞
         // 严格串行；都不碰加载主线程，已建立的多条隧道则可同时守望。

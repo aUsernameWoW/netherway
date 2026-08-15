@@ -38,6 +38,14 @@ public final class WarmupController {
     /** 平台层关心的时刻。回调在后台线程触发，实现自行转到游戏主线程。 */
     public interface Listener {
         void onTunnelStarting(Credentials cred, int port);
+
+        /** 隧道已经通过探测，可以承载 Minecraft 连接。 */
+        default void onTunnelReady(Credentials cred, AgentEvent event) {
+        }
+
+        /** 曾经 READY 的隧道不再可用；旧通知可能晚于同入口的新隧道。 */
+        default void onTunnelClosed(Credentials cred, int port) {
+        }
     }
 
     /** 就绪隧道的完整快照。 */
@@ -212,6 +220,7 @@ public final class WarmupController {
             desired.put(cred.dedupKey(), cred);
         }
         List<AgentProcess> close = new ArrayList<AgentProcess>();
+        List<Ready> closedReady = new ArrayList<Ready>();
         synchronized (roomsLock) {
             java.util.Iterator<Map.Entry<String, RoomState>> it = rooms.entrySet().iterator();
             while (it.hasNext()) {
@@ -219,6 +228,9 @@ public final class WarmupController {
                 if (!desired.containsKey(entry.getKey())) {
                     if (entry.getValue().agent != null) {
                         close.add(entry.getValue().agent);
+                    }
+                    if (entry.getValue().ready != null) {
+                        closedReady.add(entry.getValue().ready);
                     }
                     it.remove();
                 }
@@ -235,6 +247,9 @@ public final class WarmupController {
                     if (room.agent != null) {
                         close.add(room.agent);
                     }
+                    if (room.ready != null) {
+                        closedReady.add(room.ready);
+                    }
                     room.agent = null;
                     room.ready = null;
                     room.backoffAttempt = 0;
@@ -244,6 +259,7 @@ public final class WarmupController {
                 }
             }
         }
+        notifyClosed(closedReady);
         closeAll(close);
     }
 
@@ -277,6 +293,7 @@ public final class WarmupController {
                 if (ready.proc != null) {
                     ready.proc.close();
                 }
+                notifyClosed(ready);
                 observe(room.qualityWindow.failed(QualitySummary.Stage.TUNNEL_LOST,
                         QualitySummary.FailureStage.BACKEND,
                         QualitySummary.FailureCode.BACKEND_EXITED));
@@ -380,6 +397,9 @@ public final class WarmupController {
                 retained = true;
                 bridge.info("房间 " + cred.room() + " 的预热直连就绪，端口 "
                         + outcome.port() + "，延迟 " + outcome.rttMs() + "ms");
+                if (listener != null) {
+                    listener.onTunnelReady(room.cred, outcome);
+                }
                 observe(room.qualityWindow.succeeded(QualitySummary.Stage.TUNNEL_READY,
                         outcome.elapsedMs(), outcome.rttMs()));
                 return true;
@@ -565,27 +585,38 @@ public final class WarmupController {
             punchLock.notifyAll();
         }
         List<AgentProcess> close = new ArrayList<AgentProcess>();
+        List<Ready> closedReady = new ArrayList<Ready>();
         synchronized (roomsLock) {
             for (RoomState room : rooms.values()) {
                 if (room.agent != null) {
                     close.add(room.agent);
                 }
+                if (room.ready != null) {
+                    closedReady.add(room.ready);
+                }
             }
             rooms.clear();
         }
+        notifyClosed(closedReady);
         closeAll(close);
     }
 
     /** 仅测试：可重复注入多个就绪服务，免得真起进程。 */
     void injectReadyForTest(Credentials cred, AgentEvent event) {
+        Ready previous;
         synchronized (roomsLock) {
             RoomState room = rooms.get(cred.dedupKey());
             if (room == null) {
                 room = new RoomState(cred);
                 rooms.put(cred.dedupKey(), room);
             }
+            previous = room.ready;
             room.cred = cred;
             room.ready = new Ready(cred, event, null);
+        }
+        notifyClosed(previous);
+        if (listener != null) {
+            listener.onTunnelReady(cred, event);
         }
     }
 
@@ -605,6 +636,18 @@ public final class WarmupController {
             if (proc != null) {
                 proc.close();
             }
+        }
+    }
+
+    private void notifyClosed(List<Ready> ready) {
+        for (Ready item : ready) {
+            notifyClosed(item);
+        }
+    }
+
+    private void notifyClosed(Ready ready) {
+        if (listener != null && ready != null) {
+            listener.onTunnelClosed(ready.cred, ready.event.port());
         }
     }
 

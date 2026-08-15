@@ -51,6 +51,7 @@ public final class ModConfig {
     private final boolean clientEnabled;
     private final boolean verboseLogging;
     private final boolean clientPrewarm;
+    private final boolean replaceServerEntries;
     private final int prewarmPort;
     private final String directEntryName;
     private final boolean clientPrefetch;
@@ -235,8 +236,12 @@ public final class ModConfig {
                 "是否响应服务端下发的凭证并尝试直连");
         clientPrewarm = cfg.getBoolean("prewarm", "client", true,
                 "游戏启动时为每份已知服务凭证预热一条直连隧道，并在服务器列表里\n"
-                + "维护对应直连条目。打洞严格串行以避免同 NAT 干扰，已建立隧道可同时存活；\n"
-                + "失败服务各自按退避周期持续重试。关闭后已添加条目需手动删除");
+                + "提供对应直连入口。打洞严格串行以避免同 NAT 干扰，已建立隧道可同时存活；\n"
+                + "失败服务各自按退避周期持续重试");
+        replaceServerEntries = cfg.getBoolean("replaceServerEntries", "client", true,
+                "预热就绪后是否在运行期把原服务器条目的连接目标解析到本地隧道。\n"
+                + "不会修改 servers.dat；下次启动仍用真实入口预取和回退。\n"
+                + "关闭后改为在 servers.dat 中维护独立的 [P2P直连] 条目");
         prewarmPort = cfg.getInt("prewarmPort", "client", 25595, 0, 65535,
                 "预热隧道的本地端口，被占用时自动改用空闲端口（条目地址会跟着更新）；\n"
                 + "0 表示每次随机");
@@ -420,6 +425,10 @@ public final class ModConfig {
 
     public boolean clientPrewarm() {
         return clientPrewarm;
+    }
+
+    public boolean replaceServerEntries() {
+        return replaceServerEntries;
     }
 
     public int prewarmPort() {
