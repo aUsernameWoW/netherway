@@ -172,10 +172,17 @@ ops = ["Login", "NewProxy"]
 列表连接），断开、换服都不停，退出由 shutdown hook 兜底。
 
 **入口覆盖只发生在内存里。** Forge 1.7.10 没有连接前事件，
-`RouteAwareGuiHandler` 只接管原版 `GuiMultiplayer` 的最终选择动作，用临时
-`ServerData` 副本连接回环端口；原列表对象从不改写，所以图标保存、编辑、排序、
-崩溃和移除 mod 都不会把 localhost 留进 `servers.dat`。其他 mod 自定义的多人
-界面不被替换，仍可在进服后走既有升级流程。
+`RouteAwareGuiHandler` 只接管原版 `GuiMultiplayer` 的最终选择动作与列表的
+延迟探测，两者查同一张路由表：连接用临时 `ServerData` 副本，探测也发往临时
+副本、结果逐 tick 镜像回真实条目（含 FML 兼容性元数据）。原列表对象的地址
+从不改写，所以图标保存、编辑、排序、崩溃和移除 mod 都不会把 localhost 留进
+`servers.dat`。其他 mod 自定义的多人界面不被替换，仍可在进服后走既有升级流程。
+
+**路由感知 pinger 必须把网络管道委托给原版实例。** `GuiMultiplayer` 的
+收包泵（`updateScreen`）与关屏取消（`onGuiClosed`）直接操作私有字段
+`field_146797_f`、不经 `func_146789_i()` 这个 getter——覆写 getter 换上的
+包装若自建 `OldServerPinger`，其发出的探测回包永远无人处理，条目会停在
+"Pinging..."。包装只做路由判断与临时副本登记，真正的探测一律交回原版实例。
 
 **PROXY protocol 剥头挂在 accept 链上**（`ConnectionSniffer`，仅服务端、
 仅 `server.proxyProtocol` 非空时；它同时也管预认证帧与内嵌会合点的中继，
