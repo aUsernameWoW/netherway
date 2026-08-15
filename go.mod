@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/fatedier/frp v0.70.1
-	github.com/fatedier/golib v0.8.1
+	github.com/fatedier/golib v0.8.2
 	github.com/samber/lo v1.53.0
 )
 
