@@ -47,7 +47,10 @@ type event struct {
 	// 本地诊断日志展示，不能作为遥测维度或上传内容。
 	FailureStage string `json:"failureStage,omitempty"`
 	FailureCode  string `json:"failureCode,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	// Nat 是 STUN 探得的本机 NAT 形态（easy/hard），随终态事件携带；
+	// 未探得则省略。见 natprobe.go。
+	Nat    string `json:"nat,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 const (
@@ -221,6 +224,22 @@ func cmdTunnel(args []string) error {
 	started := time.Now()
 	emit(event{Event: "starting", Backend: b.Name(), Port: port})
 
+	// NAT 分类在后台进行，谁都不等它：终态事件发出时已探得就带上，
+	// 没探得就省略。stun 参数与 backend 用的是同一份（缺省同样回落到
+	// 构建期默认值），分类结果只作遥测维度。
+	natCh := make(chan string, 1)
+	go func() {
+		natCh <- probeNat(merged[frpxtcp.ParamSTUN], diagf)
+	}()
+	takeNat := func() string {
+		select {
+		case v := <-natCh:
+			return v
+		default:
+			return ""
+		}
+	}
+
 	secs := func(v float64) time.Duration { return time.Duration(v * float64(time.Second)) }
 	timings := config.Timings{
 		PunchTimeout:     secs(*timeout),
@@ -268,12 +287,16 @@ func cmdTunnel(args []string) error {
 		if err != nil {
 			reason = err.Error()
 		}
-		emit(failedEvent(failureStageBackend, failureCodeBackendExited, reason))
+		ev := failedEvent(failureStageBackend, failureCodeBackendExited, reason)
+		ev.Nat = takeNat()
+		emit(ev)
 		return fmt.Errorf("%s", reason)
 
 	case err := <-probeErr:
-		emit(failedEvent(failureStageProbe, failureCodeReadyProbeTimeout,
-			fmt.Sprintf("建链超时: %v", err)))
+		ev := failedEvent(failureStageProbe, failureCodeReadyProbeTimeout,
+			fmt.Sprintf("建链超时: %v", err))
+		ev.Nat = takeNat()
+		emit(ev)
 		return fmt.Errorf("隧道未在 %.1fs 内就绪", *timeout)
 
 	case st := <-ready:
@@ -290,6 +313,7 @@ func cmdTunnel(args []string) error {
 		// 隧道刚打通时的第一条连接会明显偏慢（实测能到 2.4s），
 		// 多测几次取最小值才反映真实往返延迟。
 		e.RTTMs = measureRTT(port, timings.ProbeTimeout, deadline)
+		e.Nat = takeNat()
 		emit(e)
 	}
 

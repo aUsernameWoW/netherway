@@ -14,6 +14,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 OUT=mod/build/natives
+# 整目录会被 processResources 原样打进 jar，先清空，
+# 否则上一次构建的多余平台会跟着混进去（平台清单缩减时尤其如此）
+rm -rf "$OUT"
 
 build() {
   local goos="$1" goarch="$2" os="$3" suffix="$4"
@@ -24,14 +27,13 @@ build() {
     go build -trimpath -ldflags "-s -w" -o "${dir}/netherway${suffix}" ./cmd/netherway
 }
 
-# 玩家侧：Windows 是主力，其次是 macOS
+# 只打玩家侧主力平台：每个二进制 20MB 上下，全平台打包会把 jar 撑得太大。
+# Windows ARM64 靠系统自带的 x64 转译层兜底（BinaryStore 会回落到
+# windows-amd64 的资源），Intel Mac 与 Linux ARM64 暂不支持——
+# 其余平台如何补充（按需下载等）另行设计，先不占 jar 体积。
 build windows amd64 windows .exe
-build windows arm64 windows .exe
 build darwin  arm64 macos ''
-build darwin  amd64 macos ''
-# 玩家也可能在 Linux 上玩
 build linux   amd64 linux ''
-build linux   arm64 linux ''
 
 echo
 echo "完成。产物（不含任何密钥，可随 jar 分发）："

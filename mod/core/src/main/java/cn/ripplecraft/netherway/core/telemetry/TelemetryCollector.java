@@ -11,7 +11,8 @@ import java.util.UUID;
 public final class TelemetryCollector implements QualityObserver {
 
     private static final Charset UTF8 = Charset.forName("UTF-8");
-    private static final int SCHEMA_VERSION = 1;
+    /** v2 起增加 backend/nat 维度与 serve 路径；ingest 同时接受 v1 与 v2。 */
+    private static final int SCHEMA_VERSION = 2;
 
     private final TelemetryConfig config;
     private final TelemetryEnvironment environment;
@@ -151,6 +152,8 @@ public final class TelemetryCollector implements QualityObserver {
             field(out, "failureStage", summary.failureStage(), true, true);
             field(out, "source", summary.source(), true, true);
             field(out, "failureCode", summary.failureCode(), true, true);
+            field(out, "backend", summary.backend(), true, true);
+            field(out, "nat", summary.nat(), true, true);
             field(out, "attempts", summary.attemptsBucket(), true, true);
             field(out, "elapsed", summary.elapsedBucket(), true, true);
             field(out, "rtt", summary.rttBucket(), true, true);

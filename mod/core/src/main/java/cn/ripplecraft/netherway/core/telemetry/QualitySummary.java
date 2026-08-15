@@ -8,6 +8,8 @@ public final class QualitySummary {
 
     public enum Path {
         UPGRADE("upgrade"), WARMUP("warmup"), PREFETCH("prefetch"),
+        /** Dedicated-server side serve process lifecycle. */
+        SERVE("serve"),
         /** Internal placeholder used after an enhanced summary is reduced to basic. */
         BASIC("quality");
         private final String wire;
@@ -77,18 +79,55 @@ public final class QualitySummary {
         }
     }
 
+    /**
+     * 本条摘要对应的隧道方案。刻意归一化成固定枚举而不透传服务端可控的
+     * backendId 原文——schema 无自由文本逃生舱是设计红线，未识别的一律
+     * 归入 {@link #OTHER}。新增 backend 时两侧同步：这里加枚举值，
+     * ingest 的 allowed 列表加 wire 值。
+     */
+    public enum Backend {
+        UNKNOWN("unknown"), FRP_XTCP("frp_xtcp"), OTHER("other");
+        private final String wire;
+        Backend(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+
+        /** 从凭证的 backendId 归一化；null/空 → UNKNOWN，未识别 → OTHER。 */
+        public static Backend fromBackendId(String backendId) {
+            if (backendId == null || backendId.isEmpty()) return UNKNOWN;
+            if ("frp-xtcp".equals(backendId)) return FRP_XTCP;
+            return OTHER;
+        }
+    }
+
+    /** agent 侧 STUN 分类出的 NAT 形态（对应 frp 的 EasyNAT/HardNAT）。 */
+    public enum Nat {
+        UNKNOWN("unknown"), EASY("easy"), HARD("hard");
+        private final String wire;
+        Nat(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+
+        public static Nat fromWire(String value) {
+            if ("easy".equals(value)) return EASY;
+            if ("hard".equals(value)) return HARD;
+            return UNKNOWN;
+        }
+    }
+
     private final Path path;
     private final Stage stage;
     private final Outcome outcome;
     private final Source source;
     private final FailureStage failureStage;
     private final FailureCode failureCode;
+    private final Backend backend;
+    private final Nat nat;
     private final int attempts;
     private final long elapsedMs;
     private final long rttMs;
 
     private QualitySummary(Path path, Stage stage, Outcome outcome, Source source,
                            FailureStage failureStage, FailureCode failureCode,
+                           Backend backend, Nat nat,
                            int attempts, long elapsedMs, long rttMs) {
         if (path == null || stage == null || outcome == null) {
             throw new IllegalArgumentException("path/stage/outcome must be set");
@@ -99,6 +138,8 @@ public final class QualitySummary {
         this.source = source == null ? Source.UNKNOWN : source;
         this.failureStage = failureStage == null ? FailureStage.NONE : failureStage;
         this.failureCode = failureCode == null ? FailureCode.NONE : failureCode;
+        this.backend = backend == null ? Backend.UNKNOWN : backend;
+        this.nat = nat == null ? Nat.UNKNOWN : nat;
         this.attempts = Math.max(0, attempts);
         this.elapsedMs = Math.max(0L, elapsedMs);
         this.rttMs = Math.max(0L, rttMs);
@@ -106,40 +147,51 @@ public final class QualitySummary {
 
     public static QualitySummary of(Path path, Stage stage, Outcome outcome) {
         return new QualitySummary(path, stage, outcome, Source.UNKNOWN,
-                FailureStage.NONE, FailureCode.NONE, 0, 0L, 0L);
+                FailureStage.NONE, FailureCode.NONE, Backend.UNKNOWN, Nat.UNKNOWN, 0, 0L, 0L);
     }
 
     public QualitySummary withSource(Source value) {
         return new QualitySummary(path, stage, outcome, value, failureStage, failureCode,
-                attempts, elapsedMs, rttMs);
+                backend, nat, attempts, elapsedMs, rttMs);
     }
 
     public QualitySummary withFailure(FailureStage failureStage, FailureCode failureCode) {
         return new QualitySummary(path, stage, outcome, source, failureStage, failureCode,
-                attempts, elapsedMs, rttMs);
+                backend, nat, attempts, elapsedMs, rttMs);
     }
 
     public QualitySummary withFailure(String failureStage, String failureCode) {
         return withFailure(FailureStage.fromWire(failureStage), FailureCode.fromWire(failureCode));
     }
 
+    public QualitySummary withBackend(Backend value) {
+        return new QualitySummary(path, stage, outcome, source, failureStage, failureCode,
+                value, nat, attempts, elapsedMs, rttMs);
+    }
+
+    public QualitySummary withNat(Nat value) {
+        return new QualitySummary(path, stage, outcome, source, failureStage, failureCode,
+                backend, value, attempts, elapsedMs, rttMs);
+    }
+
     public QualitySummary withAttempts(int value) {
         return new QualitySummary(path, stage, outcome, source, failureStage, failureCode,
-                value, elapsedMs, rttMs);
+                backend, nat, value, elapsedMs, rttMs);
     }
 
     public QualitySummary withTimings(long elapsedMs, long rttMs) {
         return new QualitySummary(path, stage, outcome, source, failureStage, failureCode,
-                attempts, elapsedMs, rttMs);
+                backend, nat, attempts, elapsedMs, rttMs);
     }
 
     /**
      * Basic mode only retains a terminal coarse result. Path, stage, failure classification,
-     * attempts and timing values are deliberately erased before the item enters the queue.
+     * backend, NAT class, attempts and timing values are deliberately erased before the item
+     * enters the queue.
      */
     QualitySummary forBasicMode() {
         return new QualitySummary(Path.BASIC, Stage.SUMMARY, outcome, Source.UNKNOWN,
-                FailureStage.NONE, FailureCode.NONE, 0, 0L, 0L);
+                FailureStage.NONE, FailureCode.NONE, Backend.UNKNOWN, Nat.UNKNOWN, 0, 0L, 0L);
     }
 
     /** Intermediate funnel events are enhanced-only and are not collected in basic mode. */
@@ -151,7 +203,8 @@ public final class QualitySummary {
             return false;
         }
         return stage == Stage.REDIRECT_LANDED || stage == Stage.ROUND_FINISHED
-                || (path == Path.WARMUP && stage == Stage.TUNNEL_READY);
+                || (path == Path.WARMUP && stage == Stage.TUNNEL_READY)
+                || (path == Path.SERVE && stage == Stage.TUNNEL_READY);
     }
 
     String path() { return path.wire(); }
@@ -160,6 +213,8 @@ public final class QualitySummary {
     String source() { return source.wire(); }
     String failureStage() { return failureStage.wire(); }
     String failureCode() { return failureCode.wire(); }
+    String backend() { return backend.wire(); }
+    String nat() { return nat.wire(); }
 
     String attemptsBucket() {
         if (attempts <= 0) return "unknown";

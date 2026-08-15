@@ -24,6 +24,9 @@ public final class SelfTest {
     public static void main(String[] args) throws Exception {
         testPlatformDetect();
         testPlatformResourcePaths();
+        testPlatformEmulationFallback();
+        testBinaryStoreExtractsAndCleans();
+        testBinaryStoreEmulationFallback();
         testJsonBasics();
         testJsonEscapes();
         testJsonRejectsNested();
@@ -84,6 +87,9 @@ public final class SelfTest {
         testTelemetryFailureCodeContract();
         testTelemetryCollector();
         testTelemetryConcurrentFlush();
+        testTelemetryBackendNatDimensions();
+        testAgentEventNatField();
+        testServeTelemetryLifecycle();
         testUpgradeTelemetryLanding();
         testUpgradeTelemetryStaleRedirect();
         testUpgradeTelemetryRedirectFailure();
@@ -138,6 +144,97 @@ public final class SelfTest {
         Platform linuxArm64 = Platform.detect("Linux", "aarch64");
         check("Linux ARM64 资源路径",
                 linuxArm64.resourcePath().equals("natives/linux-arm64/netherway"));
+    }
+
+    private static void testPlatformEmulationFallback() {
+        check("Windows ARM64 兜底到 amd64",
+                "windows-amd64".equals(String.valueOf(
+                        Platform.detect("Windows 11", "arm64").emulationFallback())));
+        check("Apple Silicon 兜底到 amd64（Rosetta）",
+                "macos-amd64".equals(String.valueOf(
+                        Platform.detect("Mac OS X", "aarch64").emulationFallback())));
+        check("Linux ARM64 没有可假定的转译层",
+                Platform.detect("Linux", "aarch64").emulationFallback() == null);
+        check("amd64 平台不反向兜底",
+                Platform.detect("Windows 10", "amd64").emulationFallback() == null);
+    }
+
+    // ---------- BinaryStore ----------
+
+    /** 用内存 map 假扮 mod jar 的资源目录。 */
+    private static ClassLoader fakeJar(final java.util.Map<String, byte[]> resources) {
+        return new ClassLoader(null) {
+            @Override
+            public java.io.InputStream getResourceAsStream(String name) {
+                byte[] data = resources.get(name);
+                return data == null ? null : new java.io.ByteArrayInputStream(data);
+            }
+        };
+    }
+
+    private static void testBinaryStoreExtractsAndCleans() throws Exception {
+        Path dir = Files.createTempDirectory("netherway-bin");
+        // 旧版本残留：本平台旧摘要、别的平台、崩溃留下的陈旧半成品
+        Path oldSelf = dir.resolve("netherway-windows-amd64-000000000000.exe");
+        Path oldOther = dir.resolve("netherway-macos-arm64-0123456789ab");
+        Path oldPart = dir.resolve("netherway-4711.part");
+        Files.write(oldSelf, new byte[] {1});
+        Files.write(oldOther, new byte[] {2});
+        Files.write(oldPart, new byte[] {3});
+        Files.setLastModifiedTime(oldPart, java.nio.file.attribute.FileTime.fromMillis(
+                System.currentTimeMillis() - 2L * 60L * 60L * 1000L));
+        // 不得触碰的邻居：日志、凭证目录、非摘要命名的文件、新鲜半成品
+        Path log = dir.resolve("tunnel.log");
+        Path cred = dir.resolve("credentials").resolve("keep.bin");
+        Path manual = dir.resolve("netherway-windows-amd64.exe");
+        Path freshPart = dir.resolve("netherway-8080.part");
+        Files.write(log, new byte[] {4});
+        Files.createDirectories(cred.getParent());
+        Files.write(cred, new byte[] {5});
+        Files.write(manual, new byte[] {6});
+        Files.write(freshPart, new byte[] {7});
+
+        byte[] agent = "netherway-agent-payload".getBytes("UTF-8");
+        java.util.Map<String, byte[]> jar = new java.util.HashMap<String, byte[]>();
+        jar.put("natives/windows-amd64/netherway.exe", agent);
+
+        BinaryStore store = new BinaryStore(
+                dir, Platform.detect("Windows 10", "amd64"), fakeJar(jar));
+        Path exe = store.ensureExtracted();
+
+        check("释放文件名带平台与摘要", exe.getFileName().toString()
+                .matches("netherway-windows-amd64-[0-9a-f]{12}\\.exe"));
+        check("释放内容逐字节一致",
+                java.util.Arrays.equals(Files.readAllBytes(exe), agent));
+        check("本平台旧摘要被清掉", !Files.exists(oldSelf));
+        check("其它平台残留一并清掉", !Files.exists(oldOther));
+        check("陈旧半成品被清掉", !Files.exists(oldPart));
+        check("日志不受影响", Files.exists(log));
+        check("凭证目录不受影响", Files.exists(cred));
+        check("非摘要命名的文件不受影响", Files.exists(manual));
+        check("新鲜半成品保留（可能有并发提取）", Files.exists(freshPart));
+
+        check("重复调用命中同一路径", store.ensureExtracted().equals(exe) && Files.exists(exe));
+    }
+
+    private static void testBinaryStoreEmulationFallback() throws Exception {
+        byte[] agent = "amd64-only-payload".getBytes("UTF-8");
+        java.util.Map<String, byte[]> jar = new java.util.HashMap<String, byte[]>();
+        jar.put("natives/windows-amd64/netherway.exe", agent);
+
+        Path exe = new BinaryStore(Files.createTempDirectory("netherway-bin-arm"),
+                Platform.detect("Windows 11", "aarch64"), fakeJar(jar)).ensureExtracted();
+        check("Windows ARM64 落到 amd64 转译二进制",
+                exe.getFileName().toString().startsWith("netherway-windows-amd64-"));
+
+        boolean threw = false;
+        try {
+            new BinaryStore(Files.createTempDirectory("netherway-bin-larm"),
+                    Platform.detect("Linux", "aarch64"), fakeJar(jar)).ensureExtracted();
+        } catch (java.io.IOException e) {
+            threw = e.getMessage().contains("linux-arm64");
+        }
+        check("Linux ARM64 无兜底应报错并点名平台", threw);
     }
 
     // ---------- Json ----------
@@ -2027,7 +2124,8 @@ public final class SelfTest {
                 "stun.example:3478", "private-room", "secret-key", 1000)
                 .withOrigin("mc.example.com", 25565);
         warmup.injectReadyForTest(cred, AgentEvent.parse(
-                "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31,\"elapsedMs\":1792}"));
+                "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31,\"elapsedMs\":1792,"
+                + "\"nat\":\"easy\"}"));
         UpgradeController controller = new UpgradeController(bridge, Timings.defaults(),
                 null, warmup, telemetry);
 
@@ -2050,6 +2148,9 @@ public final class SelfTest {
         check("遥测 payload 不含凭证与服务器标识", !after.contains("secret-token")
                 && !after.contains("secret-key") && !after.contains("private-room")
                 && !after.contains("203.0.113.10") && !after.contains("stun.example"));
+        check("遥测摘要带归一化 backend（不透传 backendId 原文）",
+                after.contains("\"backend\":\"frp_xtcp\"") && !after.contains("frp-xtcp"));
+        check("遥测摘要带 agent 探得的 NAT 形态", after.contains("\"nat\":\"easy\""));
         controller.shutdown();
         warmup.shutdown();
     }
@@ -2150,6 +2251,142 @@ public final class SelfTest {
             at += needle.length();
         }
         return count;
+    }
+
+    private static void testTelemetryBackendNatDimensions() {
+        check("backendId 归一化：frp-xtcp → frp_xtcp",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend
+                        .fromBackendId("frp-xtcp")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.FRP_XTCP);
+        check("backendId 归一化：未识别归 other",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend
+                        .fromBackendId("gonc")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.OTHER);
+        check("backendId 归一化：空归 unknown",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.fromBackendId(null)
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.UNKNOWN
+                && cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.fromBackendId("")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.UNKNOWN);
+        check("nat 线上值解析",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Nat.fromWire("easy")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.Nat.EASY
+                && cn.ripplecraft.netherway.core.telemetry.QualitySummary.Nat.fromWire("hard")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.Nat.HARD
+                && cn.ripplecraft.netherway.core.telemetry.QualitySummary.Nat.fromWire("weird")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.Nat.UNKNOWN
+                && cn.ripplecraft.netherway.core.telemetry.QualitySummary.Nat.fromWire(null)
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.Nat.UNKNOWN);
+
+        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment env =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment(
+                        "test", "1.7.10", "8", "linux", "amd64",
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment.Role.CLIENT);
+        cn.ripplecraft.netherway.core.telemetry.QualitySummary summary =
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.of(
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Path.UPGRADE,
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.TUNNEL_READY,
+                        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Outcome.SUCCESS)
+                        .withBackend(cn.ripplecraft.netherway.core.telemetry
+                                .QualitySummary.Backend.FRP_XTCP)
+                        .withNat(cn.ripplecraft.netherway.core.telemetry
+                                .QualitySummary.Nat.HARD);
+
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector enhanced =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.enabled(true), env);
+        enhanced.record(summary);
+        String full = enhanced.previewPayload();
+        check("payload 声明 schema v2", full.contains("\"schemaVersion\":2"));
+        check("增强 payload 带 backend/nat 维度",
+                full.contains("\"backend\":\"frp_xtcp\"") && full.contains("\"nat\":\"hard\""));
+
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector basic =
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.enabled(false), env);
+        basic.record(summary);
+        String small = basic.previewPayload();
+        check("基础模式抹掉 backend/nat",
+                !small.contains("backend") && !small.contains("\"nat\""));
+    }
+
+    private static void testAgentEventNatField() {
+        AgentEvent with = AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":63128,\"nat\":\"easy\"}");
+        check("事件解析 nat 字段", with != null && "easy".equals(with.nat()));
+        AgentEvent without = AgentEvent.parse("{\"event\":\"ready\",\"port\":63128}");
+        check("旧版 agent 无 nat 字段为 null", without != null && without.nat() == null);
+        AgentEvent failed = AgentEvent.parse(
+                "{\"event\":\"failed\",\"failureStage\":\"probe\","
+                + "\"failureCode\":\"ready_probe_timeout\",\"nat\":\"hard\"}");
+        check("失败事件同样携带 nat", failed != null && "hard".equals(failed.nat()));
+    }
+
+    private static cn.ripplecraft.netherway.core.telemetry.TelemetryCollector serveCollector() {
+        return new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
+                cn.ripplecraft.netherway.core.telemetry.TelemetryConfig.enabled(true),
+                new cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment(
+                        "test", "1.7.10", "21", "linux", "amd64",
+                        cn.ripplecraft.netherway.core.telemetry
+                                .TelemetryEnvironment.Role.DEDICATED_SERVER));
+    }
+
+    private static void testServeTelemetryLifecycle() {
+        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend frp =
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.FRP_XTCP;
+
+        // 完整生命周期：启动 → 注册成功 → 异常退出
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector full = serveCollector();
+        cn.ripplecraft.netherway.core.telemetry.ServeTelemetry serve =
+                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(full, frp);
+        serve.onStartAttempt();
+        serve.onLogLine("2026/08/16 00:00:00 [I] [proxy_manager.go:100] "
+                + "[abc] start proxy success: [room]");
+        serve.onLogLine("start proxy success");  // 重复行不得再记一次
+        serve.onExit(false);
+        String payload = full.previewPayload();
+        check("serve 路径与角色", payload.contains("\"path\":\"serve\"")
+                && payload.contains("\"role\":\"dedicated_server\""));
+        check("serve 注册成功记 tunnel_ready", payload.contains("\"stage\":\"tunnel_ready\""));
+        check("serve 注册成功只记一次", countOf(payload, "tunnel_ready") == 1);
+        check("serve 就绪后异常退出记 tunnel_lost", payload.contains("\"stage\":\"tunnel_lost\"")
+                && payload.contains("\"failureCode\":\"backend_exited\""));
+        check("serve 摘要带 backend", payload.contains("\"backend\":\"frp_xtcp\""));
+
+        // 早退：进程活了但没等到注册成功
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector early = serveCollector();
+        cn.ripplecraft.netherway.core.telemetry.ServeTelemetry earlyServe =
+                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(early, frp);
+        earlyServe.onStartAttempt();
+        earlyServe.onExit(false);
+        check("serve 早退记 agent_early_exit",
+                early.previewPayload().contains("\"failureCode\":\"agent_early_exit\""));
+
+        // 主动停止不算事故
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector clean = serveCollector();
+        cn.ripplecraft.netherway.core.telemetry.ServeTelemetry cleanServe =
+                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(clean, frp);
+        cleanServe.onStartAttempt();
+        cleanServe.onLogLine("start proxy success");
+        cleanServe.onExit(true);
+        String cleanPayload = clean.previewPayload();
+        check("serve 主动停止不记 tunnel_lost", !cleanPayload.contains("tunnel_lost")
+                && !cleanPayload.contains("agent_early_exit"));
+
+        // 启动阶段失败
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector fail = serveCollector();
+        cn.ripplecraft.netherway.core.telemetry.ServeTelemetry failServe =
+                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(fail, frp);
+        failServe.onStartAttempt();
+        failServe.onStartFailure(
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.EXTRACT,
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureCode
+                        .BINARY_EXTRACT_FAILED);
+        failServe.onExit(false);  // 启动失败后进程本来就没起，不得再补一条早退
+        String failPayload = fail.previewPayload();
+        check("serve 启动失败记录失败码",
+                failPayload.contains("\"failureCode\":\"binary_extract_failed\""));
+        check("serve 启动失败后不再记早退",
+                !failPayload.contains("agent_early_exit"));
     }
 
     private static void check(String name, boolean ok) {

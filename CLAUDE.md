@@ -63,7 +63,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.nethe
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 432 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 470 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -102,7 +102,10 @@ Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者�
 ```
 
 字段定义在 Go 侧 `cmd/netherway/modbridge.go` 的 `event` 结构与 Java 侧
-`AgentEvent` 中，**改动必须两边同步**。同样必须两边同步的还有各 backend 的
+`AgentEvent` 中，**改动必须两边同步**。遥测的固定枚举再多一处同步点：
+`nat`（easy/hard）的线上值在 Go 侧 `natprobe.go`、Java 侧
+`QualitySummary.Nat` 与 ingest 的 allowed 列表三处逐字一致，
+`failureStage`/`failureCode` 与 backend 归一化枚举同理。同样必须两边同步的还有各 backend 的
 参数键名：Go 侧实现包的常量（如 `internal/backend/frpxtcp`）↔ Java 侧
 `Credentials` 的对应工厂方法（如 `Credentials.frpXtcp`）。以及每玩家令牌的
 格式：Go 侧 `internal/authplugin`（校验）↔ Java 侧 `TokenIssuer`（签发）

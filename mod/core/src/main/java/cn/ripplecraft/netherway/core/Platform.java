@@ -93,6 +93,21 @@ public final class Platform {
         return new Platform(os, arch);
     }
 
+    /**
+     * jar 里没有本平台的二进制时，可借系统转译层运行的替代平台；
+     * 没有可默认假定的转译层则返回 {@code null}。
+     *
+     * <p>jar 只随附主力平台（见 mod/build-natives.sh）。ARM64 的 Windows
+     * 自带 x64 转译、Apple Silicon 有 Rosetta 2，amd64 的二进制照样能跑；
+     * 反方向（amd64 系统跑 arm64 二进制）与 Linux 都没有这种保证。
+     */
+    public Platform emulationFallback() {
+        if (arch == Arch.ARM64 && (os == Os.WINDOWS || os == Os.MACOS)) {
+            return new Platform(os, Arch.AMD64);
+        }
+        return null;
+    }
+
     /** jar 内资源路径，例如 {@code natives/windows-amd64/netherway.exe}。 */
     public String resourcePath() {
         return "natives/" + os.token + "-" + arch.token + "/netherway" + os.exeSuffix;

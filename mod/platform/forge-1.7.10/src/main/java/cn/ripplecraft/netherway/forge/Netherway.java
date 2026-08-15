@@ -90,7 +90,14 @@ public final class Netherway {
                     + "（可用 server.localPort 显式指定）");
             return;
         }
-        serverAgent = new ServerAgent(config);
+        // 服务端角色的匿名遥测：与客户端同一端点、同一 telemetry.* 开关，
+        // 只上报 serve 进程的生命周期（path=serve），不涉及任何玩家数据。
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector telemetry =
+                TelemetryWiring.collector(config,
+                        cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment
+                                .Role.DEDICATED_SERVER);
+        cn.ripplecraft.netherway.core.telemetry.TelemetryFlusher.start(telemetry, 60L);
+        serverAgent = new ServerAgent(config, telemetry);
         serverAgent.start(server.getFile("netherway").toPath(), port, rendezvousPort);
     }
 

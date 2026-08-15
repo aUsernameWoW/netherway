@@ -71,6 +71,13 @@ public final class UpgradeController {
     /** READY 后已排队到游戏线程、但重定向任务尚未执行。guarded by transition。 */
     private boolean redirectScheduled;
     private volatile QualitySummary.Source telemetrySource = QualitySummary.Source.UNKNOWN;
+    /** 本轮升级的隧道方案，随凭证确定；observe 统一盖章。 */
+    private volatile QualitySummary.Backend telemetryBackend = QualitySummary.Backend.UNKNOWN;
+    /**
+     * agent 最近一次探测出的 NAT 形态。NAT 是宿主网络属性而非单轮属性，
+     * 因此跨轮保留、shutdown 不清零；网络切换后由下一个 agent 事件刷新。
+     */
+    private volatile QualitySummary.Nat telemetryNat = QualitySummary.Nat.UNKNOWN;
 
     public UpgradeController(ClientBridge bridge, Timings timings) {
         this(bridge, timings, null, null, QualityObserver.NOOP);
@@ -157,6 +164,7 @@ public final class UpgradeController {
                 activeKey = cred.dedupKey();
                 activeCredentials = cred;
                 punchWaitBoundMs = timings.outcomeWaitMs(cred.punchTimeoutMs());
+                telemetryBackend = QualitySummary.Backend.fromBackendId(cred.backendId());
                 gen = epoch;
             } else {
                 gen = -1;
@@ -237,6 +245,20 @@ public final class UpgradeController {
                                         QualitySummary.Outcome.STARTED)
                                         .withSource(QualitySummary.Source.COLD_AGENT));
                             }
+                            // 承载中的隧道死了（backend 报错退出）。我们自己
+                            // 停 agent 前必然先换代（shutdown）或已离开
+                            // UPGRADED（giveUp），能走到这里的 stopped 只剩
+                            // 真的隧道丢失。进程被外力硬杀不产生事件，不在
+                            // 此覆盖范围内。
+                            if (event.type() == AgentEvent.Type.STOPPED && isCurrent(gen)
+                                    && state.get() == State.UPGRADED) {
+                                observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                                        QualitySummary.Stage.TUNNEL_LOST,
+                                        QualitySummary.Outcome.FAILED)
+                                        .withSource(QualitySummary.Source.COLD_AGENT)
+                                        .withFailure(QualitySummary.FailureStage.BACKEND,
+                                                QualitySummary.FailureCode.BACKEND_EXITED));
+                            }
                         }
 
                         @Override
@@ -266,6 +288,9 @@ public final class UpgradeController {
                     + "ms（agent 详细日志: " + agentLog + "）");
             AgentEvent outcome = proc.awaitOutcome(waitMs);
 
+            if (outcome != null) {
+                rememberNat(outcome);
+            }
             if (outcome == null) {
                 giveUp(proc, cred, "等待直连结果超时", gen,
                         QualitySummary.FailureStage.PROBE,
@@ -372,6 +397,8 @@ public final class UpgradeController {
         if (readyEv == null) {
             return false;
         }
+        telemetryBackend = QualitySummary.Backend.fromBackendId(cred.backendId());
+        rememberNat(readyEv);
         final int port = readyEv.port();
         long rtt = readyEv.rttMs();
         // agent 字段保持 null：隧道归 WarmupController 管，shutdown() 不会误杀
@@ -420,8 +447,10 @@ public final class UpgradeController {
                 lastReady = ready;
                 adoptedDirect = true;
                 telemetrySource = QualitySummary.Source.DIRECT_ENTRY;
+                telemetryBackend = QualitySummary.Backend.fromBackendId(cred.backendId());
             }
         }
+        rememberNat(ready);
         if (!adopted) {
             bridge.debug("当前状态为 " + state.get() + "，不采认直连条目的连接");
             return false;
@@ -658,6 +687,8 @@ public final class UpgradeController {
             redirectScheduled = false;
             redirectPending = false;
             telemetrySource = QualitySummary.Source.UNKNOWN;
+            // telemetryNat 刻意保留：NAT 是宿主网络属性，不随会话复位
+            telemetryBackend = QualitySummary.Backend.UNKNOWN;
             state.set(State.IDLE);
         }
         // close 最长阻塞 3 秒，不能占着转移锁
@@ -722,9 +753,18 @@ public final class UpgradeController {
         }
     }
 
+    /** agent 事件带 NAT 分类时记住它；unknown 不覆盖已知值。 */
+    private void rememberNat(AgentEvent event) {
+        QualitySummary.Nat nat = QualitySummary.Nat.fromWire(event.nat());
+        if (nat != QualitySummary.Nat.UNKNOWN) {
+            telemetryNat = nat;
+        }
+    }
+
     private void observe(QualitySummary summary) {
         try {
-            quality.record(summary);
+            // backend/nat 在这里统一盖章，发射点只关心漏斗语义
+            quality.record(summary.withBackend(telemetryBackend).withNat(telemetryNat));
         } catch (RuntimeException ignored) {
             // 遥测回调绝不能影响直连状态机。
         }

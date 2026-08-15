@@ -2,18 +2,14 @@ package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.CredentialCache;
 import cn.ripplecraft.netherway.core.Prefetcher;
-import cn.ripplecraft.netherway.core.Platform;
 import cn.ripplecraft.netherway.core.ServerCandidates;
 import cn.ripplecraft.netherway.core.SessionIdentity;
 import cn.ripplecraft.netherway.core.UpgradeController;
 import cn.ripplecraft.netherway.core.WarmupController;
 import cn.ripplecraft.netherway.core.telemetry.QualitySummary;
-import cn.ripplecraft.netherway.core.telemetry.HttpTelemetryTransport;
 import cn.ripplecraft.netherway.core.telemetry.TelemetryCollector;
-import cn.ripplecraft.netherway.core.telemetry.TelemetryConfig;
 import cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment;
 import cn.ripplecraft.netherway.core.telemetry.TelemetryFlusher;
-import cn.ripplecraft.netherway.core.telemetry.TelemetryTransport;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.network.FMLEventChannel;
 import java.util.ArrayList;
@@ -28,19 +24,11 @@ import net.minecraftforge.client.ClientCommandHandler;
 /** 物理客户端的接线：把 core 的状态机挂到 Forge 的事件与频道上。 */
 public final class ClientProxy extends CommonProxy {
 
-    private static final String TELEMETRY_ENDPOINT =
-            "https://telemetry.ripplecraft.cn/v1/batches";
-
     private TelemetryCollector telemetry;
 
     @Override
     public void initClient(FMLEventChannel channel, ModConfig config) {
-        TelemetryTransport transport = new HttpTelemetryTransport(
-                TELEMETRY_ENDPOINT, 2_000, 2_000);
-        telemetry = new TelemetryCollector(
-                new TelemetryConfig(config.telemetryEnabled(), config.telemetryEnhanced(),
-                        TelemetryConfig.DEFAULT_MAX_PENDING),
-                clientTelemetryEnvironment(), transport);
+        telemetry = TelemetryWiring.collector(config, TelemetryEnvironment.Role.CLIENT);
         TelemetryFlusher.start(telemetry, 60L);
         if (!config.clientEnabled()) {
             // 玩家可彻底关掉：不注册任何监听，连凭证都不收
@@ -113,33 +101,6 @@ public final class ClientProxy extends CommonProxy {
         QualitySummary.Source source = configured.length == 0
                 ? QualitySummary.Source.SERVER_LIST : QualitySummary.Source.CONFIG;
         return new Prefetcher(bridge, id, candidates, config.clientTimings(), source, telemetry);
-    }
-
-    /** 只输出低基数的标准化环境值；绝不把原始系统属性塞进 payload。 */
-    private static TelemetryEnvironment clientTelemetryEnvironment() {
-        String os = "other";
-        String arch = "other";
-        try {
-            String platform = Platform.detect().toString();
-            int dash = platform.indexOf('-');
-            if (dash > 0) {
-                os = platform.substring(0, dash);
-                arch = platform.substring(dash + 1);
-            }
-        } catch (Platform.UnsupportedPlatformException ignored) {
-            // Unsupported platforms are deliberately grouped as other/other.
-        }
-        return new TelemetryEnvironment(Tags.VERSION, "1.7.10", javaMajor(), os, arch,
-                TelemetryEnvironment.Role.CLIENT);
-    }
-
-    private static String javaMajor() {
-        String spec = System.getProperty("java.specification.version", "");
-        if (spec.startsWith("1.")) {
-            spec = spec.substring(2);
-        }
-        int dot = spec.indexOf('.');
-        return dot < 0 ? spec : spec.substring(0, dot);
     }
 
     /** 读服务器列表（server.dat）里的条目地址，读不了就当没有。 */

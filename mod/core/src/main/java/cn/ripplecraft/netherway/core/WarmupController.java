@@ -100,6 +100,8 @@ public final class WarmupController {
     private volatile boolean stopped;
     private volatile Thread worker;
     private volatile UpgradeGate upgradeGate;
+    /** agent 最近探测出的 NAT 形态；宿主网络属性，各房间共享。 */
+    private volatile QualitySummary.Nat lastNat = QualitySummary.Nat.UNKNOWN;
 
     public WarmupController(ClientBridge bridge, CredentialCache cache, Timings timings,
                             Listener listener, int bindPort, Prefetcher prefetcher) {
@@ -294,7 +296,7 @@ public final class WarmupController {
                     ready.proc.close();
                 }
                 notifyClosed(ready);
-                observe(room.qualityWindow.failed(QualitySummary.Stage.TUNNEL_LOST,
+                observe(room.cred, room.qualityWindow.failed(QualitySummary.Stage.TUNNEL_LOST,
                         QualitySummary.FailureStage.BACKEND,
                         QualitySummary.FailureCode.BACKEND_EXITED));
                 bridge.info("房间 " + room.cred.room() + " 的预热隧道已退出，将重新建立");
@@ -374,18 +376,21 @@ public final class WarmupController {
                             }
                         });
             } catch (java.io.IOException e) {
-                observe(room.qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
+                observe(cred, room.qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
                         QualitySummary.FailureStage.START,
                         QualitySummary.FailureCode.AGENT_START_FAILED));
                 throw e;
             } catch (RuntimeException e) {
-                observe(room.qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
+                observe(cred, room.qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
                         QualitySummary.FailureStage.START,
                         QualitySummary.FailureCode.AGENT_START_FAILED));
                 throw e;
             }
 
             AgentEvent outcome = proc.awaitOutcome(waitMs);
+            if (outcome != null) {
+                rememberNat(outcome);
+            }
             if (outcome != null && outcome.type() == AgentEvent.Type.READY) {
                 synchronized (roomsLock) {
                     if (stopped || rooms.get(cred.dedupKey()) != room) {
@@ -400,7 +405,7 @@ public final class WarmupController {
                 if (listener != null) {
                     listener.onTunnelReady(room.cred, outcome);
                 }
-                observe(room.qualityWindow.succeeded(QualitySummary.Stage.TUNNEL_READY,
+                observe(cred, room.qualityWindow.succeeded(QualitySummary.Stage.TUNNEL_READY,
                         outcome.elapsedMs(), outcome.rttMs()));
                 return true;
             }
@@ -410,11 +415,11 @@ public final class WarmupController {
             bridge.info("房间 " + cred.room() + " 的预热未成功（" + why
                     + "）——将按退避重试，不影响普通连接");
             if (outcome == null) {
-                observe(room.qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
+                observe(cred, room.qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
                         QualitySummary.FailureStage.PROBE,
                         QualitySummary.FailureCode.READY_PROBE_TIMEOUT));
             } else {
-                observe(room.qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
+                observe(cred, room.qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
                         QualitySummary.FailureStage.fromWire(outcome.failureStage()),
                         QualitySummary.FailureCode.fromWire(outcome.failureCode())));
             }
@@ -618,6 +623,24 @@ public final class WarmupController {
         if (listener != null) {
             listener.onTunnelReady(cred, event);
         }
+    }
+
+    /** agent 事件带 NAT 分类时记住它；unknown 不覆盖已知值。 */
+    private void rememberNat(AgentEvent event) {
+        QualitySummary.Nat nat = QualitySummary.Nat.fromWire(event.nat());
+        if (nat != QualitySummary.Nat.UNKNOWN) {
+            lastNat = nat;
+        }
+    }
+
+    /** 有房间上下文的摘要在这里盖上 backend/nat 维度。 */
+    private void observe(Credentials cred, QualitySummary summary) {
+        if (summary == null) {
+            return;
+        }
+        observe(summary
+                .withBackend(QualitySummary.Backend.fromBackendId(cred.backendId()))
+                .withNat(lastNat));
     }
 
     private void observe(QualitySummary summary) {

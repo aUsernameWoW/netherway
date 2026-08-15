@@ -4,7 +4,10 @@
 #           （build.sh 注入、tunnel stdout 契约、serve 内嵌会合点）
 #   core  — Java core 用 JDK 8 编译，在 8/17/21/25 四个 JVM 上跑 SelfTest，
 #           对应 GTNH 用 lwjgl3ify 把 1.7.10 跑在现代 JVM 上的场景
-#   mod   — Forge 1.7.10 适配层（RetroFuturaGradle），产出可发布的 mod jar
+#   mod   — Forge 1.7.10 适配层（RetroFuturaGradle），产出可发布的 mod jar。
+#           日常 commit 构建以短哈希作版本号（jar 名形如
+#           netherway-forge-1.7.10-312dd35.jar，mcmod.info/@Mod 同步），
+#           tag 发布则以 gradle.properties 的 modVersion 为准
 #
 # 这里刻意不接触 TOKEN/SECRET：mod jar 打包的 agent 二进制经
 # mod/build-natives.sh 构建、不含任何密钥，公开发布是安全的。
@@ -184,10 +187,30 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
       - name: 构建打进 jar 的 agent 二进制（无密钥）
         run: ./mod/build-natives.sh
+      # commit 构建的版本号用短哈希覆盖（命令行 -P 优先于 gradle.properties），
+      # jar 文件名与 mcmod.info/@Mod（经 Tags 注入）随 project.version 同源联动，
+      # 拿到任何一个 CI jar 都能对应回具体 commit。tag 构建（release.yml 经
+      # workflow_call 复用本流水线）不覆盖：版本以 gradle.properties 为准，
+      # release.yml 会校验它与 tag 一致，artifact 名也必须与那边的下载名对上。
+      # PR 构建标注 PR 分支头，而不是每次重跑都变的临时 merge commit。
+      - name: 确定 mod 版本号
+        id: modver
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo 'flag=' >> "$GITHUB_OUTPUT"
+          else
+            sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
+            echo "flag=-PmodVersion=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          fi
       - name: Gradle build
         working-directory: mod/platform/forge-1.7.10
         # fromEnv 让 Gradle 的 toolchain 探测认到 setup-java 装的 JDK 8
-        run: ./gradlew build -Dorg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64 --console=plain
+        run: >-
+          ./gradlew build ${{ steps.modver.outputs.flag }}
+          -Dorg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64 --console=plain
       - name: 定位唯一的发布版 JAR
         id: release-jar
         shell: bash

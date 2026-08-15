@@ -31,11 +31,12 @@ public final class AgentEvent {
     private final int online;
     private final String failureStage;
     private final String failureCode;
+    private final String nat;
     private final String reason;
 
     private AgentEvent(Type type, int port, long elapsedMs, long rttMs,
                        String version, int online, String failureStage,
-                       String failureCode, String reason) {
+                       String failureCode, String nat, String reason) {
         this.type = type;
         this.port = port;
         this.elapsedMs = elapsedMs;
@@ -44,6 +45,7 @@ public final class AgentEvent {
         this.online = online;
         this.failureStage = failureStage;
         this.failureCode = failureCode;
+        this.nat = nat;
         this.reason = reason;
     }
 
@@ -64,7 +66,7 @@ public final class AgentEvent {
      */
     public static AgentEvent failed(String failureStage, String failureCode, String reason) {
         return new AgentEvent(Type.FAILED, 0, 0L, 0L, null, 0,
-                failureStage, failureCode, reason);
+                failureStage, failureCode, null, reason);
     }
 
     /**
@@ -114,6 +116,7 @@ public final class AgentEvent {
                 (int) longOf(m, "online"),
                 m.get("failureStage"),
                 m.get("failureCode"),
+                m.get("nat"),
                 m.get("reason"));
     }
 
@@ -167,6 +170,11 @@ public final class AgentEvent {
         return failureCode;
     }
 
+    /** agent 探测出的 NAT 形态（easy/hard）；未探得或旧版 agent 为 null。 */
+    public String nat() {
+        return nat;
+    }
+
     /** 供本地日志展示的自由文本原因，仅 FAILED/STOPPED 可能有值。 */
     public String reason() {
         return reason;
@@ -178,6 +186,7 @@ public final class AgentEvent {
                 + " rttMs=" + rttMs
                 + (failureStage == null ? "" : " failureStage=" + failureStage)
                 + (failureCode == null ? "" : " failureCode=" + failureCode)
+                + (nat == null ? "" : " nat=" + nat)
                 + (reason == null ? "" : " reason=" + reason) + "}";
     }
 }

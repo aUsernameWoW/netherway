@@ -53,6 +53,28 @@ func TestFailedEventContract(t *testing.T) {
 	}
 }
 
+func TestNatWireContract(t *testing.T) {
+	// 线上值与 Java 侧 QualitySummary.Nat、ingest 的 allowed 列表逐字对齐
+	if natWire("EasyNAT") != "easy" || natWire("HardNAT") != "hard" {
+		t.Fatalf("natWire mapping broken: %q/%q", natWire("EasyNAT"), natWire("HardNAT"))
+	}
+	if natWire("SomethingNew") != "" {
+		t.Fatalf("unknown NatType should map to empty, got %q", natWire("SomethingNew"))
+	}
+
+	encoded, err := json.Marshal(event{Event: "ready", Port: 63128, Nat: "easy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["nat"] != "easy" {
+		t.Fatalf("nat = %v", got["nat"])
+	}
+}
+
 func TestNonFailureEventOmitsFailureClassification(t *testing.T) {
 	encoded, err := json.Marshal(event{Event: "ready", Port: 63128})
 	if err != nil {
@@ -67,5 +89,8 @@ func TestNonFailureEventOmitsFailureClassification(t *testing.T) {
 	}
 	if _, ok := got["failureCode"]; ok {
 		t.Fatalf("ready event unexpectedly contains failureCode: %s", encoded)
+	}
+	if _, ok := got["nat"]; ok {
+		t.Fatalf("ready event without probe result unexpectedly contains nat: %s", encoded)
 	}
 }

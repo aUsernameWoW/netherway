@@ -4,6 +4,9 @@ import cn.ripplecraft.netherway.core.BinaryStore;
 import cn.ripplecraft.netherway.core.Credentials;
 import cn.ripplecraft.netherway.core.Platform;
 import cn.ripplecraft.netherway.core.ServeCommand;
+import cn.ripplecraft.netherway.core.telemetry.QualityObserver;
+import cn.ripplecraft.netherway.core.telemetry.QualitySummary;
+import cn.ripplecraft.netherway.core.telemetry.ServeTelemetry;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -31,13 +34,16 @@ public final class ServerAgent {
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
     private final ModConfig config;
+    private final ServeTelemetry telemetry;
     private final AtomicBoolean stopping = new AtomicBoolean(false);
 
     private volatile Process process;
     private Thread shutdownHook;
 
-    public ServerAgent(ModConfig config) {
+    public ServerAgent(ModConfig config, QualityObserver quality) {
         this.config = config;
+        this.telemetry = new ServeTelemetry(quality,
+                QualitySummary.Backend.fromBackendId(config.serverBackendId()));
     }
 
     /**
@@ -50,14 +56,33 @@ public final class ServerAgent {
         if (process != null) {
             return;
         }
+        telemetry.onStartAttempt();
         if (!Credentials.BACKEND_FRP_XTCP.equals(config.serverBackendId())) {
             LOG.warn("内置 serve 目前仅支持 frp-xtcp（当前 backend: {}），"
                     + "请在宿主机上自行运行对应的隧道服务", config.serverBackendId());
+            telemetry.onStartFailure(QualitySummary.FailureStage.START,
+                    QualitySummary.FailureCode.BACKEND_UNKNOWN);
+            return;
+        }
+        Platform platform;
+        try {
+            platform = Platform.detect();
+        } catch (Platform.UnsupportedPlatformException e) {
+            LOG.warn("当前系统没有内置的 agent 二进制，无法启动 serve: {}", e.getMessage());
+            telemetry.onStartFailure(QualitySummary.FailureStage.PLATFORM,
+                    QualitySummary.FailureCode.PLATFORM_UNSUPPORTED);
+            return;
+        }
+        Path exe;
+        try {
+            exe = new BinaryStore(cacheDir, platform).ensureExtracted();
+        } catch (IOException e) {
+            LOG.warn("释放 serve 的 agent 二进制失败", e);
+            telemetry.onStartFailure(QualitySummary.FailureStage.EXTRACT,
+                    QualitySummary.FailureCode.BINARY_EXTRACT_FAILED);
             return;
         }
         try {
-            Platform platform = Platform.detect();
-            Path exe = new BinaryStore(cacheDir, platform).ensureExtracted();
             List<String> cmd = ServeCommand.build(exe, config.serverParams(), localPort,
                     new ServeCommand.Options()
                             .metaToken(config.serveAuthToken())
@@ -93,10 +118,10 @@ public final class ServerAgent {
             } catch (IllegalStateException alreadyShuttingDown) {
                 // JVM 正在退出，无需再注册
             }
-        } catch (Platform.UnsupportedPlatformException e) {
-            LOG.warn("当前系统没有内置的 agent 二进制，无法启动 serve: {}", e.getMessage());
         } catch (IOException e) {
             LOG.warn("内置 serve 启动失败", e);
+            telemetry.onStartFailure(QualitySummary.FailureStage.START,
+                    QualitySummary.FailureCode.AGENT_START_FAILED);
         }
     }
 
@@ -110,6 +135,7 @@ public final class ServerAgent {
                 if (t.isEmpty()) {
                     continue;
                 }
+                telemetry.onLogLine(t);
                 if (t.contains(" [W] ") || t.contains(" [E] ")) {
                     LOG.warn("[serve] {}", t);
                 } else {
@@ -119,6 +145,7 @@ public final class ServerAgent {
         } catch (IOException ignored) {
             // 进程结束导致管道关闭，属正常路径
         }
+        telemetry.onExit(stopping.get());
         if (!stopping.get()) {
             int code = exitCodeOf(proc);
             LOG.warn("内置 serve 进程退出（码 {}）。frp 掉线会自动重连，进程直接退出"
