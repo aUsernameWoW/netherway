@@ -5,11 +5,13 @@ import cn.ripplecraft.netherway.core.Credentials;
 import cpw.mods.fml.relauncher.FMLInjectionData;
 import java.io.File;
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.stream.Stream;
+import net.minecraftforge.client.event.GuiOpenEvent;
 
 /** 不启动 Minecraft，直接用 Forge 1.7.10 的真实配置解析器做回归测试。 */
 public final class ModConfigSelfTest {
@@ -25,6 +27,7 @@ public final class ModConfigSelfTest {
             invalidScalarValuesUseDefaults(root);
             replacementCanBeDisabled(root);
             runtimeRoutesExistOnlyWhileReady();
+            eventSubscriberIsExternallyAccessible();
             System.out.println("ModConfigSelfTest passed");
         } finally {
             deleteRecursively(root);
@@ -102,6 +105,16 @@ public final class ModConfigSelfTest {
         disabled.onTunnelReady(cred, ready);
         check(disabled.resolve("play.example.com") == null,
                 "关闭覆盖时不得发布运行期路由");
+    }
+
+    /** Forge 的 ASM 事件包装类在另一个包/类加载器中，订阅者类型本身必须 public。 */
+    private static void eventSubscriberIsExternallyAccessible() throws Exception {
+        check(Modifier.isPublic(RouteAwareGuiHandler.class.getModifiers()),
+                "GuiOpenEvent 订阅者类型必须 public，Forge ASM 包装类才能访问");
+        check(Modifier.isPublic(RouteAwareGuiHandler.class
+                        .getDeclaredMethod("onGuiOpen", GuiOpenEvent.class)
+                        .getModifiers()),
+                "GuiOpenEvent 订阅方法必须 public");
     }
 
     private static void setMinecraftHome(File root) throws Exception {

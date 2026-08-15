@@ -1486,7 +1486,8 @@ public final class SelfTest {
                     public Credentials fetch(ServerCandidates.Address addr, SessionIdentity id,
                                              int timeoutMs) throws java.io.IOException {
                         if (addr.host.startsWith("silent")) {
-                            throw new java.io.IOException("synthetic no response");
+                            // EOFException 等 IOException 可以没有 message；日志不能再落成 null。
+                            throw new java.io.IOException();
                         }
                         // 两台独立服务刻意使用同一 backend/room，只靠 origin 分隔。
                         return sampleCred("shared-room", addr.host);
@@ -1507,6 +1508,8 @@ public final class SelfTest {
                 origins.contains("one.example.com:25565")
                         && origins.contains("two.example.com:25566"));
         check("同 backend/room 的两台服务拥有独立缓存键", keys.size() == 2);
+        check("无 message 的预取异常仍记录异常类型", bridge.logs.contains(
+                "DEBUG 向 silent.example.com:25565 预取凭证未成功: IOException"));
     }
 
     private static void testPreauthFrameRoundTrip() throws Exception {

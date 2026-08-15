@@ -143,12 +143,12 @@ public final class Prefetcher {
                     FetchResult result = futures.get(i).get();
                     if (result.credentials == null) {
                         Throwable error = result.error;
-                        String message = error == null ? "未返回凭证" : error.getMessage();
                         if (error instanceof RuntimeException) {
                             bridge.warn("向 " + addr + " 预取凭证时出错（不影响正常游戏）",
                                     error);
                         } else {
-                            bridge.debug("向 " + addr + " 预取凭证未成功: " + message);
+                            bridge.debug("向 " + addr + " 预取凭证未成功: "
+                                    + describeFailure(error));
                         }
                         continue;
                     }
@@ -205,5 +205,19 @@ public final class Prefetcher {
         } catch (RuntimeException ignored) {
             // 预取是优化，遥测更不能影响它。
         }
+    }
+
+    /** Throwable 的 message 允许为 null；诊断日志至少要留下异常类型。 */
+    private static String describeFailure(Throwable error) {
+        if (error == null) {
+            return "未返回凭证";
+        }
+        String type = error.getClass().getSimpleName();
+        if (type.isEmpty()) {
+            type = error.getClass().getName();
+        }
+        String message = error.getMessage();
+        return message == null || message.trim().isEmpty()
+                ? type : type + ": " + message;
     }
 }

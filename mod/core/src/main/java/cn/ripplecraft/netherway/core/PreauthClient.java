@@ -2,6 +2,7 @@ package cn.ripplecraft.netherway.core;
 
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -38,7 +39,13 @@ public final class PreauthClient {
                     PreauthProtocol.encodeIdentity(session.username(), session.uuid())));
             out.flush();
 
-            byte[] payload = readReply(in);
+            byte[] payload;
+            try {
+                payload = readReply(in);
+            } catch (EOFException e) {
+                throw new IOException("服务器在返回预认证响应前关闭连接"
+                        + "（可能未启用 server.preauth，或入口未转发到这台服务器）", e);
+            }
             return Credentials.decode(payload);
         } finally {
             closeQuietly(sock);

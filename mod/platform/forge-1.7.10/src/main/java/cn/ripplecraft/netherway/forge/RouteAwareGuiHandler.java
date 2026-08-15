@@ -20,7 +20,7 @@ import net.minecraftforge.client.event.GuiOpenEvent;
  * 回车和双击最终都会经过的 {@code func_146796_h()}。用于连接的是临时副本，
  * 因此随后任何图标保存、编辑或排序都只会把真实入口写回 {@code servers.dat}。
  */
-final class RouteAwareGuiHandler {
+public final class RouteAwareGuiHandler {
 
     private final WarmupEntryRouter routes;
     private final ForgeClientBridge bridge;
