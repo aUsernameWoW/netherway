@@ -101,7 +101,11 @@ jobs:
       # 的 interop 测试钉住，这里额外覆盖 main/serveEmbedded 的旗标装配、
       # 自用静态令牌生成与信号退出路径。「start proxy success」是 frp 的
       # 日志原文，刻意用作 frp bump 的绊线——frp 若改了字样，这里跟着改。
+      # 文案断言以 zh 目录为基准（与 SelfTest、Go 测试一致），故固定
+      # NETHERWAY_LANG=zh，不随 runner locale 漂移。
       - name: serve 内嵌会合点冒烟
+        env:
+          NETHERWAY_LANG: zh
         run: |
           bin/netherway-linux-amd64 serve \
             -rendezvous 17321 -port 25565 \
