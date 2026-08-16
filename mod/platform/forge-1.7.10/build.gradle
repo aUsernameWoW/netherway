@@ -64,6 +64,8 @@ processResources {
     // jar 内嵌 agent 二进制，第三方声明必须随之分发（Apache-2.0/MIT/BSD 都要求
     // 二进制分发时附带版权声明与许可证文本）。
     from('../../../THIRD-PARTY-NOTICES.md') { into 'META-INF' }
+    // AGPL-3.0 要求随作品一并提供许可证文本。
+    from('../../../LICENSE') { into 'META-INF' }
     if (nativesDir.isDirectory()) {
         from(nativesDir) { into 'natives' }
     } else {

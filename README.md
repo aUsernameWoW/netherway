@@ -51,3 +51,13 @@ Only the Forge 1.7.10 build is currently available; builds for the other platfor
 
 See the [release guide](docs/releasing.md) for the agreed release route, maintainer
 checklist, and post-release verification commands.
+
+## 许可证 / License
+
+本项目以 [GNU AGPL-3.0](LICENSE) 授权发布。修改后分发、或以修改版本向网络
+用户提供服务（含托管/集成形态），都必须以同一许可证提供对应源码。
+
+This project is licensed under the [GNU AGPL-3.0](LICENSE). If you distribute
+a modified version, or let users interact with one over a network (including
+hosted or integrated deployments), you must offer its corresponding source
+under the same license.
