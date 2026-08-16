@@ -102,18 +102,18 @@ public final class PreauthProtocol {
     public static Request readRequest(byte[] buf, int len) throws IOException {
         if (len < REQUEST_HEADER_LEN) {
             if (Boolean.FALSE.equals(looksLikeFrame(buf, len))) {
-                throw new IOException("不是 netherway 预认证帧");
+                throw new IOException(L10n.tr("preauth.notAFrame"));
             }
             return null;
         }
         if (!Boolean.TRUE.equals(looksLikeFrame(buf, len))) {
-            throw new IOException("不是 netherway 预认证帧");
+            throw new IOException(L10n.tr("preauth.notAFrame"));
         }
         int version = buf[4] & 0xFF;
         int op = buf[5] & 0xFF;
         int payloadLen = ((buf[6] & 0xFF) << 8) | (buf[7] & 0xFF);
         if (payloadLen > MAX_PAYLOAD) {
-            throw new IOException("payload 超过上限 " + MAX_PAYLOAD + " 字节");
+            throw new IOException(L10n.tr("preauth.frameTooLarge", MAX_PAYLOAD));
         }
         if (len < REQUEST_HEADER_LEN + payloadLen) {
             return null;
@@ -126,7 +126,7 @@ public final class PreauthProtocol {
     /** 组装一个请求帧（客户端用；Java 侧目前只有测试会调）。 */
     public static byte[] encodeRequest(int op, byte[] payload) {
         if (payload.length > MAX_PAYLOAD) {
-            throw new IllegalArgumentException("payload 超过上限 " + MAX_PAYLOAD + " 字节");
+            throw new IllegalArgumentException(L10n.tr("preauth.frameTooLarge", MAX_PAYLOAD));
         }
         byte[] out = new byte[REQUEST_HEADER_LEN + payload.length];
         System.arraycopy(MAGIC, 0, out, 0, MAGIC.length);
@@ -141,7 +141,7 @@ public final class PreauthProtocol {
     /** 组装一个响应帧。 */
     public static byte[] encodeResponse(int status, byte[] payload) {
         if (payload.length > MAX_PAYLOAD) {
-            throw new IllegalArgumentException("payload 超过上限 " + MAX_PAYLOAD + " 字节");
+            throw new IllegalArgumentException(L10n.tr("preauth.frameTooLarge", MAX_PAYLOAD));
         }
         byte[] out = new byte[RESPONSE_HEADER_LEN + payload.length];
         out[0] = (byte) VERSION;
@@ -194,13 +194,13 @@ public final class PreauthProtocol {
      */
     public static String validateIdentity(String username, String uuid) {
         if (username == null || username.isEmpty() || uuid == null || uuid.isEmpty()) {
-            return "username 和 uuid 不能为空";
+            return L10n.tr("preauth.missingIdentity");
         }
         if (username.length() > 32 || hasControlChar(username)) {
-            return "username 不合法";
+            return L10n.tr("preauth.badUsername");
         }
         if (!isHex32(normalizeUuid(uuid))) {
-            return "uuid 不合法（应为 32 位 hex，可带连字符）";
+            return L10n.tr("preauth.badUuid");
         }
         return "";
     }

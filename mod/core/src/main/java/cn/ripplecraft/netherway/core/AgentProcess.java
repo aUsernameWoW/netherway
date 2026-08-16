@@ -121,8 +121,18 @@ public final class AgentProcess implements Closeable {
         }
         // 不合并 stderr：stdout 是 JSON 状态流，掺进日志就没法解析了
         pb.redirectErrorStream(false);
+        applyLanguage(pb);
 
         return new AgentProcess(pb.start(), listener);
+    }
+
+    /** agent 的诊断输出语言跟随 mod（Go 侧 internal/i18n 读同一个环境变量）。 */
+    public static void applyLanguage(ProcessBuilder pb) {
+        try {
+            pb.environment().put("NETHERWAY_LANG", L10n.language().tag);
+        } catch (SecurityException ignored) {
+            // 环境受限时 agent 按自己所处环境判定语言
+        }
     }
 
     static List<String> buildCommand(Path exe, Credentials cred, Timings timings, Path logFile) {
@@ -229,13 +239,12 @@ public final class AgentProcess implements Closeable {
 
     /** 进程没给出终态就结束了，带上 stderr 尾部，否则调用方无从判断原因。 */
     private AgentEvent earlyExitEvent() {
-        StringBuilder sb = new StringBuilder("agent 未给出结果即退出");
         String tail = stderrTail();
-        if (!tail.isEmpty()) {
-            sb.append("：").append(tail);
-        }
+        String reason = tail.isEmpty()
+                ? L10n.tr("agent.earlyExit")
+                : L10n.tr("agent.earlyExitTail", tail);
         // 走 AgentEvent.parse 会碰上引号转义问题，这里直接构造
-        return AgentEvent.failed("start", "agent_early_exit", sb.toString());
+        return AgentEvent.failed("start", "agent_early_exit", reason);
     }
 
     /** 返回 stderr 最近若干行，用于诊断。 */

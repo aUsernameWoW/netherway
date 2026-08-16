@@ -2,6 +2,7 @@ package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.AgentEvent;
 import cn.ripplecraft.netherway.core.Credentials;
+import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.ServerCandidates;
 import cn.ripplecraft.netherway.core.WarmupController;
 import java.util.concurrent.ConcurrentHashMap;
@@ -69,8 +70,7 @@ final class WarmupEntryRouter implements WarmupController.Listener {
         Route route = new Route(cred, event.port());
         routes.put(key, route);
         if (bridge != null) {
-            bridge.info("已在本次会话覆盖服务器入口: " + key + " → "
-                    + route.localAddress());
+            bridge.info(L10n.tr("router.overridden", key, route.localAddress()));
         }
     }
 
@@ -90,7 +90,7 @@ final class WarmupEntryRouter implements WarmupController.Listener {
         if (current != null && current.port == port
                 && current.credentials.dedupKey().equals(cred.dedupKey())
                 && routes.remove(key, current) && bridge != null) {
-            bridge.info("预热隧道已失效，服务器入口恢复原线路: " + key);
+            bridge.info(L10n.tr("router.restored", key));
         }
     }
 

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/fatedier/frp/pkg/nathole"
+
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 )
 
 // Defaults 是内置候选。排在前面的优先，但实际由谁先返回合格结果决定。
@@ -53,7 +55,7 @@ func Resolve(spec string, report func(format string, args ...any)) (string, erro
 		return "", err
 	}
 	if report != nil {
-		report("STUN: 从 %d 个候选中选用 %s", len(candidates), picked)
+		report("%s", i18n.T("stun.picked", len(candidates), picked))
 	}
 	return picked, nil
 }
@@ -91,7 +93,7 @@ func Pick(candidates []string, timeout time.Duration) (string, error) {
 				return
 			}
 			if len(addrs) < 2 {
-				results <- result{server, fmt.Errorf("只返回 %d 个地址，frp 需要 2 个", len(addrs))}
+				results <- result{server, i18n.Errorf("stun.tooFew", len(addrs))}
 				return
 			}
 			results <- result{server, nil}
@@ -115,8 +117,8 @@ func Pick(candidates []string, timeout time.Duration) (string, error) {
 			}
 			failures = append(failures, fmt.Sprintf("%s(%v)", r.server, r.err))
 		case <-deadline:
-			return "", fmt.Errorf("STUN 探测超时；已知失败: %s", strings.Join(failures, ", "))
+			return "", i18n.Errorf("stun.timeout", strings.Join(failures, ", "))
 		}
 	}
-	return "", fmt.Errorf("没有可用的 STUN 服务器: %s", strings.Join(failures, ", "))
+	return "", i18n.Errorf("stun.noneUsable", strings.Join(failures, ", "))
 }

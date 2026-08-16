@@ -1,6 +1,7 @@
 package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.Credentials;
+import cn.ripplecraft.netherway.core.L10n;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
 import cpw.mods.fml.common.SidedProxy;
@@ -86,8 +87,7 @@ public final class Netherway {
         int port = config.serverLocalPort() > 0
                 ? config.serverLocalPort() : server.getServerPort();
         if (port <= 0) {
-            LOG.warn("无法确定 Minecraft 监听端口，内置 serve 未启动"
-                    + "（可用 server.localPort 显式指定）");
+            LOG.warn(L10n.tr("fserver.noPort"));
             return;
         }
         // 服务端角色的匿名遥测：与客户端同一端点、同一 telemetry.* 开关，
@@ -124,11 +124,10 @@ public final class Netherway {
             } finally {
                 probe.close();
             }
-            LOG.info("内嵌会合点将监听 127.0.0.1:{}：玩家的 frp 控制连接会从 Minecraft "
-                    + "端口转发进去，公网侧只需要一条能到 Minecraft 端口的 TCP 隧道", port);
+            LOG.info(L10n.tr("fserver.rendezvousPort", port));
             return port;
         } catch (java.io.IOException e) {
-            LOG.warn("挑选会合点端口失败，内嵌会合点未启用", e);
+            LOG.warn(L10n.tr("fserver.rendezvousPortFailed"), e);
             return 0;
         }
     }
@@ -144,7 +143,7 @@ public final class Netherway {
 
     /** 把预认证已开启这件事写进启动日志。 */
     private static void logPreauthConfig() {
-        LOG.info("预认证已开启：玩家可在进服前于 MC 端口换取直连凭证（不做身份验证）");
+        LOG.info(L10n.tr("fserver.preauthOn"));
     }
 
     /**
@@ -157,28 +156,22 @@ public final class Netherway {
         }
         Credentials cred = config.serverCredentials();
         if (cred == null) {
-            LOG.warn("server.enabled 已开启但凭证配置不完整，不会下发直连凭证"
-                    + "（检查 server.params）");
+            LOG.warn(L10n.tr("fserver.incompleteCred"));
             return;
         }
         // toString 只列参数键名，不含 token 与密钥值
-        LOG.info("服务端直连已启用，玩家登录后将下发 {}", cred);
+        LOG.info(L10n.tr("fserver.enabled", cred));
         if (!config.tokenSigningKey().isEmpty()) {
             // 指纹与 frps 侧 authplugin 的启动日志核对，两侧一致才说明密钥没配岔
-            LOG.info("每玩家令牌签发已启用（有效期 {} 天），签发密钥指纹 {}",
+            LOG.info(L10n.tr("fserver.tokenIssuing",
                     config.tokenTtlDays(),
                     cn.ripplecraft.netherway.core.TokenIssuer.keyFingerprint(
-                            config.tokenSigningKey()));
+                            config.tokenSigningKey())));
         }
         if (config.serverRunAgent()) {
-            LOG.info("将随服务端启动内置 serve，把房间 \"{}\" 注册到 frps"
-                    + "（若宿主机还单独跑着 netherway serve，请停掉其一，"
-                    + "同名代理会注册冲突）", cred.room());
+            LOG.info(L10n.tr("fserver.willRunServe", cred.room()));
         } else {
-            LOG.info("注意：server.runAgent 已关闭，mod 只下发凭证；房间 \"{}\" 的"
-                    + "代理需要宿主机上独立运行的 netherway serve 注册到 frps"
-                    + "（-room 必须一致），否则玩家侧会报 xtcp server doesn't exist",
-                    cred.room());
+            LOG.info(L10n.tr("fserver.noRunAgent", cred.room()));
         }
     }
 }

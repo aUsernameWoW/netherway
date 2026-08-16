@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/aUsernameWoW/netherway/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 	"github.com/aUsernameWoW/netherway/internal/rendezvous"
 	"github.com/aUsernameWoW/netherway/internal/stunpick"
 	"github.com/aUsernameWoW/netherway/internal/tunnel"
@@ -31,10 +32,10 @@ func serveEmbedded(ep *tunnel.Endpoint, room *config.Room, localPort, rendezvous
 	// 房间密钥仍是必需的：它决定谁能对这个房间发起打洞。
 	// 而 frps 地址/令牌在这个模式下不再需要——前者是回环，后者本机生成。
 	if room.Name == "" {
-		return fmt.Errorf("房间名为空：用 -room 指定，或在构建时注入 DefaultRoom")
+		return i18n.Errorf("config.emptyRoom")
 	}
 	if room.SecretKey == "" {
-		return fmt.Errorf("密钥为空：用 -secret 指定，或在构建时注入 DefaultSecretKey")
+		return i18n.Errorf("config.emptySecret")
 	}
 
 	ctx, stop := signalContext()
@@ -53,8 +54,7 @@ func serveEmbedded(ep *tunnel.Endpoint, room *config.Room, localPort, rendezvous
 	// 静态令牌单独存在没有意义——它的用途是向共享的公网 frps 表明身份，
 	// 而内嵌会合点本来就只服务这一个进程。
 	if signingKey == "" && staticToken != "" {
-		say("已忽略静态令牌：未配置签发密钥（服务端 cfg 的 tokenSigningKey）时" +
-			"没有每玩家令牌可校验，内嵌会合点不启用鉴权端点")
+		say("%s", i18n.T("serve.staticTokenIgnored"))
 		staticToken = ""
 	}
 
@@ -67,7 +67,7 @@ func serveEmbedded(ep *tunnel.Endpoint, room *config.Room, localPort, rendezvous
 			return err
 		}
 		staticToken = generated
-		say("serve 自用静态令牌本次启动随机生成（仅用于向内嵌鉴权端点自证身份）")
+		say("%s", i18n.T("serve.selfTokenGenerated"))
 	}
 
 	rz, err := rendezvous.Start(ctx, rendezvous.Options{
@@ -91,16 +91,14 @@ func serveEmbedded(ep *tunnel.Endpoint, room *config.Room, localPort, rendezvous
 		ep.Metas = map[string]string{"token": staticToken}
 	}
 
-	say("发布本地端口 %d 为房间 %q（P2P，内嵌会合点 127.0.0.1:%d）",
-		localPort, room.Name, rendezvousPort)
+	say("%s", i18n.T("serve.publishEmbedded", localPort, room.Name, rendezvousPort))
 	picked, err := stunpick.Resolve(ep.STUNServer, say)
 	if err != nil {
 		return err
 	}
 	ep.STUNServer = picked
 	if proxyProtocol != "" {
-		say("PROXY protocol %s 已启用：确保 MC 服务端装有剥头组件，"+
-			"否则玩家会连不上（当前 frp 版本仅 stcp 中转路径实际带头）", proxyProtocol)
+		say("%s", i18n.T("serve.proxyProtocolOn", proxyProtocol))
 	}
 
 	return tunnel.Serve(ctx, *ep, *room, localPort,
@@ -121,6 +119,6 @@ func checkProxyProtocol(v string) error {
 	case "", "v1", "v2":
 		return nil
 	default:
-		return fmt.Errorf("-proxy-protocol 只接受 v1 或 v2（收到 %q）", v)
+		return i18n.Errorf("serve.badProxyProtocol", v)
 	}
 }

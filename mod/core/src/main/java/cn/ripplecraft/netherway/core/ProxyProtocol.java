@@ -120,19 +120,19 @@ public final class ProxyProtocol {
         }
         int verCmd = buf[12] & 0xFF;
         if ((verCmd >>> 4) != 0x2) {
-            return invalid("v2 签名后的版本号不是 2");
+            return invalid(L10n.tr("proxyproto.v2BadVersion"));
         }
         int cmd = verCmd & 0x0F;
         if (cmd > 1) {
-            return invalid("v2 命令字段非法");
+            return invalid(L10n.tr("proxyproto.v2BadCommand"));
         }
         int family = (buf[13] & 0xFF) >>> 4;
         if (family > 3) {
-            return invalid("v2 地址族非法");
+            return invalid(L10n.tr("proxyproto.v2BadFamily"));
         }
         int payload = ((buf[14] & 0xFF) << 8) | (buf[15] & 0xFF);
         if (payload > V2_MAX_PAYLOAD) {
-            return invalid("v2 附加数据超过接受上限 " + V2_MAX_PAYLOAD + " 字节");
+            return invalid(L10n.tr("proxyproto.v2TooLarge", V2_MAX_PAYLOAD));
         }
         int total = 16 + payload;
         if (len < total) {
@@ -144,13 +144,13 @@ public final class ProxyProtocol {
         }
         if (family == 0x1) { // AF_INET: src(4) dst(4) sport(2) dport(2)
             if (payload < 12) {
-                return invalid("v2 IPv4 地址块不完整");
+                return invalid(L10n.tr("proxyproto.v2ShortIpv4"));
             }
             return present(total, address(buf, 16, 4, port(buf, 16 + 8)));
         }
         if (family == 0x2) { // AF_INET6: src(16) dst(16) sport(2) dport(2)
             if (payload < 36) {
-                return invalid("v2 IPv6 地址块不完整");
+                return invalid(L10n.tr("proxyproto.v2ShortIpv6"));
             }
             return present(total, address(buf, 16, 16, port(buf, 16 + 32)));
         }
@@ -192,13 +192,13 @@ public final class ProxyProtocol {
             }
         }
         if (cr < 0) {
-            return len >= V1_MAX ? invalid("v1 头超过 " + V1_MAX + " 字节仍未见 CRLF") : NEED_MORE;
+            return len >= V1_MAX ? invalid(L10n.tr("proxyproto.v1NoCrlf", V1_MAX)) : NEED_MORE;
         }
         if (cr + 1 >= len) {
-            return cr + 1 >= V1_MAX ? invalid("v1 头超长") : NEED_MORE;
+            return cr + 1 >= V1_MAX ? invalid(L10n.tr("proxyproto.v1TooLong")) : NEED_MORE;
         }
         if (buf[cr + 1] != '\n') {
-            return invalid("v1 头的 CR 后不是 LF");
+            return invalid(L10n.tr("proxyproto.v1BadCrlf"));
         }
 
         String line = new String(buf, 0, cr, StandardCharsets.US_ASCII);
@@ -208,22 +208,22 @@ public final class ProxyProtocol {
             return present(cr + 2, null);
         }
         if (t.length != 6) {
-            return invalid("v1 头字段数不是 6");
+            return invalid(L10n.tr("proxyproto.v1BadFieldCount"));
         }
         boolean v4 = "TCP4".equals(t[1]);
         boolean v6 = "TCP6".equals(t[1]);
         if (!v4 && !v6) {
-            return invalid("v1 协议族不是 TCP4/TCP6/UNKNOWN");
+            return invalid(L10n.tr("proxyproto.v1BadFamily"));
         }
         int srcPort = parsePort(t[4]);
         int dstPort = parsePort(t[5]);
         if (srcPort < 0 || dstPort < 0) {
-            return invalid("v1 端口非法");
+            return invalid(L10n.tr("proxyproto.v1BadPort"));
         }
         InetAddress src = v4 ? parseIPv4(t[2]) : parseIPv6(t[2]);
         InetAddress dst = v4 ? parseIPv4(t[3]) : parseIPv6(t[3]);
         if (src == null || dst == null) {
-            return invalid("v1 地址不是合法的 IP 字面量");
+            return invalid(L10n.tr("proxyproto.v1BadAddress"));
         }
         return present(cr + 2, new InetSocketAddress(src, srcPort));
     }

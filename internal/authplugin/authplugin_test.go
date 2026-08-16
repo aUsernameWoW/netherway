@@ -9,7 +9,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 )
+
+// 文案断言以 zh 目录为基准；en 侧由 internal/i18n 的一致性测试覆盖。
+func init() { i18n.Use(i18n.ZH) }
 
 // 跨语言已知答案：与 Java 侧 SelfTest 的 testTokenIssuerKnownAnswer 用同一组
 // 常量。任何一侧的算法改动都会先在这里撞车，而不是在玩家连不上时才发现。

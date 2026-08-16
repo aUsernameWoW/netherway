@@ -80,15 +80,14 @@ public final class PreauthService {
         }
         Credentials cred = host.credentials();
         if (cred == null) {
-            return Reply.err("服务端凭证配置不完整");
+            return Reply.err(L10n.tr("preauth.incompleteConfig"));
         }
         cred = withPlayerToken(cred, uuid);
-        host.log("预下发: " + username + " (" + uuid + ") 取得房间 "
-                + cred.room() + " 的凭证");
+        host.log(L10n.tr("preauth.issued", username, uuid, cred.room()));
         try {
             return Reply.ok(cred.encode());
         } catch (RuntimeException e) {
-            return Reply.err("组装凭证失败");
+            return Reply.err(L10n.tr("preauth.buildFailed"));
         }
     }
 

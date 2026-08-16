@@ -153,7 +153,7 @@ public final class WarmupController {
         try {
             platform = Platform.detect();
         } catch (Platform.UnsupportedPlatformException e) {
-            bridge.debug("当前系统不支持直连，跳过预热: " + e.getMessage());
+            bridge.debug(L10n.tr("warmup.platformUnsupported", e.getMessage()));
             observe(QualitySummary.of(QualitySummary.Path.WARMUP,
                     QualitySummary.Stage.ROUND_FINISHED, QualitySummary.Outcome.FAILED)
                     .withFailure(QualitySummary.FailureStage.PLATFORM,
@@ -165,7 +165,7 @@ public final class WarmupController {
         try {
             exe = new BinaryStore(cacheDir, platform).ensureExtracted();
         } catch (Exception e) {
-            bridge.warn("释放 agent 二进制失败，本会话预热不可用（不影响正常游戏）", e);
+            bridge.warn(L10n.tr("warmup.extractFailed"), e);
             observe(QualitySummary.of(QualitySummary.Path.WARMUP,
                     QualitySummary.Stage.ROUND_FINISHED, QualitySummary.Outcome.FAILED)
                     .withFailure(QualitySummary.FailureStage.EXTRACT,
@@ -196,11 +196,11 @@ public final class WarmupController {
 
                 if (empty) {
                     if (prefetcher == null) {
-                        bridge.debug("没有缓存凭证，也没有可预取的服务器地址，跳过预热");
+                        bridge.debug(L10n.tr("warmup.noCredentials"));
                         return;
                     }
                     if (!loggedIdle) {
-                        bridge.info("暂无可用凭证，将继续预取（不影响普通连接）");
+                        bridge.info(L10n.tr("warmup.idle"));
                         loggedIdle = true;
                     }
                 } else {
@@ -213,7 +213,7 @@ public final class WarmupController {
                 Thread.currentThread().interrupt();
                 return;
             } catch (Exception e) {
-                bridge.warn("预热管理器一轮异常（继续运行，不影响正常游戏）", e);
+                bridge.warn(L10n.tr("warmup.loopError"), e);
                 try {
                     Thread.sleep(timings.warmupRetryDelayMs(0));
                 } catch (InterruptedException interrupted) {
@@ -266,7 +266,7 @@ public final class WarmupController {
                     room.backoffAttempt = 0;
                     room.nextAttemptAt = 0L;
                     room.addressWarningLogged = false;
-                    bridge.info("房间 " + room.cred.room() + " 的建联参数已更新，将重建预热隧道");
+                    bridge.info(L10n.tr("warmup.paramsUpdated", room.cred.room()));
                 }
             }
         }
@@ -308,7 +308,7 @@ public final class WarmupController {
                 observe(room.cred, room.qualityWindow.failed(QualitySummary.Stage.TUNNEL_LOST,
                         QualitySummary.FailureStage.BACKEND,
                         QualitySummary.FailureCode.BACKEND_EXITED));
-                bridge.info("房间 " + room.cred.room() + " 的预热隧道已退出，将重新建立");
+                bridge.info(L10n.tr("warmup.tunnelExited", room.cred.room()));
             }
 
             Credentials cred;
@@ -319,8 +319,7 @@ public final class WarmupController {
                 }
                 if (cred.needsRendezvousAddress()) {
                     if (!room.addressWarningLogged) {
-                        bridge.info("房间 " + cred.room()
-                                + " 的旧缓存未带服务入口，无法预热（预取或进服一次后自愈）");
+                        bridge.info(L10n.tr("warmup.staleCacheNoAddress", cred.room()));
                         room.addressWarningLogged = true;
                     }
                     scheduleRetry(room);
@@ -335,7 +334,7 @@ public final class WarmupController {
             try {
                 becameReady = runAttempt(room, cred, exe, cacheDir);
             } catch (Exception e) {
-                bridge.warn("房间 " + cred.room() + " 的预热尝试异常（继续重试）", e);
+                bridge.warn(L10n.tr("warmup.attemptError", cred.room()), e);
             } finally {
                 releaseWarmPunch();
             }
@@ -357,9 +356,9 @@ public final class WarmupController {
     private boolean runAttempt(final RoomState room, final Credentials cred,
                                Path exe, Path cacheDir) throws Exception {
         final Path agentLog = cacheDir.resolve("tunnel-warmup-" + shortId(cred.dedupKey()) + ".log");
-        bridge.info("用房间 " + cred.room() + " 的凭证预热直连（" + cred.backendId() + "）");
-        bridge.debug("启动预热 agent: " + AgentProcess.describeCommand(
-                AgentProcess.buildCommand(exe, cred, timings, agentLog, bindPort)));
+        bridge.info(L10n.tr("warmup.attempt", cred.room(), cred.backendId()));
+        bridge.debug(L10n.tr("warmup.agentCommand", AgentProcess.describeCommand(
+                AgentProcess.buildCommand(exe, cred, timings, agentLog, bindPort))));
 
         long waitMs = timings.outcomeWaitMs(cred.punchTimeoutMs());
         AgentProcess proc = null;
@@ -370,7 +369,7 @@ public final class WarmupController {
                         new AgentProcess.Listener() {
                             @Override
                             public void onEvent(AgentEvent event) {
-                                bridge.debug("房间 " + cred.room() + " 的预热 agent 事件: " + event);
+                                bridge.debug(L10n.tr("warmup.agentEvent", cred.room(), event));
                                 if (event.type() == AgentEvent.Type.STARTING) {
                                     room.qualityWindow.markAttempts(1);
                                     if (event.port() > 0 && listener != null) {
@@ -381,7 +380,7 @@ public final class WarmupController {
 
                             @Override
                             public void onStderrLine(String line) {
-                                bridge.debug("房间 " + cred.room() + " 的预热 agent: " + line);
+                                bridge.debug(L10n.tr("warmup.agentStderr", cred.room(), line));
                             }
                         });
             } catch (java.io.IOException e) {
@@ -409,8 +408,8 @@ public final class WarmupController {
                     room.ready = new Ready(room.cred, outcome, proc);
                 }
                 retained = true;
-                bridge.info("房间 " + cred.room() + " 的预热直连就绪，端口 "
-                        + outcome.port() + "，延迟 " + outcome.rttMs() + "ms");
+                bridge.info(L10n.tr("warmup.ready",
+                        cred.room(), outcome.port(), outcome.rttMs()));
                 if (listener != null) {
                     listener.onTunnelReady(room.cred, outcome);
                 }
@@ -420,10 +419,9 @@ public final class WarmupController {
                 return true;
             }
 
-            String why = outcome == null ? "等待打洞结果超时"
-                    : (outcome.reason() == null ? "打洞未成功" : outcome.reason());
-            bridge.info("房间 " + cred.room() + " 的预热未成功（" + why
-                    + "）——将按退避重试，不影响普通连接");
+            String why = outcome == null ? L10n.tr("reason.warmupOutcomeTimeout")
+                    : (outcome.reason() == null ? L10n.tr("reason.punchFailed") : outcome.reason());
+            bridge.info(L10n.tr("warmup.notReady", cred.room(), why));
             if (outcome == null) {
                 observe(cred, room.qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
                         QualitySummary.FailureStage.PROBE,
@@ -444,8 +442,7 @@ public final class WarmupController {
     private void scheduleRetry(RoomState room) {
         long delay = timings.warmupRetryDelayMs(room.backoffAttempt++);
         room.nextAttemptAt = System.currentTimeMillis() + delay;
-        bridge.debug("房间 " + room.cred.room() + " 的预热将在 "
-                + (delay / 1000) + " 秒后重试");
+        bridge.debug(L10n.tr("warmup.retryIn", room.cred.room(), delay / 1000));
     }
 
     private long managerPollMs() {
@@ -649,7 +646,7 @@ public final class WarmupController {
             observer.onWarmTunnelReady(cred, event);
         } catch (RuntimeException e) {
             // 救援失败只损失一次就地切换，绝不能连累预热隧道本身
-            bridge.warn("预热就绪回调异常（隧道不受影响）", e);
+            bridge.warn(L10n.tr("warmup.readyObserverError"), e);
         }
     }
 

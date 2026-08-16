@@ -1,6 +1,7 @@
 package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.Credentials;
+import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.UpgradeController;
 import cn.ripplecraft.netherway.core.WarmupController;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
@@ -48,13 +49,13 @@ public final class ClientEvents {
         ByteBuf buf = event.packet.payload();
         byte[] data = new byte[buf.readableBytes()];
         buf.readBytes(data);
-        bridge.debug("收到服务端凭证包，" + data.length + " 字节");
+        bridge.debug(L10n.tr("fclient.credPacket", data.length));
         try {
             Credentials cred = Credentials.decode(data);
             controller.onCredentials(cred);
         } catch (IOException e) {
             // 损坏或过旧的凭证只影响升级，不影响玩家当前的连接
-            LOG.warn("凭证解码失败，忽略本次下发", e);
+            LOG.warn(L10n.tr("fclient.credDecodeFailed"), e);
         }
     }
 
@@ -77,7 +78,7 @@ public final class ClientEvents {
         ForgeClientBridge.ConnectResult result = bridge.connectionOpened(event.manager);
         if (result == ForgeClientBridge.ConnectResult.REDIRECT_LANDED) {
             // 我们发起的切换成功落地，隧道由 agent 继续承载，什么都不用做
-            bridge.debug("直连切换完成，agent 继续承载新连接");
+            bridge.debug(L10n.tr("fclient.switchDone"));
             controller.onRedirectLanded();
             return;
         }
@@ -92,7 +93,7 @@ public final class ClientEvents {
         Credentials warm = warmupMatch(event.manager);
         if (warm != null
                 && controller.adoptDirectConnection(warm, warmup.readyEvent(warm.dedupKey()))) {
-            bridge.debug("玩家经直连条目进服，已采认预热隧道");
+            bridge.debug(L10n.tr("fclient.adopted"));
         }
     }
 
@@ -114,27 +115,27 @@ public final class ClientEvents {
         ForgeClientBridge.DisconnectResult result = bridge.connectionClosed(event.manager);
         if (result == ForgeClientBridge.DisconnectResult.REDIRECT_ORIGIN) {
             // 升级引发的旧连接断开：马上要连的就是这条隧道，不能停 agent
-            bridge.debug("断开由直连切换引发，保留 agent 等待新连接落地");
+            bridge.debug(L10n.tr("fclient.disconnectBySwitch"));
             controller.onDisconnected();
             return;
         }
         if (result == ForgeClientBridge.DisconnectResult.STALE) {
             // 可能是新连接先落地后的旧连接迟到，也可能是尚未 connected 的
             // 目标失败；后者无法可靠辨认，交给 bridge 的有界 timeout 收口。
-            bridge.debug("忽略非当前连接的迟到断开事件");
+            bridge.debug(L10n.tr("fclient.staleDisconnect"));
             return;
         }
         if (controller.redirectInProgress()) {
             // controller 已提交重定向，但 bridge.connectTo 尚未把 manager tracker
             // 立起来时，旧连接也可能先报断开。靠 controller 代际补上这个窄窗。
-            bridge.debug("直连切换已提交，保留 agent 等待 bridge 开始目标连接");
+            bridge.debug(L10n.tr("fclient.redirectCommitted"));
             controller.onDisconnected();
             return;
         }
         // 真退出：无论升级到哪一步都彻底停掉并复位。
         // UPGRADED 下 onDisconnected() 会误以为断开是升级造成的而放过 agent，
         // 所以这里必须用 shutdown()。
-        bridge.debug("玩家离开服务器，停止 agent 并复位");
+        bridge.debug(L10n.tr("fclient.playerLeft"));
         controller.shutdown();
     }
 }

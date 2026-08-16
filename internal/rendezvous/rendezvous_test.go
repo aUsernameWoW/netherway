@@ -6,7 +6,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 )
+
+// 文案断言以 zh 目录为基准；en 侧由 internal/i18n 的一致性测试覆盖。
+func init() { i18n.Use(i18n.ZH) }
 
 func freePort(t *testing.T) int {
 	t.Helper()

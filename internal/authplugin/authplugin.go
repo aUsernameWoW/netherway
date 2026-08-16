@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 )
 
 // MetaUser 与 MetaToken 是 metas 里的键名，与 Go 侧 frpxtcp backend
@@ -49,22 +51,22 @@ func IssueToken(key, user string, expiryUnix int64) string {
 func VerifyToken(key, user, token string, now time.Time) error {
 	dot := strings.IndexByte(token, '.')
 	if dot <= 0 {
-		return fmt.Errorf("令牌格式错误")
+		return i18n.Errorf("auth.badToken")
 	}
 	expiry, err := strconv.ParseInt(token[:dot], 10, 64)
 	if err != nil {
-		return fmt.Errorf("令牌格式错误")
+		return i18n.Errorf("auth.badToken")
 	}
 	if user == "" {
-		return fmt.Errorf("缺少 metas.user")
+		return i18n.Errorf("auth.missingUser")
 	}
 	if now.Unix() > expiry {
-		return fmt.Errorf("令牌已于 %s 过期（重新经中转进服一次即自动续签）",
+		return i18n.Errorf("auth.expired",
 			time.Unix(expiry, 0).Format("2006-01-02"))
 	}
 	// 重新签发再整体比对，hmac.Equal 恒定时间
 	if !hmac.Equal([]byte(IssueToken(key, user, expiry)), []byte(token)) {
-		return fmt.Errorf("令牌校验失败")
+		return i18n.Errorf("auth.verifyFailed")
 	}
 	return nil
 }
@@ -175,21 +177,21 @@ func (h *Handler) decideLogin(c loginContent) string {
 
 	if token == "" {
 		if h.cfg.AllowLegacy {
-			h.logf("放行 legacy 登录（未带令牌）: %s", c.ClientAddress)
+			h.logf("%s", i18n.T("auth.legacyLogin", c.ClientAddress))
 			return ""
 		}
-		h.logf("拒绝登录（未带令牌，且未开 -allow-legacy）: %s", c.ClientAddress)
-		return "登录未携带令牌；旧客户端请重新经服务器中转进服一次以获取新凭证"
+		h.logf("%s", i18n.T("auth.rejectNoToken", c.ClientAddress))
+		return i18n.T("auth.rejectNoTokenReason")
 	}
 	if h.isStatic(token) {
-		h.logf("放行静态令牌登录: %s", c.ClientAddress)
+		h.logf("%s", i18n.T("auth.staticLogin", c.ClientAddress))
 		return ""
 	}
 	if err := VerifyToken(h.cfg.SigningKey, user, token, time.Now()); err != nil {
-		h.logf("拒绝登录（user=%s, %v）: %s", user, err, c.ClientAddress)
+		h.logf("%s", i18n.T("auth.rejectLogin", user, err, c.ClientAddress))
 		return fmt.Sprintf("%v", err)
 	}
-	h.logf("放行玩家登录: user=%s %s", user, c.ClientAddress)
+	h.logf("%s", i18n.T("auth.allowLogin", user, c.ClientAddress))
 	return ""
 }
 
@@ -199,19 +201,19 @@ func (h *Handler) decideNewProxy(c newProxyContent) string {
 	token := c.User.Metas[MetaToken]
 	if token == "" {
 		if h.cfg.AllowLegacy {
-			h.logf("放行 legacy 会话注册代理: %s (%s)", c.ProxyName, c.ProxyType)
+			h.logf("%s", i18n.T("auth.legacyProxy", c.ProxyName, c.ProxyType))
 			return ""
 		}
-		h.logf("拒绝注册代理（未带静态令牌）: %s (%s)", c.ProxyName, c.ProxyType)
-		return "未带静态令牌的会话不允许注册代理"
+		h.logf("%s", i18n.T("auth.rejectProxyNoStatic", c.ProxyName, c.ProxyType))
+		return i18n.T("auth.rejectProxyNoStaticReason")
 	}
 	if h.isStatic(token) {
-		h.logf("放行代理注册: %s (%s)", c.ProxyName, c.ProxyType)
+		h.logf("%s", i18n.T("auth.allowProxy", c.ProxyName, c.ProxyType))
 		return ""
 	}
-	h.logf("拒绝注册代理（玩家令牌，user=%s）: %s (%s)",
-		c.User.Metas[MetaUser], c.ProxyName, c.ProxyType)
-	return "玩家令牌不允许注册代理"
+	h.logf("%s", i18n.T("auth.rejectProxyPlayer",
+		c.User.Metas[MetaUser], c.ProxyName, c.ProxyType))
+	return i18n.T("auth.rejectProxyPlayerReason")
 }
 
 func (h *Handler) isStatic(token string) bool {

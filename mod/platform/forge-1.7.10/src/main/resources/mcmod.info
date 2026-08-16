@@ -1,7 +1,7 @@
 [{
   "modid": "netherway",
   "name": "Netherway",
-  "description": "frp xtcp P2P 直连：登录后后台打洞，成功则切换到直连，失败留在原线路。",
+  "description": "P2P direct connect via frp xtcp: punches through NAT in the background after login, switches over on success, stays on the relay otherwise. / frp xtcp P2P 直连：登录后后台打洞，成功则切换到直连，失败留在原线路。",
   "version": "${version}",
   "mcversion": "${mcversion}",
   "url": "https://github.com/aUsernameWoW/netherway",

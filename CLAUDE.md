@@ -118,6 +118,39 @@ Minecraft 自定义频道（`netherway`）上还有一条 Java↔Java 的契约�
 `Credentials`，客户端在升级结束后回传 `UpgradeReport`（失败立即发、成功等
 切换落地后发），服务端记进日志。两者都是裸字节编解码、版本化、向前兼容。
 
+### 消息目录（i18n，2026-08-16 起）
+
+所有面向用户的文本（游戏聊天提示、游戏/服务端日志、agent 控制台输出、
+flag 帮助）都走代码内嵌的 en/zh 消息目录，**新增用户可见文案必须进目录，
+不得再写裸中文/英文字符串**：
+
+- Java 侧：core 的 `L10n`（`L10n.tr(key, args...)`，占位符 `{0}`–`{9}`），
+  平台层同用。目录写在代码里而非资源文件——core 用裸 javac 编译、又以源码
+  形式编进 forge jar，资源文件两条构建路径都要额外接线；en/zh 并排也不易漏翻。
+  一致性由 SelfTest 钉住（key 双语齐全、占位符集合一致、en 无中文）。
+  类名刻意叫 `L10n` 不叫 `I18n`：MC 客户端自带 `net.minecraft.client.resources.I18n`。
+- Go 侧：`internal/i18n`（`T`/`Errorf`，fmt 风格，目录里的 `%w` 照常包装），
+  一致性由包内测试钉住（en/zh 动词序列一致等）。
+- 语言选择：cfg 的 `general.language`（auto/en/zh，默认 auto）。auto 时
+  客户端跟随 MC 游戏语言（`ClientProxy` 精化）、服务端跟随系统 locale。
+  agent 子进程经 `NETHERWAY_LANG` 环境变量继承 mod 的语言
+  （`AgentProcess.applyLanguage`，tunnel/预热/内置 serve 三条启动路径都过它）；
+  手工运行的 agent 按 `NETHERWAY_LANG` → `LC_ALL`/`LC_MESSAGES`/`LANG` → en 判定。
+- **JSON 契约与遥测枚举不经目录**：`event`/`failureStage`/`failureCode`/`nat`
+  等线上值永远是稳定枚举，只有 `reason` 这类自由文本才本地化。toString
+  一类调试表示也刻意与语言无关。
+- 测试的文案断言以 zh 目录为基准：SelfTest 开头 `L10n.use("zh")`，
+  Go 侧相关测试文件 `init()` 里 `i18n.Use(i18n.ZH)`。改文案时两侧目录
+  与这些断言一起改。
+- cfg 注释也走目录（`cfg.*` 键，含 params 默认值里的 `#` 注释行）：按
+  `general.language` 在 cfg 首次生成时写死，不随语言热切换。只改注释文案
+  不会触发 Forge 回写已有 cfg——注释是裸赋值，`hasChanged` 只看值与新建
+  键/类目，服主手改的文件不受影响（ModConfigSelfTest 钉住）；文件里的注释
+  要等其它变更导致回写时才换语言。`general.language` 自身的注释保持双语、
+  不进目录：语言还没选出来时它也得读得懂。
+- 刻意不进目录的：`docs/`、测试的 check 标签、`backend 重复注册` 这类
+  开发期 panic、「运行环境缺少 SHA-256」这类不可达断言。
+
 ### backend 抽象
 
 具体隧道方案经 `internal/backend` 的接口抽象：一个 backend 只承诺「在本机

@@ -19,6 +19,7 @@ import (
 	"syscall"
 
 	"github.com/aUsernameWoW/netherway/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 	"github.com/aUsernameWoW/netherway/internal/stunpick"
 	"github.com/aUsernameWoW/netherway/internal/tunnel"
 )
@@ -40,64 +41,31 @@ func main() {
 		usage()
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "未知子命令: %s\n\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "%s\n\n", i18n.T("main.unknownCommand", os.Args[1]))
 		usage()
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("main.error", err))
 		os.Exit(1)
 	}
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `netherway — Minecraft P2P 直连
-
-用法:
-  netherway serve [选项]    在服务器宿主机运行，把本地端口发布为 P2P 代理
-  netherway tunnel [选项]   供 Minecraft mod 调用：纯 P2P，超时即放弃
-  netherway authplugin [选项]  在 frps 宿主机运行：每玩家令牌校验（frps httpPlugins）
-
-公共选项:
-  -server  frps 地址        -port    端口
-  -token   frps 令牌        -stun    STUN 服务器
-  -room    房间名           -secret  房间密钥
-  -v       输出调试日志
-
-serve 专有:
-  -meta-token  向 authplugin 表明身份的静态令牌（authplugin -static-token 同值）
-  -proxy-protocol  连本地 MC 端口前先发 PROXY protocol 头（v1/v2），MC 侧需能剥头
-  -rendezvous  内嵌会合点端口（回环）。非零即启用：不连公网 frps，改在本机起
-               会合点，玩家的控制连接由 MC 服务端从 Minecraft 端口转发进来。
-               公网侧因此只需要一条能到 Minecraft 端口的哑 TCP 隧道
-  -signing-key 每玩家令牌签发密钥（仅内嵌会合点模式）
-
-tunnel 专有:
-  -backend   隧道方案，默认 frp-xtcp
-  -O key=value  传给 backend 的参数，可重复；frp-xtcp 也可直接用上面的公共选项
-  -timeout   建链超时秒数，默认 15，超时返回非零码
-  -log-file  backend 日志路径（stdout 留给逐行 JSON 状态）
-
-authplugin 专有:
-  -listen    监听地址，默认 127.0.0.1:7200    -path  HTTP 路径，默认 /handler
-  -key       令牌签发密钥（或环境变量 NETHERWAY_AUTH_KEY）
-  -static-token  静态令牌白名单，可重复      -allow-legacy  迁移期放行无令牌登录
-
-未指定的选项使用构建时注入的默认值。
-`)
+	fmt.Fprint(os.Stderr, i18n.T("main.usage"))
 }
 
 // endpointFlags 注册两端共用的选项。
 func endpointFlags(fs *flag.FlagSet) (*tunnel.Endpoint, *config.Room, *bool) {
 	ep := &tunnel.Endpoint{}
 	room := &config.Room{}
-	fs.StringVar(&ep.ServerAddr, "server", config.DefaultServerAddr, "frps 地址")
-	fs.IntVar(&ep.ServerPort, "server-port", config.ServerPortDefault(), "frps 端口")
-	fs.StringVar(&ep.Token, "token", config.DefaultToken, "frps 令牌")
-	fs.StringVar(&ep.STUNServer, "stun", config.DefaultSTUNServer, "STUN 服务器")
-	fs.StringVar(&room.Name, "room", config.DefaultRoom, "房间名")
-	fs.StringVar(&room.SecretKey, "secret", config.DefaultSecretKey, "房间密钥")
-	verbose := fs.Bool("v", false, "输出调试日志")
+	fs.StringVar(&ep.ServerAddr, "server", config.DefaultServerAddr, i18n.T("flag.server"))
+	fs.IntVar(&ep.ServerPort, "server-port", config.ServerPortDefault(), i18n.T("flag.serverPort"))
+	fs.StringVar(&ep.Token, "token", config.DefaultToken, i18n.T("flag.token"))
+	fs.StringVar(&ep.STUNServer, "stun", config.DefaultSTUNServer, i18n.T("flag.stun"))
+	fs.StringVar(&room.Name, "room", config.DefaultRoom, i18n.T("flag.room"))
+	fs.StringVar(&room.SecretKey, "secret", config.DefaultSecretKey, i18n.T("flag.secret"))
+	verbose := fs.Bool("v", false, i18n.T("flag.verbose"))
 	return ep, room, verbose
 }
 
@@ -128,16 +96,11 @@ func signalContext() (context.Context, context.CancelFunc) {
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	ep, room, verbose := endpointFlags(fs)
-	localPort := fs.Int("port", 25565, "Minecraft 服务器监听的本地端口")
-	metaToken := fs.String("meta-token", "",
-		"向 frps 的 authplugin 表明身份的静态令牌；frps 未部署 authplugin 时不需要")
-	proxyProtocol := fs.String("proxy-protocol", "",
-		"连本地 MC 端口前先发 PROXY protocol 头（v1 或 v2），MC 侧需能剥头；留空关闭")
-	rendezvousPort := fs.Int("rendezvous", 0,
-		"内嵌会合点端口（回环）；非零时不连公网 frps，改在本机起会合点，"+
-			"玩家的控制连接由 MC 服务端从 Minecraft 端口转发进来")
-	signingKey := fs.String("signing-key", "",
-		"每玩家令牌签发密钥，仅内嵌会合点模式下有意义（与服务端 mod 的 tokenSigningKey 同值）")
+	localPort := fs.Int("port", 25565, i18n.T("flag.serve.port"))
+	metaToken := fs.String("meta-token", "", i18n.T("flag.serve.metaToken"))
+	proxyProtocol := fs.String("proxy-protocol", "", i18n.T("flag.serve.proxyProtocol"))
+	rendezvousPort := fs.Int("rendezvous", 0, i18n.T("flag.serve.rendezvous"))
+	signingKey := fs.String("signing-key", "", i18n.T("flag.serve.signingKey"))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -158,7 +121,7 @@ func cmdServe(args []string) error {
 	ctx, stop := signalContext()
 	defer stop()
 
-	fmt.Printf("发布本地端口 %d 为房间 %q（P2P）\n", *localPort, room.Name)
+	fmt.Println(i18n.T("serve.publish", *localPort, room.Name))
 	picked, err := stunpick.Resolve(ep.STUNServer, func(f string, a ...any) {
 		fmt.Printf(f+"\n", a...)
 	})
@@ -168,8 +131,7 @@ func cmdServe(args []string) error {
 	ep.STUNServer = picked
 	fmt.Printf("frps %s:%d\n", ep.ServerAddr, ep.ServerPort)
 	if *proxyProtocol != "" {
-		fmt.Printf("PROXY protocol %s 已启用：确保 MC 服务端装有剥头组件，"+
-			"否则玩家会连不上（当前 frp 版本仅 stcp 中转路径实际带头）\n", *proxyProtocol)
+		fmt.Println(i18n.T("serve.proxyProtocolOn", *proxyProtocol))
 	}
 	return tunnel.Serve(ctx, *ep, *room, *localPort,
 		tunnel.ServeOptions{ProxyProtocol: *proxyProtocol}, consoleLog(*verbose))
@@ -183,7 +145,7 @@ func pickPort(want int) (int, error) {
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return 0, fmt.Errorf("找不到可用端口: %w", err)
+		return 0, i18n.Errorf("main.noFreePort", err)
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil

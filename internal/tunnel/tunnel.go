@@ -17,6 +17,7 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/aUsernameWoW/netherway/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 )
 
 // Endpoint 描述 frps 的位置和鉴权，两端相同。
@@ -34,10 +35,10 @@ type Endpoint struct {
 // Validate 检查必填字段。默认值经构建期注入，这里为空说明既没注入也没传参。
 func (ep Endpoint) Validate() error {
 	if ep.ServerAddr == "" {
-		return fmt.Errorf("未指定 frps 地址：用 -server 指定，或在构建时注入")
+		return i18n.Errorf("tunnel.noServer")
 	}
 	if ep.Token == "" {
-		return fmt.Errorf("未指定 frps 令牌：用 -token 指定，或在构建时注入")
+		return i18n.Errorf("tunnel.noToken")
 	}
 	return nil
 }
@@ -147,7 +148,7 @@ func commonConfig(ep Endpoint, logOpts LogOptions) (*v1.ClientCommonConfig, erro
 		},
 	}
 	if err := c.Complete(); err != nil {
-		return nil, fmt.Errorf("补全客户端配置: %w", err)
+		return nil, i18n.Errorf("tunnel.completeClientConfig", err)
 	}
 	return c, nil
 }
@@ -164,15 +165,15 @@ func run(ctx context.Context, common *v1.ClientCommonConfig,
 	// 末位 nil 表示不启用任何 unsafe 特性，本项目只用 xtcp，用不到。
 	warning, err := validation.ValidateAllClientConfig(common, proxies, visitors, nil)
 	if err != nil {
-		return fmt.Errorf("配置校验: %w", err)
+		return i18n.Errorf("tunnel.validateConfig", err)
 	}
 	if warning != nil {
-		fmt.Fprintf(os.Stderr, "配置警告: %v\n", warning)
+		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("tunnel.configWarning", warning))
 	}
 
 	cs := source.NewConfigSource()
 	if err := cs.ReplaceAll(proxies, visitors); err != nil {
-		return fmt.Errorf("装载代理配置: %w", err)
+		return i18n.Errorf("tunnel.loadProxyConfig", err)
 	}
 
 	svc, err := client.NewService(client.ServiceOptions{
@@ -180,7 +181,7 @@ func run(ctx context.Context, common *v1.ClientCommonConfig,
 		ConfigSourceAggregator: source.NewAggregator(cs),
 	})
 	if err != nil {
-		return fmt.Errorf("创建 frpc 服务: %w", err)
+		return i18n.Errorf("tunnel.createService", err)
 	}
 	return svc.Run(ctx)
 }

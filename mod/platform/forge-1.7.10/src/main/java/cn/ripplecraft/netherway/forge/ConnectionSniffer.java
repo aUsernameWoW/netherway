@@ -1,5 +1,6 @@
 package cn.ripplecraft.netherway.forge;
 
+import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.PreauthProtocol;
 import cn.ripplecraft.netherway.core.PreauthService;
 import cn.ripplecraft.netherway.core.TlsRecord;
@@ -146,22 +147,19 @@ final class ConnectionSniffer {
             }
             if (hooked == 0) {
                 worker.shutdownNow();
-                LOG.warn("没有找到可挂载的监听端点，预认证与 PROXY 剥头均未生效");
+                LOG.warn(L10n.tr("sniffer.noEndpoint"));
                 return;
             }
             active = ctx;
             if (preauth != null) {
-                LOG.info("预认证已挂载到 {} 个监听端点：玩家可在进服前于 MC 端口上换取直连凭证"
-                        + "（不另开监听端口）", hooked);
+                LOG.info(L10n.tr("sniffer.preauthHooked", hooked));
             }
             if (proxyProtocol) {
-                LOG.info("PROXY protocol 剥头已挂载到 {} 个监听端点，"
-                        + "经隧道进来的连接将以真实来源地址示人", hooked);
+                LOG.info(L10n.tr("sniffer.proxyHooked", hooked));
             }
         } catch (Exception e) {
             worker.shutdownNow();
-            LOG.warn("嗅探器挂载失败（MC 内部结构与预期不符？）。"
-                    + "serve 侧若开着 -proxy-protocol 请先关掉，否则玩家会连不上", e);
+            LOG.warn(L10n.tr("sniffer.installFailed"), e);
         }
     }
 
@@ -322,9 +320,8 @@ final class ConnectionSniffer {
                 @Override
                 public void operationComplete(ChannelFuture f) {
                     if (!f.isSuccess()) {
-                        LOG.warn("连接内嵌会合点 127.0.0.1:{} 失败，玩家这条隧道建不起来"
-                                + "（内置 serve 没起来？）: {}", ctx.rendezvousPort,
-                                String.valueOf(f.cause()));
+                        LOG.warn(L10n.tr("sniffer.rendezvousDialFailed",
+                                ctx.rendezvousPort, f.cause()));
                         releasePending();
                         front.close();
                         return;
@@ -415,7 +412,7 @@ final class ConnectionSniffer {
             try {
                 req = PreauthProtocol.readRequest(buf, buf.length);
             } catch (IOException bad) {
-                LOG.debug("预认证帧非法，断开: {}", bad.getMessage());
+                LOG.debug(L10n.tr("sniffer.badPreauthFrame", bad.getMessage()));
                 releasePending();
                 c.close();
                 return;
@@ -447,19 +444,19 @@ final class ConnectionSniffer {
         private byte[] process(PreauthProtocol.Request req) {
             if (req.version != PreauthProtocol.VERSION) {
                 return PreauthProtocol.errorResponse(
-                        "协议版本不符（服务端 " + PreauthProtocol.VERSION + "）");
+                        L10n.tr("sniffer.versionMismatch", PreauthProtocol.VERSION));
             }
             try {
                 if (req.op == PreauthProtocol.OP_REQUEST) {
                     String[] id = PreauthProtocol.decodeIdentity(req.payload);
                     return ctx.preauth.handleRequest(id[0], id[1]).encode();
                 }
-                return PreauthProtocol.errorResponse("未知操作 " + req.op);
+                return PreauthProtocol.errorResponse(L10n.tr("sniffer.unknownOp", req.op));
             } catch (IOException malformed) {
-                return PreauthProtocol.errorResponse("请求内容无法解析");
+                return PreauthProtocol.errorResponse(L10n.tr("sniffer.badRequest"));
             } catch (RuntimeException e) {
-                LOG.warn("预认证处理异常", e);
-                return PreauthProtocol.errorResponse("服务端内部错误");
+                LOG.warn(L10n.tr("sniffer.preauthError"), e);
+                return PreauthProtocol.errorResponse(L10n.tr("sniffer.internalError"));
             }
         }
 
@@ -496,7 +493,7 @@ final class ConnectionSniffer {
                 case INVALID:
                     // 前缀像头但内容坏了。真 MC 客户端不会发这种字节，
                     // 多半是 serve 侧与本侧版本/配置岔了，断开最诚实。
-                    LOG.warn("来自 {} 的连接带着非法的 PROXY 头（{}），已断开", remote, r.error);
+                    LOG.warn(L10n.tr("sniffer.badProxyHeader", remote, r.error));
                     releasePending();
                     c.close();
                     return;
@@ -520,9 +517,9 @@ final class ConnectionSniffer {
             if (tail instanceof NetworkManager) {
                 ReflectionHelper.setPrivateValue(NetworkManager.class, (NetworkManager) tail,
                         source, "socketAddress", "field_150743_l");
-                LOG.debug("PROXY 头已剥离，连接真实来源 {}", source);
+                LOG.debug(L10n.tr("sniffer.proxyStripped", source));
             } else {
-                LOG.warn("pipeline 里没有 packet_handler，真实来源 {} 未能写回（仅剥头）", source);
+                LOG.warn(L10n.tr("sniffer.noPacketHandler", source));
             }
         }
 
@@ -596,7 +593,7 @@ final class ConnectionSniffer {
 
             @Override
             public void exceptionCaught(ChannelHandlerContext c, Throwable cause) {
-                LOG.debug("与内嵌会合点之间的连接异常: {}", String.valueOf(cause));
+                LOG.debug(L10n.tr("sniffer.relayError", cause));
                 c.close();
             }
         }
@@ -606,7 +603,7 @@ final class ConnectionSniffer {
             if (mode == Mode.PREAUTH || mode == Mode.RELAY) {
                 // 独占后下游已无人消化 IO 异常（原本由 NetworkManager 收场），
                 // 不自己关连接就会冒到 pipeline 尾部刷 netty 警告
-                LOG.debug("独占中的连接异常（{}），断开: {}", mode, cause.toString());
+                LOG.debug(L10n.tr("sniffer.exclusiveError", mode, cause));
                 c.close();
                 return;
             }

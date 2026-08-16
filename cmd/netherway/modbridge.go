@@ -14,6 +14,7 @@ import (
 	"github.com/aUsernameWoW/netherway/internal/backend"
 	"github.com/aUsernameWoW/netherway/internal/backend/frpxtcp"
 	"github.com/aUsernameWoW/netherway/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 	"github.com/aUsernameWoW/netherway/internal/mcping"
 )
 
@@ -116,13 +117,13 @@ func emit(e event) {
 type paramFlags map[string]string
 
 func (p paramFlags) String() string {
-	return fmt.Sprintf("%d 个参数", len(p))
+	return i18n.T("tunnel.paramCount", len(p))
 }
 
 func (p paramFlags) Set(s string) error {
 	eq := strings.IndexByte(s, '=')
 	if eq <= 0 {
-		return fmt.Errorf("参数格式应为 key=value: %q", s)
+		return i18n.Errorf("tunnel.badParamFormat", s)
 	}
 	p[s[:eq]] = s[eq+1:]
 	return nil
@@ -165,11 +166,11 @@ func mergedParams(fs *flag.FlagSet, backendName string, explicit map[string]stri
 
 func cmdTunnel(args []string) error {
 	fs := flag.NewFlagSet("tunnel", flag.ExitOnError)
-	backendName := fs.String("backend", frpxtcp.Name, "隧道 backend")
+	backendName := fs.String("backend", frpxtcp.Name, i18n.T("flag.tunnel.backend"))
 	params := paramFlags{}
-	fs.Var(params, "O", "backend 参数，可重复：-O key=value")
+	fs.Var(params, "O", i18n.T("flag.tunnel.param"))
 	_, _, verbose := endpointFlags(fs)
-	wantPort := fs.Int("port", 0, "本地监听端口，0 表示自动分配")
+	wantPort := fs.Int("port", 0, i18n.T("flag.tunnel.port"))
 	// 实测顺利时约 4.8s 就绪（含 STUN 探测与打洞），但重新打洞的慢路径
 	// 会明显更久，12s 都可能擦边。玩家此刻已经在中转连接上正常游戏，
 	// 这段等待是后台进行的，放宽比误判失败更划算。
@@ -177,19 +178,19 @@ func cmdTunnel(args []string) error {
 	// 这些时间参数全部可覆盖：不同玩家网络差异很大，
 	// mod 侧的配置文件会把玩家设定的值经这里传进来。
 	d := config.DefaultTimings()
-	timeout := fs.Float64("timeout", d.PunchTimeout.Seconds(), "建链超时秒数，超时则放弃升级")
-	probeInterval := fs.Float64("probe-interval", d.ProbeInterval.Seconds(), "就绪探测间隔秒数")
-	probeTimeout := fs.Float64("probe-timeout", d.ProbeTimeout.Seconds(), "单次就绪探测超时秒数")
-	retryInterval := fs.Float64("retry-interval", d.RetryMinInterval.Seconds(), "建链失败后最小重试间隔秒数")
-	maxRetries := fs.Int("max-retries-hour", d.MaxRetriesAnHour, "每小时建链重试次数上限")
-	logPath := fs.String("log-file", "", "backend 日志文件，默认写入系统临时目录")
+	timeout := fs.Float64("timeout", d.PunchTimeout.Seconds(), i18n.T("flag.tunnel.timeout"))
+	probeInterval := fs.Float64("probe-interval", d.ProbeInterval.Seconds(), i18n.T("flag.tunnel.probeInterval"))
+	probeTimeout := fs.Float64("probe-timeout", d.ProbeTimeout.Seconds(), i18n.T("flag.tunnel.probeTimeout"))
+	retryInterval := fs.Float64("retry-interval", d.RetryMinInterval.Seconds(), i18n.T("flag.tunnel.retryInterval"))
+	maxRetries := fs.Int("max-retries-hour", d.MaxRetriesAnHour, i18n.T("flag.tunnel.maxRetries"))
+	logPath := fs.String("log-file", "", i18n.T("flag.tunnel.logFile"))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	b, ok := backend.Lookup(*backendName)
 	if !ok {
-		err := fmt.Errorf("未知 backend %q，可用: %s",
+		err := i18n.Errorf("tunnel.unknownBackend",
 			*backendName, strings.Join(backend.Names(), ", "))
 		emit(failedEvent(failureStageStart, failureCodeBackendUnknown, err.Error()))
 		return err
@@ -213,10 +214,10 @@ func cmdTunnel(args []string) error {
 	diagf := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, format+"\n", args...)
 	}
-	diagf("backend %s，本地端口 %d，收到参数键: %s",
-		b.Name(), port, strings.Join(sortedKeys(merged), ", "))
-	diagf("打洞超时 %.1fs，就绪探测间隔 %.2fs、单次超时 %.1fs；frp 日志: %s（级别 %s）",
-		*timeout, *probeInterval, *probeTimeout, *logPath, logLevelOf(*verbose))
+	diagf("%s", i18n.T("tunnel.diagParams",
+		b.Name(), port, strings.Join(sortedKeys(merged), ", ")))
+	diagf("%s", i18n.T("tunnel.diagTimings",
+		*timeout, *probeInterval, *probeTimeout, *logPath, logLevelOf(*verbose)))
 
 	ctx, stop := signalContext()
 	defer stop()
@@ -283,7 +284,7 @@ func cmdTunnel(args []string) error {
 
 	select {
 	case err := <-tunnelErr:
-		reason := "隧道提前退出"
+		reason := i18n.T("tunnel.exitedEarly")
 		if err != nil {
 			reason = err.Error()
 		}
@@ -294,10 +295,10 @@ func cmdTunnel(args []string) error {
 
 	case err := <-probeErr:
 		ev := failedEvent(failureStageProbe, failureCodeReadyProbeTimeout,
-			fmt.Sprintf("建链超时: %v", err))
+			i18n.T("tunnel.probeFailed", err))
 		ev.Nat = takeNat()
 		emit(ev)
-		return fmt.Errorf("隧道未在 %.1fs 内就绪", *timeout)
+		return i18n.Errorf("tunnel.notReadyIn", *timeout)
 
 	case st := <-ready:
 		<-rttCh // 首次探测含建链耗时，对比延迟没有意义，丢弃

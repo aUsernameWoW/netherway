@@ -22,6 +22,10 @@ public final class SelfTest {
     private static int failed;
 
     public static void main(String[] args) throws Exception {
+        // 文案断言以 zh 目录为基准（FakeBridge 靠日志文案识别终态），
+        // en 侧由 testL10nCatalog 的占位符/键位一致性断言覆盖。
+        L10n.use("zh");
+        testL10nCatalog();
         testPlatformDetect();
         testPlatformResourcePaths();
         testPlatformEmulationFallback();
@@ -101,6 +105,75 @@ public final class SelfTest {
         if (failed > 0) {
             System.exit(1);
         }
+    }
+
+    // ---------- L10n ----------
+
+    private static void testL10nCatalog() {
+        // 目录一致性：每个 key 的 en/zh 文案都存在、{N} 占位符集合一致、
+        // en 文案不含 CJK——漏翻一条就在这里现形，不必跑到游戏里发现。
+        boolean allHaveBoth = true;
+        boolean placeholdersMatch = true;
+        boolean enHasNoCjk = true;
+        for (String key : L10n.keys()) {
+            String en = L10n.pattern(key, L10n.Language.EN);
+            String zh = L10n.pattern(key, L10n.Language.ZH);
+            if (en == null || en.isEmpty() || zh == null || zh.isEmpty()) {
+                allHaveBoth = false;
+                System.out.println("  缺文案: " + key);
+                continue;
+            }
+            if (!placeholders(en).equals(placeholders(zh))) {
+                placeholdersMatch = false;
+                System.out.println("  占位符不一致: " + key);
+            }
+            for (int i = 0; i < en.length(); i++) {
+                char c = en.charAt(i);
+                if (c >= 0x4E00 && c <= 0x9FFF) {
+                    enHasNoCjk = false;
+                    System.out.println("  en 文案含中文: " + key);
+                    break;
+                }
+            }
+        }
+        check("L10n 每个 key 都有 en/zh 文案", allHaveBoth);
+        check("L10n 占位符集合两语言一致", placeholdersMatch);
+        check("L10n 的 en 文案不含中文", enHasNoCjk);
+        check("L10n 目录规模合理", L10n.keys().size() > 100);
+
+        L10n.use("en");
+        check("L10n 选择 en",
+                "Direct connection established, switching…".equals(L10n.tr("chat.switching")));
+        L10n.use("zh_CN");
+        check("L10n 按 MC 语言码选择 zh",
+                "已建立直连，正在切换…".equals(L10n.tr("chat.switching")));
+        check("L10n 占位符填充", L10n.tr("upgrade.ready", 1, 2, 3).contains("端口 1"));
+        check("L10n 缺 key 兜底返回 key 与参数",
+                "no.such.key x".equals(L10n.tr("no.such.key", "x")));
+        check("L10n 参数不足时占位符原样保留",
+                L10n.tr("upgrade.ready", 9).contains("{1}"));
+        check("L10n 非中文码一律落到 en",
+                L10n.Language.EN == probeLanguage("ko_KR"));
+        check("L10n 中文变体一律落到 zh",
+                L10n.Language.ZH == probeLanguage("zh_TW"));
+        // 回到 zh，后续测试的文案断言依赖它
+        L10n.use("zh");
+    }
+
+    private static L10n.Language probeLanguage(String code) {
+        L10n.use(code);
+        return L10n.language();
+    }
+
+    private static java.util.Set<String> placeholders(String pattern) {
+        java.util.Set<String> out = new java.util.TreeSet<String>();
+        for (int i = 0; i + 2 < pattern.length(); i++) {
+            if (pattern.charAt(i) == '{' && Character.isDigit(pattern.charAt(i + 1))
+                    && pattern.charAt(i + 2) == '}') {
+                out.add(pattern.substring(i, i + 3));
+            }
+        }
+        return out;
     }
 
     // ---------- Platform ----------

@@ -144,11 +144,10 @@ public final class Prefetcher {
                     if (result.credentials == null) {
                         Throwable error = result.error;
                         if (error instanceof RuntimeException) {
-                            bridge.warn("向 " + addr + " 预取凭证时出错（不影响正常游戏）",
-                                    error);
+                            bridge.warn(L10n.tr("prefetch.error", addr), error);
                         } else {
-                            bridge.debug("向 " + addr + " 预取凭证未成功: "
-                                    + describeFailure(error));
+                            bridge.debug(L10n.tr("prefetch.rejected",
+                                    addr, describeFailure(error)));
                         }
                         continue;
                     }
@@ -158,23 +157,23 @@ public final class Prefetcher {
                     // 之后预热直接拿来用即可（预热跑在玩家还没连服务器的时候，
                     // 那时已经无从得知来源了）。
                     if (cred.needsRendezvousAddress()) {
-                        bridge.debug("预取到的凭证未带会合点地址，按来源补为 " + addr);
+                        bridge.debug(L10n.tr("prefetch.fillRendezvous", addr));
                         cred = cred.rendezvousAt(addr.host, addr.port);
                     }
                     if (!storedKeys.add(cred.dedupKey())) {
-                        bridge.debug("候选 " + addr + " 与前面的入口指向同一份凭证，跳过重复写入");
+                        bridge.debug(L10n.tr("prefetch.duplicate", addr));
                         continue;
                     }
                     cache.store(cred);
                     stored = true;
-                    bridge.info("已从 " + addr + " 预取到房间 " + cred.room() + " 的凭证");
+                    bridge.info(L10n.tr("prefetch.ok", addr, cred.room()));
                 } catch (CancellationException e) {
-                    bridge.debug("向 " + addr + " 预取凭证超时");
+                    bridge.debug(L10n.tr("prefetch.timeout", addr));
                 } catch (ExecutionException e) {
-                    bridge.warn("向 " + addr + " 预取凭证时出错（不影响正常游戏）",
+                    bridge.warn(L10n.tr("prefetch.error", addr),
                             e.getCause() == null ? e : e.getCause());
                 } catch (IOException e) {
-                    bridge.warn("写入 " + addr + " 的凭证缓存失败（不影响正常游戏）", e);
+                    bridge.warn(L10n.tr("prefetch.cacheFailed", addr), e);
                 }
             }
             return stored;
@@ -210,7 +209,7 @@ public final class Prefetcher {
     /** Throwable 的 message 允许为 null；诊断日志至少要留下异常类型。 */
     private static String describeFailure(Throwable error) {
         if (error == null) {
-            return "未返回凭证";
+            return L10n.tr("prefetch.noCredential");
         }
         String type = error.getClass().getSimpleName();
         if (type.isEmpty()) {

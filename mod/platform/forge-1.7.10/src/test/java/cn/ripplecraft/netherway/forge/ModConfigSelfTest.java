@@ -26,6 +26,8 @@ public final class ModConfigSelfTest {
             extraServerPropertyDoesNotCrash(root);
             invalidScalarValuesUseDefaults(root);
             replacementCanBeDisabled(root);
+            cfgCommentsFollowLanguage(root);
+            commentOnlyChangesDoNotRewriteCfg(root);
             runtimeRoutesExistOnlyWhileReady();
             eventSubscriberIsExternallyAccessible();
             System.out.println("ModConfigSelfTest passed");
@@ -78,6 +80,46 @@ public final class ModConfigSelfTest {
 
         ModConfig config = new ModConfig(file.toFile());
         check(!config.replaceServerEntries(), "应能关闭原条目的运行期覆盖");
+    }
+
+    /** cfg 注释经 L10n 按 general.language 生成（文件首次生成时写死）。 */
+    private static void cfgCommentsFollowLanguage(Path root) throws Exception {
+        Path en = root.resolve("comments-en.cfg");
+        Files.write(en, "general {\n    S:language=en\n}\n".getBytes(StandardCharsets.UTF_8));
+        new ModConfig(en.toFile());
+        String enText = new String(Files.readAllBytes(en), StandardCharsets.UTF_8);
+        check(enText.contains("Server side only"), "language=en 时 server 类目注释应为英文");
+        check(enText.contains("# Parameters for the default embedded rendezvous"),
+                "language=en 时 params 的默认注释行应为英文");
+        check(!enText.contains("服务端专用"), "language=en 时不应出现中文类目注释");
+
+        Path zh = root.resolve("comments-zh.cfg");
+        Files.write(zh, "general {\n    S:language=zh\n}\n".getBytes(StandardCharsets.UTF_8));
+        new ModConfig(zh.toFile());
+        String zhText = new String(Files.readAllBytes(zh), StandardCharsets.UTF_8);
+        check(zhText.contains("服务端专用"), "language=zh 时 server 类目注释应为中文");
+    }
+
+    /**
+     * 注释文案与文件不一致（mod 更新改了措辞、服主手改、切换语言）绝不能
+     * 触发回写：Forge 的 hasChanged 只看值与新建键，注释是裸赋值。
+     * 这条破了，服主手改的 cfg 会在每次启动时被悄悄覆盖。
+     */
+    private static void commentOnlyChangesDoNotRewriteCfg(Path root) throws Exception {
+        Path file = root.resolve("hand-edited.cfg");
+        Files.write(file, "general {\n    S:language=zh\n}\n".getBytes(StandardCharsets.UTF_8));
+        new ModConfig(file.toFile());   // 首次加载补齐全部键，注释按 zh 生成
+
+        // 同时模拟手改注释与切换语言：重载后内存注释（en）与文件（zh+手改）全面不一致
+        String tampered = new String(Files.readAllBytes(file), StandardCharsets.UTF_8)
+                .replace("服务端直连总开关", "服主手改的注释")
+                .replace("S:language=zh", "S:language=en");
+        check(tampered.contains("服主手改的注释"), "前置：手改注释应已写入文件");
+        Files.write(file, tampered.getBytes(StandardCharsets.UTF_8));
+
+        new ModConfig(file.toFile());
+        String reloaded = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+        check(reloaded.equals(tampered), "注释差异不得触发回写，手改内容必须原样保留");
     }
 
     private static void runtimeRoutesExistOnlyWhileReady() {

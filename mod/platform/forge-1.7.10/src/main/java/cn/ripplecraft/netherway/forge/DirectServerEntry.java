@@ -1,6 +1,7 @@
 package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.Credentials;
+import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.WarmupController;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ServerData;
@@ -65,13 +66,13 @@ final class DirectServerEntry implements WarmupController.Listener {
                 continue;
             }
             if (name.equals(entry.serverName) && address.equals(entry.serverIP)) {
-                bridge.debug("直连条目已是最新: " + name + " → " + address);
+                bridge.debug(L10n.tr("direntry.upToDate", name, address));
                 return;
             }
             entry.serverName = name;
             entry.serverIP = address;
             list.saveServerList();
-            bridge.info("已更新服务器列表的直连条目: " + name + " → " + address);
+            bridge.info(L10n.tr("direntry.updated", name, address));
             return;
         }
         // 旧版名称没有 origin。第一份同房间的新凭证到来时就地升级，
@@ -80,12 +81,12 @@ final class DirectServerEntry implements WarmupController.Listener {
             legacy.serverName = name;
             legacy.serverIP = address;
             list.saveServerList();
-            bridge.info("已将旧版直连条目升级为: " + name + " → " + address);
+            bridge.info(L10n.tr("direntry.migrated", name, address));
             return;
         }
         list.addServerData(new ServerData(name, address));
         list.saveServerList();
-        bridge.info("已在服务器列表添加直连条目: " + name + " → " + address);
+        bridge.info(L10n.tr("direntry.added", name, address));
     }
 
     private String entryName(Credentials cred) {

@@ -19,7 +19,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"net"
 	"net/http"
 	"time"
@@ -28,6 +27,7 @@ import (
 	"github.com/fatedier/frp/server"
 
 	"github.com/aUsernameWoW/netherway/internal/authplugin"
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 )
 
 // PluginPath 是内嵌 authplugin 的 HTTP 路径。回环上自说自话，取值无所谓，
@@ -73,17 +73,16 @@ func (o Options) bindAddr() string {
 // Validate 检查配置。
 func (o Options) Validate() error {
 	if o.BindPort <= 0 || o.BindPort > 65535 {
-		return fmt.Errorf("会合点端口非法: %d", o.BindPort)
+		return i18n.Errorf("rz.badPort", o.BindPort)
 	}
 	ip := net.ParseIP(o.bindAddr())
 	if ip == nil {
-		return fmt.Errorf("会合点地址非法: %q", o.bindAddr())
+		return i18n.Errorf("rz.badAddr", o.bindAddr())
 	}
 	// 这条是安全边界不是洁癖：会合点绑到非回环地址就等于在公网多开一个口，
 	// 而「服务器对外只剩那一个映射端口」正是整个设计的立足点。
 	if !ip.IsLoopback() {
-		return fmt.Errorf("会合点只能绑回环地址（收到 %s）："+
-			"它的唯一入口是 Minecraft 端口上的字节转发", o.bindAddr())
+		return i18n.Errorf("rz.mustLoopback", o.bindAddr())
 	}
 	return nil
 }
@@ -93,7 +92,7 @@ func (o Options) Validate() error {
 func NewToken() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("生成会合点令牌: %w", err)
+		return "", i18n.Errorf("rz.tokenGen", err)
 	}
 	return hex.EncodeToString(b), nil
 }
@@ -130,7 +129,7 @@ func Start(ctx context.Context, opts Options) (*Service, error) {
 		if token, err = NewToken(); err != nil {
 			return nil, err
 		}
-		opts.logf("会合点令牌本次启动随机生成（重启即轮换）")
+		opts.logf("%s", i18n.T("rz.tokenGenerated"))
 	}
 
 	svc := &Service{token: token, logf: opts.logf}
@@ -168,18 +167,17 @@ func Start(ctx context.Context, opts Options) (*Service, error) {
 
 	if err := cfg.Complete(); err != nil {
 		svc.closePlugin()
-		return nil, fmt.Errorf("补全会合点配置: %w", err)
+		return nil, i18n.Errorf("rz.completeConfig", err)
 	}
 	frps, err := server.NewService(cfg)
 	if err != nil {
 		svc.closePlugin()
-		return nil, fmt.Errorf("创建会合点: %w", err)
+		return nil, i18n.Errorf("rz.create", err)
 	}
 	svc.frps = frps
 
 	go frps.Run(ctx)
-	opts.logf("会合点已在 %s:%d 监听（仅回环；玩家经 Minecraft 端口转发进来）",
-		opts.bindAddr(), opts.BindPort)
+	opts.logf("%s", i18n.T("rz.listening", opts.bindAddr(), opts.BindPort))
 	return svc, nil
 }
 
@@ -191,7 +189,7 @@ func Start(ctx context.Context, opts Options) (*Service, error) {
 func (s *Service) startPlugin(opts Options) (string, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return "", fmt.Errorf("启动内嵌鉴权端点: %w", err)
+		return "", i18n.Errorf("rz.authStart", err)
 	}
 	mux := http.NewServeMux()
 	mux.Handle(PluginPath, authplugin.NewHandler(authplugin.Config{
@@ -210,8 +208,8 @@ func (s *Service) startPlugin(opts Options) (string, error) {
 		_ = s.pluginHTTP.Serve(ln)
 	}()
 	if opts.SigningKey != "" {
-		opts.logf("内嵌每玩家令牌校验已启用（签发密钥指纹 %s）",
-			authplugin.KeyFingerprint(opts.SigningKey))
+		opts.logf("%s", i18n.T("rz.authEnabled",
+			authplugin.KeyFingerprint(opts.SigningKey)))
 	}
 	return ln.Addr().String(), nil
 }
@@ -235,6 +233,6 @@ func (s *Service) Close() {
 	}
 	s.closePlugin()
 	if s.logf != nil {
-		s.logf("会合点已停止")
+		s.logf("%s", i18n.T("rz.stopped"))
 	}
 }

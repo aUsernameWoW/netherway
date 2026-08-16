@@ -75,25 +75,25 @@ public final class Credentials {
                         String originHost, int originPort) {
         this.backendId = require(backendId, "backendId");
         if (params == null) {
-            throw new IllegalArgumentException("params 不能为 null");
+            throw new IllegalArgumentException(L10n.tr("cred.paramsNull"));
         }
         Map<String, String> copy = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> e : params.entrySet()) {
             String key = e.getKey();
             if (key == null || key.isEmpty()) {
-                throw new IllegalArgumentException("参数键不能为空");
+                throw new IllegalArgumentException(L10n.tr("cred.emptyParamKey"));
             }
             if (key.indexOf('=') >= 0) {
                 // 参数经 -O key=value 传给 agent，键含等号会让 agent 拆错位置
-                throw new IllegalArgumentException("参数键不能含等号: " + key);
+                throw new IllegalArgumentException(L10n.tr("cred.paramKeyEquals", key));
             }
             if (e.getValue() == null) {
-                throw new IllegalArgumentException("参数 " + key + " 的值不能为 null");
+                throw new IllegalArgumentException(L10n.tr("cred.paramValueNull", key));
             }
             copy.put(key, e.getValue());
         }
         if (copy.size() > 0xFFFF) {
-            throw new IllegalArgumentException("参数过多: " + copy.size());
+            throw new IllegalArgumentException(L10n.tr("cred.tooManyParams", copy.size()));
         }
         this.params = Collections.unmodifiableMap(copy);
         require(this.params.get(PARAM_ROOM), PARAM_ROOM);
@@ -163,7 +163,7 @@ public final class Credentials {
 
     private static String require(String v, String name) {
         if (v == null || v.isEmpty()) {
-            throw new IllegalArgumentException("凭证字段 " + name + " 不能为空");
+            throw new IllegalArgumentException(L10n.tr("cred.emptyField", name));
         }
         return v;
     }
@@ -205,7 +205,7 @@ public final class Credentials {
      */
     public static Credentials decode(byte[] data) throws IOException {
         if (data == null || data.length == 0) {
-            throw new IOException("凭证数据为空");
+            throw new IOException(L10n.tr("cred.emptyData"));
         }
         DataInputStream in = new DataInputStream(new ByteArrayInputStream(data));
         int version = in.readByte() & 0xFF;
@@ -213,7 +213,7 @@ public final class Credentials {
             return decodeV1(in);
         }
         if (version < MIN_FORMAT_VERSION) {
-            throw new IOException("凭证格式版本过旧: " + version);
+            throw new IOException(L10n.tr("cred.versionTooOld", version));
         }
         String backendId = in.readUTF();
         int punchTimeoutMs = in.readInt();
@@ -245,7 +245,7 @@ public final class Credentials {
             return new Credentials(backendId, params, punchTimeoutMs, originHost, originPort);
         } catch (IllegalArgumentException e) {
             // 数据完整但内容非法（如缺 room），统一按损坏凭证处理
-            throw new IOException("凭证内容非法: " + e.getMessage());
+            throw new IOException(L10n.tr("cred.invalid", e.getMessage()));
         }
     }
 
@@ -262,7 +262,7 @@ public final class Credentials {
             return frpXtcp(serverAddr, serverPort, token, stunServer,
                     roomName, secretKey, punchTimeoutMs);
         } catch (IllegalArgumentException e) {
-            throw new IOException("凭证内容非法: " + e.getMessage());
+            throw new IOException(L10n.tr("cred.invalid", e.getMessage()));
         }
     }
 

@@ -105,12 +105,12 @@ public final class UpgradeReport {
      */
     public static UpgradeReport decode(byte[] data) throws IOException {
         if (data == null || data.length == 0) {
-            throw new IOException("结果回执数据为空");
+            throw new IOException(L10n.tr("report.emptyData"));
         }
         DataInputStream in = new DataInputStream(new ByteArrayInputStream(data));
         int version = in.readByte() & 0xFF;
         if (version < FORMAT_VERSION) {
-            throw new IOException("结果回执版本过旧: " + version);
+            throw new IOException(L10n.tr("report.versionTooOld", version));
         }
         boolean upgraded = in.readBoolean();
         String room = in.readUTF();
@@ -146,10 +146,11 @@ public final class UpgradeReport {
 
     @Override
     public String toString() {
+        // 调试表示，刻意与语言无关：toString 不走 L10n
         if (upgraded) {
-            return "UpgradeReport{成功 room=" + room
+            return "UpgradeReport{upgraded room=" + room
                     + " rtt=" + rttMs + "ms elapsed=" + elapsedMs + "ms}";
         }
-        return "UpgradeReport{失败 room=" + room + " reason=" + reason + "}";
+        return "UpgradeReport{gaveUp room=" + room + " reason=" + reason + "}";
     }
 }

@@ -173,7 +173,7 @@ public final class UpgradeController {
         if (cred.dedupKey().equals(activeKey)) {
             State s = state.get();
             if (s == State.UPGRADED || s == State.PUNCHING) {
-                bridge.info("已在处理房间 " + cred.room() + " 的直连，忽略重复凭证");
+                bridge.info(L10n.tr("upgrade.dupActive", cred.room()));
                 if (s == State.UPGRADED) {
                     // 重复凭证经新连接送达，说明切换已真正落地且频道可用，
                     // 这是回传成功回执最可靠的时机。
@@ -183,7 +183,7 @@ public final class UpgradeController {
             }
             if (s == State.GAVE_UP) {
                 // 本次会话已判定此房间打洞不通，别反复折腾玩家的网络
-                bridge.debug("本次会话已放弃房间 " + cred.room() + " 的直连，忽略重复凭证");
+                bridge.debug(L10n.tr("upgrade.dupGaveUp", cred.room()));
                 return false;
             }
         }
@@ -202,7 +202,7 @@ public final class UpgradeController {
             }
         }
         if (gen < 0) {
-            bridge.debug("当前状态为 " + state.get() + "，忽略本次凭证");
+            bridge.debug(L10n.tr("upgrade.ignoreState", state.get()));
             return false;
         }
 
@@ -239,37 +239,36 @@ public final class UpgradeController {
             // 从这里开始已确定不走预热复用；平台检测、解压和进程
             // 启动都可能在 STARTING 事件前失败，所以要先固定失败来源。
             if (!selectColdAgent(gen)) {
-                bridge.debug("忽略过期升级：复位后不再启动冷 agent");
+                bridge.debug(L10n.tr("upgrade.staleCold"));
                 return;
             }
             Platform platform = Platform.detect();
-            bridge.info("准备直连：平台 " + platform + "，房间 " + cred.room()
-                    + "（" + cred.backendId() + "）");
+            bridge.info(L10n.tr("upgrade.preparing", platform, cred.room(), cred.backendId()));
             // toString 只列参数键名不含值，可以放心进日志
-            bridge.debug("收到的凭证: " + cred);
+            bridge.debug(L10n.tr("upgrade.credReceived", cred));
 
             Path cacheDir = bridge.cacheDirectory();
             Path exe;
             try {
                 exe = new BinaryStore(cacheDir, platform).ensureExtracted();
             } catch (Throwable t) {
-                bridge.warn("释放 agent 二进制失败", t);
+                bridge.warn(L10n.tr("upgrade.extractFailed"), t);
                 giveUp(proc, cred, t.getMessage(), gen,
                         QualitySummary.FailureStage.EXTRACT,
                         QualitySummary.FailureCode.BINARY_EXTRACT_FAILED);
                 return;
             }
             Path agentLog = cacheDir.resolve("tunnel.log");
-            bridge.debug("agent 二进制: " + exe);
-            bridge.debug("启动 agent: " + AgentProcess.describeCommand(
-                    AgentProcess.buildCommand(exe, cred, timings, agentLog)));
+            bridge.debug(L10n.tr("upgrade.agentBinary", exe));
+            bridge.debug(L10n.tr("upgrade.agentCommand", AgentProcess.describeCommand(
+                    AgentProcess.buildCommand(exe, cred, timings, agentLog))));
 
             try {
                 proc = AgentProcess.start(exe, cred, timings, cacheDir, agentLog,
                         new AgentProcess.Listener() {
                         @Override
                         public void onEvent(AgentEvent event) {
-                            bridge.debug("agent 事件: " + event);
+                            bridge.debug(L10n.tr("upgrade.agentEvent", event));
                             if (event.type() == AgentEvent.Type.STARTING && isCurrent(gen)) {
                                 observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
                                         QualitySummary.Stage.PUNCH_STARTED,
@@ -298,7 +297,7 @@ public final class UpgradeController {
                         }
                     });
             } catch (Throwable t) {
-                bridge.warn("启动 agent 失败", t);
+                bridge.warn(L10n.tr("upgrade.startFailed"), t);
                 giveUp(proc, cred, t.getMessage(), gen,
                         QualitySummary.FailureStage.START,
                         QualitySummary.FailureCode.AGENT_START_FAILED);
@@ -308,28 +307,28 @@ public final class UpgradeController {
                 // 启动进程期间 shutdown 已复位：这个 agent 没登记进任何人的
                 // 视野，不就地收掉就只剩 JVM 退出时的 shutdown hook 兜底
                 proc.close();
-                bridge.debug("忽略过期升级：复位后不再接管刚启动的 agent");
+                bridge.debug(L10n.tr("upgrade.staleAttach"));
                 return;
             }
 
             // 与 agent 的 -timeout 同源（凭证优先），再留 startupGrace 的余量：
             // agent 正常应先于这个窗口自行报 failed，窗口只兜进程卡死的底
             long waitMs = timings.outcomeWaitMs(cred.punchTimeoutMs());
-            bridge.debug("等待打洞结果，最多 " + waitMs
-                    + "ms（agent 详细日志: " + agentLog + "）");
+            bridge.debug(L10n.tr("upgrade.waitingOutcome", waitMs, agentLog));
             AgentEvent outcome = proc.awaitOutcome(waitMs);
 
             if (outcome != null) {
                 rememberNat(outcome);
             }
             if (outcome == null) {
-                giveUp(proc, cred, "等待直连结果超时", gen,
+                giveUp(proc, cred, L10n.tr("reason.outcomeTimeout"), gen,
                         QualitySummary.FailureStage.PROBE,
                         QualitySummary.FailureCode.READY_PROBE_TIMEOUT);
                 return;
             }
             if (outcome.type() != AgentEvent.Type.READY) {
-                String why = outcome.reason() == null ? "打洞未成功" : outcome.reason();
+                String why = outcome.reason() == null
+                        ? L10n.tr("reason.punchFailed") : outcome.reason();
                 giveUp(proc, cred, why, gen,
                         QualitySummary.FailureStage.fromWire(outcome.failureStage()),
                         QualitySummary.FailureCode.fromWire(outcome.failureCode()));
@@ -341,19 +340,18 @@ public final class UpgradeController {
             long rtt = outcome.rttMs();
             if (!markUpgraded(outcome, gen, QualitySummary.Source.COLD_AGENT)) {
                 proc.close();
-                bridge.debug("忽略过期升级：复位后不再切换（房间 " + cred.room() + "）");
+                bridge.debug(L10n.tr("upgrade.staleSwitch", cred.room()));
                 return;
             }
-            bridge.info("直连就绪，端口 " + port + "，延迟 " + rtt + "ms，用时 "
-                    + outcome.elapsedMs() + "ms");
+            bridge.info(L10n.tr("upgrade.ready", port, rtt, outcome.elapsedMs()));
             observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
                     QualitySummary.Stage.TUNNEL_READY, QualitySummary.Outcome.SUCCESS)
                     .withSource(QualitySummary.Source.COLD_AGENT)
                     .withTimings(outcome.elapsedMs(), outcome.rttMs()));
 
             final String msg = rtt > 0
-                    ? "已建立直连（延迟 " + rtt + "ms），正在切换…"
-                    : "已建立直连，正在切换…";
+                    ? L10n.tr("chat.switching.rtt", rtt)
+                    : L10n.tr("chat.switching");
             bridge.runOnGameThread(new Runnable() {
                 @Override
                 public void run() {
@@ -363,19 +361,19 @@ public final class UpgradeController {
 
         } catch (Platform.UnsupportedPlatformException e) {
             // 没有对应平台的二进制，重试也没意义
-            giveUp(proc, cred, "当前系统不支持直连: " + e.getMessage(), gen,
+            giveUp(proc, cred, L10n.tr("reason.platformUnsupported", e.getMessage()), gen,
                     QualitySummary.FailureStage.PLATFORM,
                     QualitySummary.FailureCode.PLATFORM_UNSUPPORTED);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            giveUp(proc, cred, "升级过程被中断", gen,
+            giveUp(proc, cred, L10n.tr("reason.interrupted"), gen,
                     QualitySummary.FailureStage.INTERNAL,
                     QualitySummary.FailureCode.INTERRUPTED);
         } catch (Throwable t) {
             // Exception 之外还必须接住 Error：1.7.10 挤着几百个 mod 的类路径上
             // NoClassDefFoundError/LinkageError 并不罕见，逃逸出去状态就永远
             // 停在 PUNCHING，本会话再也无法升级
-            bridge.warn("建立直连失败", t);
+            bridge.warn(L10n.tr("upgrade.failed"), t);
             giveUp(proc, cred, t.getMessage(), gen,
                     QualitySummary.FailureStage.INTERNAL,
                     QualitySummary.FailureCode.INTERNAL_ERROR);
@@ -435,17 +433,17 @@ public final class UpgradeController {
         // agent 字段保持 null：隧道归 WarmupController 管，shutdown() 不会误杀
         if (!markUpgraded(readyEv, gen, QualitySummary.Source.WARMUP_REUSE)) {
             // 本轮升级已被 shutdown 作废，也别落回冷启动流程
-            bridge.debug("忽略过期升级：复位后不再复用预热隧道");
+            bridge.debug(L10n.tr("upgrade.staleReuse"));
             return true;
         }
-        bridge.info("复用预热隧道，端口 " + port + "，延迟 " + rtt + "ms，正在切换");
+        bridge.info(L10n.tr("upgrade.reuseWarm", port, rtt));
         observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
                 QualitySummary.Stage.TUNNEL_READY, QualitySummary.Outcome.SUCCESS)
                 .withSource(QualitySummary.Source.WARMUP_REUSE)
                 .withTimings(readyEv.elapsedMs(), readyEv.rttMs()));
         final String msg = rtt > 0
-                ? "已建立直连（延迟 " + rtt + "ms，预热），正在切换…"
-                : "已建立直连（预热），正在切换…";
+                ? L10n.tr("chat.switching.warm.rtt", rtt)
+                : L10n.tr("chat.switching.warm");
         bridge.runOnGameThread(new Runnable() {
             @Override
             public void run() {
@@ -480,8 +478,7 @@ public final class UpgradeController {
             }
             Integer used = warmRescueCounts.get(cred.dedupKey());
             if (used != null && used >= MAX_WARM_RESCUES) {
-                bridge.debug("房间 " + cred.room()
-                        + " 本会话的自动切换次数已用完，改为等待玩家自行重连");
+                bridge.debug(L10n.tr("upgrade.rescueExhausted", cred.room()));
                 return;
             }
             warmRescueCounts.put(cred.dedupKey(),
@@ -499,8 +496,7 @@ public final class UpgradeController {
             gen = epoch;
         }
         rememberNat(ready);
-        bridge.info("游玩中预热直连就绪，从中转切换（房间 " + cred.room()
-                + "，端口 " + ready.port() + "）");
+        bridge.info(L10n.tr("upgrade.rescueSwitch", cred.room(), ready.port()));
         observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
                 QualitySummary.Stage.TUNNEL_READY, QualitySummary.Outcome.SUCCESS)
                 .withSource(QualitySummary.Source.WARMUP_REUSE)
@@ -508,8 +504,8 @@ public final class UpgradeController {
         final int port = ready.port();
         long rtt = ready.rttMs();
         final String msg = rtt > 0
-                ? "后台直连已就绪（延迟 " + rtt + "ms），正在切换…"
-                : "后台直连已就绪，正在切换…";
+                ? L10n.tr("chat.rescue.rtt", rtt)
+                : L10n.tr("chat.rescue");
         bridge.runOnGameThread(new Runnable() {
             @Override
             public void run() {
@@ -546,11 +542,10 @@ public final class UpgradeController {
         }
         rememberNat(ready);
         if (!adopted) {
-            bridge.debug("当前状态为 " + state.get() + "，不采认直连条目的连接");
+            bridge.debug(L10n.tr("upgrade.adoptRejected", state.get()));
             return false;
         }
-        bridge.info("本次连接经直连条目建立（房间 " + cred.room() + "，端口 "
-                + ready.port() + "），视作已升级");
+        bridge.info(L10n.tr("upgrade.adopted", cred.room(), ready.port()));
         observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
                 QualitySummary.Stage.REDIRECT_LANDED, QualitySummary.Outcome.SUCCESS)
                 .withSource(QualitySummary.Source.DIRECT_ENTRY)
@@ -581,16 +576,15 @@ public final class UpgradeController {
         }
         if (at == null) {
             if (cred.needsRendezvousAddress()) {
-                bridge.warn("凭证未带会合点地址，而当前连接的服务器地址也推导不出来，"
-                        + "直连多半会失败", null);
+                bridge.warn(L10n.tr("upgrade.noRendezvousAddr"), null);
             } else {
-                bridge.debug("无法确定凭证的 Minecraft 入口，本次不写多服务缓存");
+                bridge.debug(L10n.tr("upgrade.noOrigin"));
             }
             return cred;
         }
         Credentials withOrigin = cred.withOrigin(at.host, at.port);
         if (withOrigin.needsRendezvousAddress()) {
-            bridge.debug("凭证未带会合点地址，按当前连接补为 " + at);
+            bridge.debug(L10n.tr("upgrade.fillRendezvous", at));
             withOrigin = withOrigin.rendezvousAt(at.host, at.port);
         }
         return withOrigin;
@@ -607,8 +601,7 @@ public final class UpgradeController {
         // 跳过的代价可忽略——补不上地址意味着推导失败，参数真轮换过的新凭证
         // 一定是经真实服务器地址的连接送达的，那条路补得上。
         if (cred.needsRendezvousAddress() || !cred.hasOrigin()) {
-            bridge.debug("凭证缺会合点地址或 Minecraft 入口，"
-                    + "不写入多服务缓存（保留已有版本）");
+            bridge.debug(L10n.tr("upgrade.skipCache"));
             return;
         }
         Thread worker = new Thread(new Runnable() {
@@ -616,9 +609,9 @@ public final class UpgradeController {
             public void run() {
                 try {
                     cache.store(cred);
-                    bridge.debug("凭证已缓存，下次启动将预热房间 " + cred.room() + " 的直连");
+                    bridge.debug(L10n.tr("upgrade.cached", cred.room()));
                 } catch (Exception e) {
-                    bridge.debug("缓存凭证失败（只影响下次启动的预热）: " + e);
+                    bridge.debug(L10n.tr("upgrade.cacheFailed", e));
                 }
             }
         }, "netherway-credcache");
@@ -649,12 +642,12 @@ public final class UpgradeController {
             // shutdown 已复位（或已进入新一轮升级）：状态不归这个 worker 管。
             // 覆写成 GAVE_UP 会把玩家重进后的正常升级一并锁死，
             // 还会往服务端发一条假的失败回执。
-            bridge.debug("忽略过期升级的放弃（" + reason + "）");
+            bridge.debug(L10n.tr("upgrade.staleGiveUp", reason));
             return;
         }
         // 升级失败对玩家无感：他仍在原有的中转连接上正常游戏，
         // 所以只记日志，不去打扰他。
-        bridge.info("放弃直连，继续使用当前线路（" + reason + "）");
+        bridge.info(L10n.tr("upgrade.gaveUp", reason));
         observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
                 QualitySummary.Stage.ROUND_FINISHED, QualitySummary.Outcome.FAILED)
                 .withSource(source)
@@ -678,8 +671,8 @@ public final class UpgradeController {
             // 采认路径没有「正在切换」的过程提示；凭证经新连接送达说明玩家
             // 已进世界，此刻补一句确认不会落空。
             final String msg = ready != null && ready.rttMs() > 0
-                    ? "已通过预热直连进入服务器（延迟 " + ready.rttMs() + "ms）"
-                    : "已通过预热直连进入服务器";
+                    ? L10n.tr("chat.adopted.rtt", ready.rttMs())
+                    : L10n.tr("chat.adopted");
             bridge.runOnGameThread(new Runnable() {
                 @Override
                 public void run() {
@@ -692,10 +685,10 @@ public final class UpgradeController {
     private void sendReport(UpgradeReport report) {
         try {
             bridge.sendToServer(report.encode());
-            bridge.debug("已回传直连结果: " + report);
+            bridge.debug(L10n.tr("upgrade.reportSent", report));
         } catch (RuntimeException e) {
             // 回执是尽力而为的诊断信息，失败绝不能影响升级流程
-            bridge.debug("回传直连结果失败: " + e);
+            bridge.debug(L10n.tr("upgrade.reportFailed", e));
         }
     }
 
@@ -834,14 +827,14 @@ public final class UpgradeController {
     /** 游戏线程上的重定向提交；平台实现抛错时也必须把 pending 状态收口。 */
     private void runRedirect(long gen, QualitySummary.Source source, String message, int port) {
         if (!markRedirectStarted(gen, source)) {
-            bridge.debug("忽略过期重定向：任务排队后升级已复位");
+            bridge.debug(L10n.tr("upgrade.staleRedirect"));
             return;
         }
         try {
             bridge.notifyPlayer(message);
             bridge.connectTo("127.0.0.1", port);
         } catch (RuntimeException e) {
-            bridge.warn("发起直连切换失败", e);
+            bridge.warn(L10n.tr("upgrade.redirectFailed"), e);
             onRedirectNotLanded();
             shutdown();
         }

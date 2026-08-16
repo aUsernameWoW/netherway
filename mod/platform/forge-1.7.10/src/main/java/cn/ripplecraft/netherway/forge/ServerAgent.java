@@ -2,6 +2,7 @@ package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.BinaryStore;
 import cn.ripplecraft.netherway.core.Credentials;
+import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.Platform;
 import cn.ripplecraft.netherway.core.ServeCommand;
 import cn.ripplecraft.netherway.core.telemetry.QualityObserver;
@@ -58,8 +59,7 @@ public final class ServerAgent {
         }
         telemetry.onStartAttempt();
         if (!Credentials.BACKEND_FRP_XTCP.equals(config.serverBackendId())) {
-            LOG.warn("内置 serve 目前仅支持 frp-xtcp（当前 backend: {}），"
-                    + "请在宿主机上自行运行对应的隧道服务", config.serverBackendId());
+            LOG.warn(L10n.tr("serve.backendUnsupported", config.serverBackendId()));
             telemetry.onStartFailure(QualitySummary.FailureStage.START,
                     QualitySummary.FailureCode.BACKEND_UNKNOWN);
             return;
@@ -68,7 +68,7 @@ public final class ServerAgent {
         try {
             platform = Platform.detect();
         } catch (Platform.UnsupportedPlatformException e) {
-            LOG.warn("当前系统没有内置的 agent 二进制，无法启动 serve: {}", e.getMessage());
+            LOG.warn(L10n.tr("serve.noBinary", e.getMessage()));
             telemetry.onStartFailure(QualitySummary.FailureStage.PLATFORM,
                     QualitySummary.FailureCode.PLATFORM_UNSUPPORTED);
             return;
@@ -77,7 +77,7 @@ public final class ServerAgent {
         try {
             exe = new BinaryStore(cacheDir, platform).ensureExtracted();
         } catch (IOException e) {
-            LOG.warn("释放 serve 的 agent 二进制失败", e);
+            LOG.warn(L10n.tr("serve.extractFailed"), e);
             telemetry.onStartFailure(QualitySummary.FailureStage.EXTRACT,
                     QualitySummary.FailureCode.BINARY_EXTRACT_FAILED);
             return;
@@ -89,12 +89,13 @@ public final class ServerAgent {
                             .proxyProtocol(config.serveProxyProtocol())
                             .rendezvousPort(rendezvousPort)
                             .signingKey(rendezvousPort > 0 ? config.tokenSigningKey() : null));
-            LOG.info("启动内置 serve（平台 {}）: {}", platform, ServeCommand.describe(cmd));
+            LOG.info(L10n.tr("serve.starting", platform, ServeCommand.describe(cmd)));
 
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.directory(cacheDir.toFile());
             // serve 没有 stdout 上的 JSON 契约，合并两个流一起转进服务端日志
             pb.redirectErrorStream(true);
+            cn.ripplecraft.netherway.core.AgentProcess.applyLanguage(pb);
             final Process proc = pb.start();
             process = proc;
 
@@ -119,7 +120,7 @@ public final class ServerAgent {
                 // JVM 正在退出，无需再注册
             }
         } catch (IOException e) {
-            LOG.warn("内置 serve 启动失败", e);
+            LOG.warn(L10n.tr("serve.startFailed"), e);
             telemetry.onStartFailure(QualitySummary.FailureStage.START,
                     QualitySummary.FailureCode.AGENT_START_FAILED);
         }
@@ -148,9 +149,7 @@ public final class ServerAgent {
         telemetry.onExit(stopping.get());
         if (!stopping.get()) {
             int code = exitCodeOf(proc);
-            LOG.warn("内置 serve 进程退出（码 {}）。frp 掉线会自动重连，进程直接退出"
-                    + "通常是配置错误（frps 地址/令牌/密钥），原因见上方 [serve] 日志；"
-                    + "修正配置后重启服务端生效", code);
+            LOG.warn(L10n.tr("serve.exited", code));
         }
     }
 
@@ -187,6 +186,6 @@ public final class ServerAgent {
             proc.destroyForcibly();
             Thread.currentThread().interrupt();
         }
-        LOG.info("内置 serve 已停止");
+        LOG.info(L10n.tr("serve.stopped"));
     }
 }

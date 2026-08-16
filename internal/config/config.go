@@ -2,9 +2,10 @@
 package config
 
 import (
-	"errors"
 	"strconv"
 	"time"
+
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 )
 
 // Timings 集中所有时间参数。
@@ -91,10 +92,10 @@ func (r Room) VisitorName() string { return r.Name + "-p2p-visitor" }
 
 func (r Room) Validate() error {
 	if r.Name == "" {
-		return errors.New("房间名为空：用 -room 指定，或在构建时注入 DefaultRoom")
+		return i18n.Errorf("config.emptyRoom")
 	}
 	if r.SecretKey == "" {
-		return errors.New("密钥为空：用 -secret 指定，或在构建时注入 DefaultSecretKey")
+		return i18n.Errorf("config.emptySecret")
 	}
 	return nil
 }

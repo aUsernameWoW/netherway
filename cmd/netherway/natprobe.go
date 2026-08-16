@@ -6,6 +6,7 @@ import (
 	"github.com/fatedier/frp/pkg/nathole"
 
 	"github.com/aUsernameWoW/netherway/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 	"github.com/aUsernameWoW/netherway/internal/stunpick"
 )
 
@@ -36,18 +37,18 @@ func probeNat(stunSpec string, diagf func(format string, args ...any)) string {
 		started := time.Now()
 		addrs, _, err := nathole.Discover([]string{server}, "")
 		if err != nil || len(addrs) < 2 {
-			diagf("NAT 探测经 %s 未果（err=%v，%d 个映射地址）", server, err, len(addrs))
+			diagf("%s", i18n.T("nat.probeFailed", server, err, len(addrs)))
 			continue
 		}
 		feature, err := nathole.ClassifyNATFeature(addrs, localIPs)
 		if err != nil {
-			diagf("NAT 分类失败（%s）: %v", server, err)
+			diagf("%s", i18n.T("nat.classifyFailed", server, err))
 			continue
 		}
 		wire := natWire(feature.NatType)
-		diagf("NAT 分类: %s（behavior=%s public=%v，经 %s，耗时 %dms）",
+		diagf("%s", i18n.T("nat.classified",
 			wire, feature.Behavior, feature.PublicNetwork, server,
-			time.Since(started).Milliseconds())
+			time.Since(started).Milliseconds()))
 		return wire
 	}
 	return ""

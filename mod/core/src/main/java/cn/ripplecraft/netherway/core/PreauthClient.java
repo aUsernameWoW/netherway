@@ -43,8 +43,7 @@ public final class PreauthClient {
             try {
                 payload = readReply(in);
             } catch (EOFException e) {
-                throw new IOException("服务器在返回预认证响应前关闭连接"
-                        + "（可能未启用 server.preauth，或入口未转发到这台服务器）", e);
+                throw new IOException(L10n.tr("preauth.closedEarly"), e);
             }
             return Credentials.decode(payload);
         } finally {
@@ -61,22 +60,22 @@ public final class PreauthClient {
         int status = in.readUnsignedByte();
         int len = in.readUnsignedShort();
         if (len > PreauthProtocol.MAX_PAYLOAD) {
-            throw new IOException("响应 payload 超限: " + len);
+            throw new IOException(L10n.tr("preauth.payloadTooLarge", len));
         }
         byte[] payload = new byte[len];
         in.readFully(payload);
         if (version != PreauthProtocol.VERSION) {
-            throw new IOException("服务端协议版本 " + version
-                    + " 与本机 " + PreauthProtocol.VERSION + " 不符");
+            throw new IOException(L10n.tr("preauth.versionMismatch",
+                    version, PreauthProtocol.VERSION));
         }
         if (status != PreauthProtocol.STATUS_OK) {
-            String reason = "未说明";
+            String reason = L10n.tr("preauth.noReason");
             try {
                 reason = new DataInputStream(new ByteArrayInputStream(payload)).readUTF();
             } catch (IOException ignored) {
                 // 拒绝原因读不出来也不影响「被拒绝」这个结论
             }
-            throw new IOException("服务端拒绝: " + reason);
+            throw new IOException(L10n.tr("preauth.rejected", reason));
         }
         return payload;
     }

@@ -1,6 +1,7 @@
 package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.Credentials;
+import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.Timings;
 import java.io.File;
 import java.util.ArrayList;
@@ -25,12 +26,20 @@ import org.apache.logging.log4j.Logger;
 public final class ModConfig {
 
     private static final Logger LOG = LogManager.getLogger(Netherway.MODID);
-    private static final String[] DEFAULT_RENDEZVOUS_PARAMS = {
-        "# 默认内嵌会合点所需参数，保持原样即可",
-        "token=auto",
-        "room=minecraft",
-        "secret=auto"
-    };
+
+    /** 新配置的 params 默认值。注释行的语言跟随 general.language，不能是静态常量。 */
+    private static String[] defaultRendezvousParams() {
+        return new String[] {
+            "# " + L10n.tr("cfg.server.params.defaultNote"),
+            "token=auto",
+            "room=minecraft",
+            "secret=auto"
+        };
+    }
+
+    // ---- general ----
+    /** 界面与日志语言：auto / en / zh。auto 时客户端跟随游戏语言、服务端跟随系统 locale。 */
+    private final String language;
 
     // ---- server ----
     private final boolean serverEnabled;
@@ -83,7 +92,7 @@ public final class ModConfig {
         try {
             return new ModConfig(file);
         } catch (RuntimeException e) {
-            LOG.error("配置应用失败，本次服务端功能关闭、客户端使用默认值: " + file, e);
+            LOG.error(L10n.tr("config.applyFailed", file), e);
             return new ModConfig(new LoadedConfiguration(new Configuration(), false));
         }
     }
@@ -100,7 +109,7 @@ public final class ModConfig {
         try {
             return new LoadedConfiguration(new Configuration(file), true);
         } catch (RuntimeException e) {
-            LOG.error("配置文件解析失败，本次以默认值运行（改好语法后重启生效）: " + file, e);
+            LOG.error(L10n.tr("config.parseFailed", file), e);
             return new LoadedConfiguration(new Configuration(), false);
         }
     }
@@ -109,56 +118,54 @@ public final class ModConfig {
         Configuration cfg = loaded.configuration;
         boolean loadedOk = loaded.loadedOk;
 
-        cfg.setCategoryComment("server",
-                "服务端专用。新生成的配置就是推荐的内嵌会合点模式，通常无需修改：\n"
-                + "只要玩家正在使用的公网 TCP 地址能转发到 Minecraft 端口即可。\n"
-                + "需要自建 frps 或更换隧道 backend 时再看 README 的高级配置。\n"
-                + "注意：此文件含自动生成密钥的配置，权限只给服务端进程；\n"
-                + "客户端不需要填写 server 类目。");
+        // 语言必须最先读并立即生效：本构造器接下来的告警日志与 cfg 注释都要用它。
+        // cfg 注释在文件首次生成时按此语言写死，此后不随语言热切换（只改注释
+        // 文案不会触发 Forge 回写已有文件，ModConfigSelfTest 钉住这一点）。
+        // 唯独 language 自己的注释保持双语：语言还没选出来时它也得读得懂。
+        language = cfg.getString("language", "general", "auto",
+                "Language for logs and messages / 日志与提示语言: auto | en | zh\n"
+                + "auto: client follows the game language, server follows the system locale\n"
+                + "auto: 客户端跟随游戏语言设置，服务端跟随系统区域设置");
+        // 客户端的 auto 稍后由 ClientProxy 按游戏语言再精化一次
+        L10n.use(language);
+
+        cfg.setCategoryComment("server", L10n.tr("cfg.server.category"));
         // 新配置开箱即用；解析失败时仍然 fail closed，不能拿一套与服主原意
         // 可能完全不同的默认凭证对外提供服务。
         serverEnabled = cfg.getBoolean("enabled", "server", loadedOk,
-                "服务端直连总开关。默认开启；设为 false 可完全关闭");
+                L10n.tr("cfg.server.enabled"));
         serverRunAgent = cfg.getBoolean("runAgent", "server", true,
-                "随服务端启动内置 serve。默认模式必须保持 true。\n"
-                + "已在宿主机单独运行 netherway serve、或托管环境禁止启动子进程时设为 false");
+                L10n.tr("cfg.server.runAgent"));
         serverLocalPort = cfg.getInt("localPort", "server", 0, 0, 65535,
-                "内置 serve 发布的 Minecraft 本地端口，0 表示使用服务器实际监听的端口");
+                L10n.tr("cfg.server.localPort"));
         backendId = cfg.getString("backend", "server", Credentials.BACKEND_FRP_XTCP,
-                "隧道方案标识。保持默认即可；只有实现了其它隧道方案时才修改");
+                L10n.tr("cfg.server.backend"));
         // 会合点开关必须先于 params 读出来：token=auto 只在会合点模式下成立
         // （经典模式的 token 是公网 frps 的 auth.token，本机生成毫无意义）。
         boolean rendezvousWanted = cfg.getBoolean("rendezvous", "server", true,
-                "推荐且默认模式：在服务端进程内运行会合点。\n"
-                + "玩家的控制连接从 Minecraft 公网入口进入，无需自建 frps 或部署 authplugin。\n"
-                + "保持 runAgent=true；server.params 已带齐开箱即用的参数。\n"
-                + "只有改用自建 frps 时才设为 false，并按 README 替换整个 params 列表");
+                L10n.tr("cfg.server.rendezvous"));
         if (rendezvousWanted && !serverRunAgent) {
             // 光警告不够：serverCredentials 会据此摘掉地址，若这里仍按开启处理，
             // 就会下发「缺地址却没有会合点」的凭证，玩家全员打洞失败，
             // 而服主看日志只会以为自己在经典模式。所以直接按关闭处理。
-            LOG.warn("server.rendezvous 需要 server.runAgent=true（会合点起在内置 serve "
-                    + "进程里，独立运行的 serve 不会开它）。本次按未启用处理");
+            LOG.warn(L10n.tr("config.rendezvousNeedsRunAgent"));
         }
         serverRendezvous = rendezvousWanted && serverRunAgent;
 
         Map<String, String> params = parseParams(cfg.getStringList("params", "server",
-                DEFAULT_RENDEZVOUS_PARAMS.clone(),
-                "隧道参数，每行一个 key=value。默认三项已经可用。\n"
-                + "自建 frps 时才按 README 替换整个列表；高级鉴权项不写在这里"),
+                defaultRendezvousParams(),
+                L10n.tr("cfg.server.params")),
                 backendId);
         // secret=auto：每次启动生成随机密钥，等于给玩家侧缓存的凭证上了
         // 「服务端重启周期」的有效期。前提是 runAgent=true——serve 与下发
         // 同源，独立运行的 serve 拿不到这里生成的值。
         if ("auto".equals(params.get("secret"))) {
             if (serverEnabled && !serverRunAgent) {
-                LOG.warn("secret=auto 需要 server.runAgent=true（内置 serve 与下发凭证同源）；"
-                        + "独立运行的 serve 无法得知本次生成的密钥，玩家会一直打洞失败");
+                LOG.warn(L10n.tr("config.secretAutoNeedsRunAgent"));
             }
             params.put("secret", randomSecret());
             if (serverEnabled) {
-                LOG.info("secret=auto：本次启动已生成随机房间密钥，服务端每次重启轮换，"
-                        + "玩家侧无需任何操作");
+                LOG.info(L10n.tr("config.secretAutoGenerated"));
             }
         }
         // token=auto：同理，但只对内嵌会合点有意义——那个令牌只在服务端进程内
@@ -168,18 +175,15 @@ public final class ModConfig {
             if (serverRendezvous) {
                 params.put("token", randomSecret());
                 if (serverEnabled) {
-                    LOG.info("token=auto：本次启动已生成随机会合点令牌，服务端每次重启轮换，"
-                            + "玩家侧无需任何操作");
+                    LOG.info(L10n.tr("config.tokenAutoGenerated"));
                 }
             } else {
-                LOG.warn("token=auto 只在 server.rendezvous=true 时有意义（经典模式的 token "
-                        + "必须与公网 frps 的 auth.token 一致）。已按字面值 \"auto\" 使用，"
-                        + "这几乎肯定不是你想要的");
+                LOG.warn(L10n.tr("config.tokenAutoClassic"));
             }
         }
         serverParams = params;
         serverPunchTimeoutSeconds = cfg.getInt("punchTimeoutSeconds", "server", 0, 0, 3600,
-                "建议客户端使用的打洞超时秒数，0 表示由客户端自己配置");
+                L10n.tr("cfg.server.punchTimeoutSeconds"));
         // 每玩家鉴权是高级功能。默认配置不生成这三项，避免它们与
         // server.params 里的会合点令牌挤在一起，让新手误以为必须挑一处填写。
         // 用户手工加入任意一项后再全部交给 Forge 管理、补注释和范围校验。
@@ -188,37 +192,27 @@ public final class ModConfig {
                 || cfg.hasKey("server", "serveAuthToken");
         if (advancedAuthConfigured) {
             tokenSigningKey = cfg.getString("tokenSigningKey", "server", "",
-                    "【高级鉴权项】每玩家令牌签发密钥。内嵌会合点可直接使用；\n"
-                    + "自建 frps 时须与 authplugin 的 -key 一致。\n"
-                    + "它不是 server.params 中的会合点令牌；具体部署见 README");
+                    L10n.tr("cfg.server.tokenSigningKey"));
             tokenTtlDays = cfg.getInt("tokenTtlDays", "server", 30, 1, 3650,
-                    "【高级鉴权项】每玩家令牌的有效天数；每次登录自动续签");
+                    L10n.tr("cfg.server.tokenTtlDays"));
             serveAuthToken = cfg.getString("serveAuthToken", "server", "",
-                    "【自建 frps 高级项】内置 serve 的静态身份令牌，\n"
-                    + "须与 authplugin 的 -static-token 一致，绝不能放进 server.params");
+                    L10n.tr("cfg.server.serveAuthToken"));
         } else {
             tokenSigningKey = "";
             tokenTtlDays = 30;
             serveAuthToken = "";
         }
         String pp = cfg.getString("proxyProtocol", "server", "",
-                "让隧道进程连本地 MC 端口前先发 PROXY protocol 头（填 v1 或 v2，留空关闭）。\n"
-                + "开启后本 mod 会给服务端接入链装嗅探式剥头组件，登录日志与封禁\n"
-                + "看到的是玩家真实来源地址而不是 127.0.0.1。\n"
-                + "当前 frp 只有 stcp 中转路径实际带头，xtcp 的 P2P 流等上游支持后自动生效。\n"
-                + "runAgent=false 时须给独立运行的 serve 手动加同值的 -proxy-protocol 旗标");
+                L10n.tr("cfg.server.proxyProtocol"));
         if (!pp.isEmpty() && !"v1".equals(pp) && !"v2".equals(pp)) {
             // 传给 serve 会让它启动即退（它也校验），但剥头组件却已挂上——
             // 半开状态最迷惑人，不如当场按关闭处理并把话说明白
-            LOG.warn("server.proxyProtocol 只接受 v1 或 v2（当前值 \"{}\"），已按关闭处理", pp);
+            LOG.warn(L10n.tr("config.badProxyProtocol", pp));
             pp = "";
         }
         serveProxyProtocol = pp;
         serverPreauth = cfg.getBoolean("preauth", "server", true,
-                "允许玩家在进服之前于 Minecraft 端口上换取直连凭证（不另开监听端口）。\n"
-                + "开启后玩家首次启动、密钥轮换之后都无需先经中转进服。\n"
-                + "不做身份验证——准入交给 MC 服务端自己的白名单与正版验证。\n"
-                + "注意：交换帧不加密，凭证以明文过网");
+                L10n.tr("cfg.server.preauth"));
         // Forge 默认按字母排序，导致新人先看到 backend/localPort，再在文件末尾
         // 才发现模式开关。把「能否直接用」的四项放在 server 类目最前面。
         // Forge 1.7.10 会把配置里未列出的旧字段/拼错字段追加到传入列表。
@@ -229,61 +223,43 @@ public final class ModConfig {
                 "backend", "localPort", "preauth", "punchTimeoutSeconds",
                 "proxyProtocol", "tokenSigningKey", "tokenTtlDays", "serveAuthToken")));
 
-        cfg.setCategoryComment("client",
-                "客户端专用：时间参数默认值来自实测，顺利时建链约 2-5 秒。\n"
-                + "默认行为是全自动直连：启动时预取凭证（prefetch）、后台打洞（prewarm，\n"
-                + "打不通按退避一直重试），玩家只管点服务器列表里的直连条目。");
+        cfg.setCategoryComment("client", L10n.tr("cfg.client.category"));
         clientEnabled = cfg.getBoolean("enabled", "client", true,
-                "是否响应服务端下发的凭证并尝试直连");
+                L10n.tr("cfg.client.enabled"));
         clientPrewarm = cfg.getBoolean("prewarm", "client", true,
-                "游戏启动时为每份已知服务凭证预热一条直连隧道，并在服务器列表里\n"
-                + "提供对应直连入口。打洞严格串行以避免同 NAT 干扰，已建立隧道可同时存活；\n"
-                + "失败服务各自按退避周期持续重试");
+                L10n.tr("cfg.client.prewarm"));
         replaceServerEntries = cfg.getBoolean("replaceServerEntries", "client", true,
-                "预热就绪后是否在运行期把原服务器条目的连接目标解析到本地隧道。\n"
-                + "不会修改 servers.dat；下次启动仍用真实入口预取和回退。\n"
-                + "关闭后改为在 servers.dat 中维护独立的 [P2P直连] 条目");
+                L10n.tr("cfg.client.replaceServerEntries"));
         redirectOnWarmReady = cfg.getBoolean("redirectOnWarmReady", "client", true,
-                "经中转在服务器里游玩期间，后台直连一旦就绪是否立即切换过去。\n"
-                + "切换表现为一次快速重连（约数秒），每个服务本会话最多自动切换两次。\n"
-                + "关闭后隧道仍会建立，但要等你自己断开重连才走直连");
+                L10n.tr("cfg.client.redirectOnWarmReady"));
         prewarmPort = cfg.getInt("prewarmPort", "client", 25595, 0, 65535,
-                "预热隧道的本地端口，被占用时自动改用空闲端口（条目地址会跟着更新）；\n"
-                + "0 表示每次随机");
+                L10n.tr("cfg.client.prewarmPort"));
         directEntryName = cfg.getString("directEntryName", "client", "[P2P直连]",
-                "服务器列表中直连条目的名字前缀；每个服务会追加房间与来源入口。\n"
-                + "改动后旧名字的条目不再被维护，需手动删除");
+                L10n.tr("cfg.client.directEntryName"));
         clientPrefetch = cfg.getBoolean("prefetch", "client", true,
-                "启动时直接向 Minecraft 服务器端口预取凭证，\n"
-                + "首次启动、密钥轮换后都无需先经中转进服。\n"
-                + "服务端没开 server.preauth 时本项静默不生效");
+                L10n.tr("cfg.client.prefetch"));
         prefetchServers = cfg.getStringList("prefetchServers", "client", new String[0],
-                "预取凭证时要问的 Minecraft 服务器地址，每行一个 host 或 host:port\n"
-                + "（不填端口按 25565）。留空则用服务器列表（server.dat）里的条目。\n"
-                + "所有成功应答的地址都会被缓存并建立各自的直连条目");
+                L10n.tr("cfg.client.prefetchServers"));
         verboseLogging = cfg.getBoolean("verboseLogging", "client", true,
-                "把直连过程的详细日志（agent 事件、参数键、诊断输出）以 INFO 级别写进游戏日志；\n"
-                + "关闭后这些内容降为 DEBUG 级别（默认日志配置下不可见）");
+                L10n.tr("cfg.client.verboseLogging"));
         clientPunchTimeoutSeconds = cfg.getInt("punchTimeoutSeconds", "client", 15, 1, 3600,
-                "打洞超时秒数（服务端下发了建议值时以服务端为准）");
+                L10n.tr("cfg.client.punchTimeoutSeconds"));
         probeIntervalMs = cfg.getInt("probeIntervalMs", "client", 250, 50, 10_000,
-                "就绪探测间隔毫秒数");
+                L10n.tr("cfg.client.probeIntervalMs"));
         probeTimeoutMs = cfg.getInt("probeTimeoutMs", "client", 2_000, 100, 60_000,
-                "单次就绪探测超时毫秒数");
+                L10n.tr("cfg.client.probeTimeoutMs"));
         startupGraceMs = cfg.getInt("startupGraceMs", "client", 5_000, 0, 60_000,
-                "打洞超时之外留给进程启动、二进制释放的余量毫秒数");
+                L10n.tr("cfg.client.startupGraceMs"));
         warmupRetryInitialSeconds = cfg.getInt("warmupRetryInitialSeconds", "client",
-                10, 1, 3600, "预热打洞失败后的首次重试等待秒数（此后指数退避）");
+                10, 1, 3600, L10n.tr("cfg.client.warmupRetryInitialSeconds"));
         warmupRetryMaxSeconds = cfg.getInt("warmupRetryMaxSeconds", "client",
-                120, 1, 86_400, "预热重试退避的上限秒数——打不通就按这个周期一直打");
+                120, 1, 86_400, L10n.tr("cfg.client.warmupRetryMaxSeconds"));
         prefetchTimeoutSeconds = cfg.getInt("prefetchTimeoutSeconds", "client",
-                60, 5, 600, "单个候选的预取超时秒数（含 TCP 往返）");
+                60, 5, 600, L10n.tr("cfg.client.prefetchTimeoutSeconds"));
 
-        cfg.setCategoryComment("telemetry",
-                "匿名质量测量。发送版本、平台与粗粒度结果；视开关发送\n"
-                + "打洞阶段、稳定失败码、重试次数、RTT/耗时桶、预热/升级/预取路径。");
+        cfg.setCategoryComment("telemetry", L10n.tr("cfg.telemetry.category"));
         telemetryEnhanced = cfg.getBoolean("enhanced", "telemetry", true,
-                "是否发送详细匿名质量指标");
+                L10n.tr("cfg.telemetry.enhanced"));
         boolean masterEnabled = !cfg.hasKey("telemetry", "enable")
                 || cfg.getBoolean("enable", "telemetry", true,
                         "");
@@ -303,6 +279,13 @@ public final class ModConfig {
             this.configuration = configuration;
             this.loadedOk = loadedOk;
         }
+    }
+
+    // ---- general ----
+
+    /** cfg 里的语言设定（auto/en/zh），auto 的精化交给调用方。 */
+    public String language() {
+        return language;
     }
 
     // ---- server ----
@@ -337,7 +320,7 @@ public final class ModConfig {
             }
             int eq = trimmed.indexOf('=');
             if (eq <= 0) {
-                LOG.warn("server.params 中的行不是 key=value 形式，已忽略一行");
+                LOG.warn(L10n.tr("config.paramNotKv"));
                 continue;
             }
             params.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
@@ -347,9 +330,8 @@ public final class ModConfig {
         if (Credentials.BACKEND_FRP_XTCP.equals(backendId)) {
             for (String key : params.keySet()) {
                 if (!Credentials.frpXtcpParamKeys().contains(key)) {
-                    LOG.warn("server.params 里的键 \"{}\" 不在 frp-xtcp 的契约里"
-                            + "（认识的键: {}），agent 会忽略它；若是拼写错误请改正",
-                            key, Credentials.frpXtcpParamKeys());
+                    LOG.warn(L10n.tr("config.unknownParamKey",
+                            key, Credentials.frpXtcpParamKeys()));
                 }
             }
         }
@@ -376,7 +358,7 @@ public final class ModConfig {
             }
             return new Credentials(backendId, p, serverPunchTimeoutSeconds * 1000);
         } catch (IllegalArgumentException e) {
-            LOG.warn("凭证配置不完整: {}", e.getMessage());
+            LOG.warn(L10n.tr("config.incompleteCred", e.getMessage()));
             return null;
         }
     }

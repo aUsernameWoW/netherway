@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aUsernameWoW/netherway/internal/authplugin"
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 )
 
 // authplugin 子命令在 frps 宿主机运行，作为 frps 的 HTTP server plugin
@@ -27,7 +27,7 @@ import (
 // stringList 收集可重复的旗标。
 type stringList []string
 
-func (s *stringList) String() string { return fmt.Sprintf("%d 个", len(*s)) }
+func (s *stringList) String() string { return i18n.T("auth.count", len(*s)) }
 
 func (s *stringList) Set(v string) error {
 	*s = append(*s, v)
@@ -36,22 +36,17 @@ func (s *stringList) Set(v string) error {
 
 func cmdAuthPlugin(args []string) error {
 	fs := flag.NewFlagSet("authplugin", flag.ExitOnError)
-	listen := fs.String("listen", "127.0.0.1:7200",
-		"监听地址；应只对 frps 可达，通常是 127.0.0.1")
-	path := fs.String("path", "/handler", "HTTP 路径，与 frps.toml 的 httpPlugins.path 一致")
-	key := fs.String("key", os.Getenv("NETHERWAY_AUTH_KEY"),
-		"每玩家令牌的签发密钥，须与服务端 mod 的 server.tokenSigningKey 一致；\n"+
-			"也可经环境变量 NETHERWAY_AUTH_KEY 传入（避免出现在进程列表里）")
-	allowLegacy := fs.Bool("allow-legacy", false,
-		"放行不带令牌的登录与代理注册（迁移期用，稳定后应关闭）")
+	listen := fs.String("listen", "127.0.0.1:7200", i18n.T("flag.auth.listen"))
+	path := fs.String("path", "/handler", i18n.T("flag.auth.path"))
+	key := fs.String("key", os.Getenv("NETHERWAY_AUTH_KEY"), i18n.T("flag.auth.key"))
+	allowLegacy := fs.Bool("allow-legacy", false, i18n.T("flag.auth.allowLegacy"))
 	var statics stringList
-	fs.Var(&statics, "static-token",
-		"静态令牌，可重复；serve 端用 -meta-token 携带同一值以表明身份并获准注册代理")
+	fs.Var(&statics, "static-token", i18n.T("flag.auth.staticToken"))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *key == "" {
-		return errors.New("未指定签发密钥：用 -key 或环境变量 NETHERWAY_AUTH_KEY")
+		return i18n.Errorf("auth.noKey")
 	}
 
 	logf := func(format string, a ...any) {
@@ -72,8 +67,8 @@ func cmdAuthPlugin(args []string) error {
 	defer stop()
 
 	// 指纹供与服务端 mod 的启动日志核对，两侧一致才说明密钥没配岔
-	logf("authplugin 监听 %s%s，签发密钥指纹 %s，静态令牌 %d 个，legacy=%v",
-		*listen, *path, authplugin.KeyFingerprint(*key), len(statics), *allowLegacy)
+	logf("%s", i18n.T("auth.listening",
+		*listen, *path, authplugin.KeyFingerprint(*key), len(statics), *allowLegacy))
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
@@ -82,7 +77,7 @@ func cmdAuthPlugin(args []string) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
-		logf("authplugin 已停止")
+		logf("%s", i18n.T("auth.stopped"))
 		return nil
 	case err := <-errCh:
 		return err

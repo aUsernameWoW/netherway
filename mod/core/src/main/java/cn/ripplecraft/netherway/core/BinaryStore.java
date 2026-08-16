@@ -70,9 +70,10 @@ public final class BinaryStore {
                 }
             }
             if (payload == null) {
-                throw new IOException("jar 内缺少当前平台的 agent: " + platform.resourcePath()
-                        + (fallback == null ? "" : "，转译兜底 " + fallback.resourcePath() + " 也不存在")
-                        + "（平台 " + platform + "）");
+                throw new IOException(fallback == null
+                        ? L10n.tr("binary.missing", platform.resourcePath(), platform)
+                        : L10n.tr("binary.missingWithFallback",
+                                platform.resourcePath(), fallback.resourcePath(), platform));
             }
         }
         String digest = shortDigest(payload);

@@ -1,6 +1,7 @@
 package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.Credentials;
+import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.TokenIssuer;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.PlayerEvent;
@@ -51,8 +52,7 @@ public final class CredentialSender {
         if (cred == null) {
             if (!warnedInvalid) {
                 warnedInvalid = true;
-                LOG.warn("server.enabled 已开启但凭证配置不完整，不会下发直连凭证"
-                        + "（检查 server.params 里的 room 等键）");
+                LOG.warn(L10n.tr("fserver.incompleteCredKeys"));
             }
             return;
         }
@@ -62,7 +62,7 @@ public final class CredentialSender {
         channel.sendTo(new FMLProxyPacket(
                 Unpooled.wrappedBuffer(cred.encode()), Netherway.CHANNEL), player);
         // Credentials.toString 刻意只列参数键名，不含 token 与密钥值
-        LOG.info("已向 {} 下发直连凭证 {}", player.getCommandSenderName(), cred);
+        LOG.info(L10n.tr("fserver.delivered", player.getCommandSenderName(), cred));
     }
 
     /**

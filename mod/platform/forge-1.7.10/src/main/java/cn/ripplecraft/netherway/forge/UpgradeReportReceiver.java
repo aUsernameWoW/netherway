@@ -1,5 +1,6 @@
 package cn.ripplecraft.netherway.forge;
 
+import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.UpgradeReport;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.network.FMLNetworkEvent;
@@ -68,18 +69,18 @@ public final class UpgradeReportReceiver {
             report = UpgradeReport.decode(data);
         } catch (IOException e) {
             // 损坏或过旧的回执只是少一条诊断日志，无需惊动服主
-            LOG.debug("来自 {} 的结果回执无法解码，已忽略", player);
+            LOG.debug(L10n.tr("fserver.reportUndecodable", player));
             return;
         }
 
         if (report.isUpgraded()) {
-            LOG.info("{} 已切换为直连（房间 {}，延迟 {}ms，建链 {}ms）",
-                    player, report.room(), report.rttMs(), report.elapsedMs());
+            LOG.info(L10n.tr("fserver.reportUpgraded",
+                    player, report.room(), report.rttMs(), report.elapsedMs()));
         } else {
             // 失败原因用 warn：多个玩家同时失败通常意味着宿主机的
             // serve 进程或 frps 出了问题，值得服主注意
-            LOG.warn("{} 直连失败（房间 {}）：{}",
-                    player, report.room(), report.reason());
+            LOG.warn(L10n.tr("fserver.reportGaveUp",
+                    player, report.room(), report.reason()));
         }
     }
 

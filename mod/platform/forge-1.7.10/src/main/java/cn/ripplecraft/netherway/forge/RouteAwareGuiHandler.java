@@ -1,5 +1,6 @@
 package cn.ripplecraft.netherway.forge;
 
+import cn.ripplecraft.netherway.core.L10n;
 import cpw.mods.fml.client.FMLClientHandler;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.relauncher.ReflectionHelper;
@@ -50,7 +51,7 @@ public final class RouteAwareGuiHandler {
                     GuiMultiplayer.class, (GuiMultiplayer) event.gui, "field_146798_g");
             event.gui = new RouteAwareGuiMultiplayer(parent, routes, bridge);
         } catch (RuntimeException e) {
-            bridge.warn("无法接管原版服务器列表，本次仍使用原入口", e);
+            bridge.warn(L10n.tr("routegui.takeoverFailed"), e);
         }
     }
 
@@ -84,7 +85,7 @@ public final class RouteAwareGuiHandler {
                 }
                 original = ((ServerListEntryNormal) item).func_148296_a();
             } catch (RuntimeException e) {
-                bridge.warn("读取选中的服务器失败，改用原入口", e);
+                bridge.warn(L10n.tr("routegui.readSelectionFailed"), e);
                 super.func_146796_h();
                 return;
             }
@@ -99,8 +100,7 @@ public final class RouteAwareGuiHandler {
             direct.func_152583_a(original);
             direct.serverIP = route.localAddress();
             copyFmlMetadata(original, direct, bridge);
-            bridge.info("服务器列表选择已解析到预热隧道: " + original.serverIP
-                    + " → " + direct.serverIP);
+            bridge.info(L10n.tr("routegui.resolved", original.serverIP, direct.serverIP));
             FMLClientHandler.instance().connectToServer(this, direct);
         }
 
@@ -147,7 +147,7 @@ public final class RouteAwareGuiHandler {
                 }
             } catch (RuntimeException e) {
                 repingBroken = true;
-                bridge.debug("读取服务器列表失败，路由变化后的延迟读数改由手动刷新更新: " + e);
+                bridge.debug(L10n.tr("routegui.repingBroken", e));
             }
         }
     }
@@ -198,8 +198,7 @@ public final class RouteAwareGuiHandler {
             ServerData temp = new ServerData(real.serverName, route.localAddress());
             vanilla.func_147224_a(temp);
             mirrors.put(real, temp);
-            bridge.debug("服务器列表延迟探测已解析到预热隧道: " + real.serverIP
-                    + " → " + route.localAddress());
+            bridge.debug(L10n.tr("routegui.pingResolved", real.serverIP, route.localAddress()));
         }
 
         /** 主线程每 tick 调用。跨线程读探测结果与原版同样不加锁，语义一致。 */
@@ -250,7 +249,7 @@ public final class RouteAwareGuiHandler {
                 }
             }
         } catch (RuntimeException e) {
-            bridge.debug("复制 FML 服务器列表元数据失败: " + e);
+            bridge.debug(L10n.tr("routegui.copyMetaFailed", e));
         }
     }
 }

@@ -75,7 +75,7 @@ public final class Platform {
         } else if (n.contains("nux") || n.contains("nix")) {
             os = Os.LINUX;
         } else {
-            throw new UnsupportedPlatformException("无法识别的操作系统: " + osName);
+            throw new UnsupportedPlatformException(L10n.tr("platform.unknownOs", osName));
         }
 
         // JVM 对同一架构有多种叫法：x86_64/amd64 是一回事，aarch64/arm64 也是。
@@ -85,7 +85,7 @@ public final class Platform {
         } else if (a.equals("aarch64") || a.equals("arm64")) {
             arch = Arch.ARM64;
         } else {
-            throw new UnsupportedPlatformException("不支持的处理器架构: " + osArch);
+            throw new UnsupportedPlatformException(L10n.tr("platform.unknownArch", osArch));
         }
 
         // 没有为 macOS 构建 32 位/其他组合，这里的组合校验交给资源查找环节，

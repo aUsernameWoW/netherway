@@ -3,13 +3,13 @@ package frpxtcp
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/aUsernameWoW/netherway/internal/backend"
 	"github.com/aUsernameWoW/netherway/internal/config"
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 	"github.com/aUsernameWoW/netherway/internal/stunpick"
 	"github.com/aUsernameWoW/netherway/internal/tunnel"
 )
@@ -43,8 +43,8 @@ func (impl) Run(ctx context.Context, params map[string]string, opts backend.Opti
 	// 无法识别的键按接口契约必须忽略，但要说出来：服务端配置里键名拼错时
 	// （比如把 secret 写成 key），这是唯一能暴露「值被静默丢弃」的地方。
 	if unknown := unknownKeys(params); len(unknown) > 0 {
-		opts.Diagf("忽略未知参数键 %v（frp-xtcp 认识的键: %s）",
-			unknown, strings.Join(knownKeys(), ", "))
+		opts.Diagf("%s", i18n.T("frpxtcp.unknownKeys",
+			unknown, strings.Join(knownKeys(), ", ")))
 	}
 
 	// 缺省参数用构建期注入的默认值补齐，保持「零配置可用」。
@@ -67,7 +67,7 @@ func (impl) Run(ctx context.Context, params map[string]string, opts backend.Opti
 	if v, ok := params[ParamServerPort]; ok && v != "" {
 		p, err := strconv.Atoi(v)
 		if err != nil || p <= 0 || p > 65535 {
-			return fmt.Errorf("参数 %s 非法: %q", ParamServerPort, v)
+			return i18n.Errorf("frpxtcp.badPort", ParamServerPort, v)
 		}
 		ep.ServerPort = p
 	}
@@ -78,12 +78,12 @@ func (impl) Run(ctx context.Context, params map[string]string, opts backend.Opti
 	// 生效值的快照。token 与密钥只报有无和长度，值本身绝不能出现在
 	// 诊断输出里——这些行最终会进玩家的游戏日志。
 	// user 是玩家自己的 UUID，进他自己的日志无妨，明文有助排查。
-	opts.Diagf("生效参数: %s=%s %s=%d %s=%s %s=%s %s=%s %s=%s %s=%s %s=%s",
+	opts.Diagf("%s", i18n.T("frpxtcp.effective",
 		ParamServer, ep.ServerAddr, ParamServerPort, ep.ServerPort,
 		ParamSTUN, ep.STUNServer, ParamRoom, room.Name,
 		ParamToken, presence(ep.Token), ParamSecret, presence(room.SecretKey),
-		ParamUser, paramOr(params, ParamUser, "空"),
-		ParamUserToken, presence(params[ParamUserToken]))
+		ParamUser, paramOr(params, ParamUser, i18n.T("frpxtcp.empty")),
+		ParamUserToken, presence(params[ParamUserToken])))
 	if err := ep.Validate(); err != nil {
 		return withParamKeys(err, params)
 	}
@@ -138,21 +138,21 @@ func unknownKeys(params map[string]string) []string {
 // presence 描述敏感参数的有无与长度，绝不输出值本身。
 func presence(v string) string {
 	if v == "" {
-		return "空"
+		return i18n.T("frpxtcp.empty")
 	}
-	return fmt.Sprintf("已设置(%d字节)", len(v))
+	return i18n.T("frpxtcp.set", len(v))
 }
 
 // withParamKeys 把收到的参数键附在校验错误后面。配置侧键名写错时值会被
 // 静默忽略，光看「密钥为空」猜不到原因；键名清单能让人当场对出差异。
 func withParamKeys(err error, params map[string]string) error {
 	if len(params) == 0 {
-		return fmt.Errorf("%w（本次未收到任何参数，全部使用构建期默认值）", err)
+		return i18n.Errorf("frpxtcp.noParams", err)
 	}
 	keys := make([]string, 0, len(params))
 	for k := range params {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	return fmt.Errorf("%w（收到的参数键: %s）", err, strings.Join(keys, ", "))
+	return i18n.Errorf("frpxtcp.withKeys", err, strings.Join(keys, ", "))
 }

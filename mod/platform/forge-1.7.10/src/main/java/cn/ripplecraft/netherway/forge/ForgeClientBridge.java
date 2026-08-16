@@ -1,6 +1,7 @@
 package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.ClientBridge;
+import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.ServerCandidates;
 import cpw.mods.fml.common.network.FMLEventChannel;
 import cpw.mods.fml.common.network.internal.FMLProxyPacket;
@@ -82,7 +83,7 @@ public final class ForgeClientBridge implements ClientBridge {
             try {
                 task.run();
             } catch (RuntimeException e) {
-                LOG.warn("主线程任务执行失败", e);
+                LOG.warn(L10n.tr("fbridge.taskFailed"), e);
             }
         }
     }
@@ -121,13 +122,12 @@ public final class ForgeClientBridge implements ClientBridge {
         activeManager = manager;
         clearRedirectTracking();
         if (landed) {
-            debug("新连接 " + remote + " 是我们发起的直连切换");
+            debug(L10n.tr("fbridge.redirectLanded", remote));
             return ConnectResult.REDIRECT_LANDED;
         }
 
         switchOrigin = null;
-        debug("新连接 " + remote
-                + " 与直连切换无关（期望回环端口 " + expected + "）");
+        debug(L10n.tr("fbridge.redirectMissed", remote, expected));
         return ConnectResult.REDIRECT_MISSED;
     }
 
@@ -166,7 +166,7 @@ public final class ForgeClientBridge implements ClientBridge {
         int expected = redirectPort;
         clearRedirectTracking();
         switchOrigin = null;
-        debug("等待回环端口 " + expected + " 的连接超时");
+        debug(L10n.tr("fbridge.redirectTimeout", expected));
         return true;
     }
 
@@ -189,7 +189,7 @@ public final class ForgeClientBridge implements ClientBridge {
 
     @Override
     public void connectTo(String host, int port) {
-        debug("断开当前连接，重连到 " + host + ":" + port);
+        debug(L10n.tr("fbridge.connectTo", host, port));
         // 下面的 loadWorld(null) 会把 currentServerData 清成 null（退出世界
         // 分支的连带动作），之后就再也推导不出玩家原来连的是哪台服务器——
         // 而重定向落地后服务端还会重发一次凭证需要它。必须赶在清掉之前存好。
@@ -261,7 +261,7 @@ public final class ForgeClientBridge implements ClientBridge {
             }
             return ServerCandidates.Address.of(host, parsed.getPort());
         } catch (RuntimeException e) {
-            LOG.debug("解析当前服务器地址失败: {}", data.serverIP, e);
+            LOG.debug(L10n.tr("fbridge.parseServerFailed", data.serverIP), e);
             return switchOrigin;
         }
     }
@@ -280,7 +280,7 @@ public final class ForgeClientBridge implements ClientBridge {
         Minecraft mc = Minecraft.getMinecraft();
         if (mc.thePlayer != null) {
             mc.thePlayer.addChatMessage(new ChatComponentText(
-                    EnumChatFormatting.GREEN + "[直连] "
+                    EnumChatFormatting.GREEN + L10n.tr("chat.prefix")
                             + EnumChatFormatting.RESET + message));
         }
     }
@@ -293,7 +293,7 @@ public final class ForgeClientBridge implements ClientBridge {
             @Override
             public void run() {
                 if (Minecraft.getMinecraft().getNetHandler() == null) {
-                    debug("当前没有连接，结果回执未发送");
+                    debug(L10n.tr("fbridge.noConnection"));
                     return;
                 }
                 channel.sendToServer(new FMLProxyPacket(

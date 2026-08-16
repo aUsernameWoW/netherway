@@ -12,6 +12,8 @@ import (
 	"io"
 	"net"
 	"time"
+
+	"github.com/aUsernameWoW/netherway/internal/i18n"
 )
 
 // protocolVersion 用 1.7.10 的值。服务端只是回显状态，填什么都能拿到响应，
@@ -56,7 +58,7 @@ func readVarInt(r io.Reader) (int, error) {
 		}
 		shift += 7
 	}
-	return 0, fmt.Errorf("varint 过长")
+	return 0, i18n.Errorf("mcping.varintTooLong")
 }
 
 // packet 给负载加上长度前缀。
@@ -106,7 +108,7 @@ func Ping(host string, port int, timeout time.Duration) (*Status, time.Duration,
 		return nil, 0, err
 	}
 	if strLen <= 0 || strLen > 1<<20 {
-		return nil, 0, fmt.Errorf("状态响应长度异常: %d", strLen)
+		return nil, 0, i18n.Errorf("mcping.badStatusLen", strLen)
 	}
 
 	body := make([]byte, strLen)
@@ -116,7 +118,7 @@ func Ping(host string, port int, timeout time.Duration) (*Status, time.Duration,
 
 	var st Status
 	if err := json.Unmarshal(body, &st); err != nil {
-		return nil, 0, fmt.Errorf("解析状态 JSON: %w", err)
+		return nil, 0, i18n.Errorf("mcping.parseStatus", err)
 	}
 	return &st, time.Since(start), nil
 }
@@ -135,7 +137,7 @@ func WaitReady(host string, port int, deadline time.Time, interval, probeTimeout
 		time.Sleep(interval)
 	}
 	if lastErr == nil {
-		lastErr = fmt.Errorf("超时")
+		lastErr = i18n.Errorf("mcping.timeout")
 	}
 	return nil, 0, lastErr
 }
