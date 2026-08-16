@@ -82,7 +82,9 @@ backend 实现（如 `internal/backend/frpxtcp`）保持一致。
 打洞阶段严格串行，已建立的隧道可并存；一个服务的失败/退避不阻塞其他服务。
 默认 `client.replaceServerEntries=true`：隧道 READY 后，点击原服务器条目会直接
 使用本地隧道，但磁盘上的真实入口保持不变。若玩家在 READY 前已经从原入口进服，
-预热成功后仍会立即切换。把该项设为 `false` 才会维护额外的直连条目；这时
+预热成功后仍会立即切换——即使进服后的那轮打洞已经超时放弃；游玩中的切换表现
+为一次快速重连，每个服务本会话最多自动切换两次，不想被打断可关
+`client.redirectOnWarmReady`。把该项设为 `false` 才会维护额外的直连条目；这时
 `directEntryName` 控制其前缀。`prewarmPort` 可固定首选预热端口，其他时间参数也在
 同一 cfg 的 `client` 类目中配置。
 

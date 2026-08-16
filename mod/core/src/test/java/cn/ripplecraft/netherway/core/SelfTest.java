@@ -64,6 +64,8 @@ public final class SelfTest {
         testAdoptDirectConnection();
         testUpgradeReusesWarmTunnel();
         testWarmupListenerLifecycle();
+        testWarmReadyRescuesGaveUp();
+        testWarmRescueCapAcrossSessions();
         testTokenIssuer();
         testCredentialsWithExtraParams();
         testServeCommandMetaToken();
@@ -1298,6 +1300,111 @@ public final class SelfTest {
         check("预热 READY 通知平台层", lifecycle.contains("ready:25595"));
         warmup.shutdown();
         check("预热关闭通知平台层撤销入口", lifecycle.contains("closed:25595"));
+    }
+
+    /**
+     * 中转游玩中的救援：升级已 GAVE_UP 后预热才 READY 的话应就地切换
+     * （2026-08-16 CI 实测：升级冷启动 15 秒超时先败，让路的预热随后
+     * 打通，玩家却要手动重连才走上直连）。
+     */
+    private static void testWarmReadyRescuesGaveUp() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-warm-rescue");
+        FakeBridge bridge = new FakeBridge(tmp);
+        WarmupController warmup = new WarmupController(bridge,
+                new CredentialCache(tmp.resolve("credentials")),
+                Timings.defaults(), null, 0, null);
+        Credentials cred = sampleCredAt("room-rescue", "k");
+
+        // 玩家进服、收到凭证，冷启动升级失败（测试类路径无 natives）
+        UpgradeController c = new UpgradeController(bridge, Timings.defaults(), null, warmup);
+        check("凭证启动升级", c.onCredentials(cred));
+        check("升级在超时前放弃", bridge.settled.await(10, TimeUnit.SECONDS));
+        check("失败回执已送出", bridge.reportSent.await(10, TimeUnit.SECONDS));
+        check("救援前状态为 GAVE_UP", c.state() == UpgradeController.State.GAVE_UP);
+
+        // 其他房间的隧道就绪：key 不匹配，不得把 A 服的连接切到 B 服隧道
+        warmup.injectReadyForTest(sampleCredAt("room-rescue-other", "k"), AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":25598}"));
+        check("其他房间就绪不触发切换", bridge.connects.isEmpty());
+
+        // 非 READY 事件不救
+        c.rescueFromWarmTunnel(cred, AgentEvent.parse(
+                "{\"event\":\"failed\",\"reason\":\"x\"}"));
+        check("非 READY 事件不触发切换", bridge.connects.isEmpty()
+                && c.state() == UpgradeController.State.GAVE_UP);
+
+        // 本房间的预热此刻才打通：应就地切换，不等玩家断开重连
+        AgentEvent ready = AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":25597,\"rttMs\":24,\"elapsedMs\":5030}");
+        warmup.injectReadyForTest(cred, ready);
+        check("READY 后就地切换到隧道", bridge.connects.contains("127.0.0.1:25597"));
+        check("救援后状态为 UPGRADED", c.state() == UpgradeController.State.UPGRADED);
+
+        // 切换落地后服务端照常重发凭证：命中重复分支并补一份成功回执
+        check("救援后重复凭证被忽略", !c.onCredentials(cred));
+        byte[] payload;
+        synchronized (bridge.reports) {
+            check("失败与成功回执各一份", bridge.reports.size() == 2);
+            payload = bridge.reports.size() < 2 ? null : bridge.reports.get(1);
+        }
+        if (payload != null) {
+            UpgradeReport report = UpgradeReport.decode(payload);
+            check("第二份回执标记为成功", report.isUpgraded());
+            check("回执带救援隧道的延迟", report.rttMs() == 24);
+        }
+
+        // 玩家退服复位后（activeKey 已清）READY 不再有任何影响
+        c.shutdown();
+        warmup.injectReadyForTest(cred, ready);
+        check("shutdown 后就绪不触发切换", bridge.connects.size() == 1);
+        warmup.shutdown();
+    }
+
+    /**
+     * 救援次数上限：隧道反复死掉重建时不能无限打断玩家。计数跨 shutdown
+     * 存活——「救援→隧道死→重进→升级又败」每圈都经过一次 shutdown，
+     * 随会话清零的话上限形同虚设。
+     */
+    private static void testWarmRescueCapAcrossSessions() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-warm-rescue-cap");
+        FakeBridge bridge = new FakeBridge(tmp);
+        UpgradeController c = new UpgradeController(bridge, Timings.defaults(), null, null);
+        Credentials cred = sampleCredAt("room-cap", "k");
+        AgentEvent ready = AgentEvent.parse(
+                "{\"event\":\"ready\",\"port\":25599,\"rttMs\":24,\"elapsedMs\":5030}");
+
+        for (int round = 1; round <= 3; round++) {
+            check("第 " + round + " 轮凭证启动升级", c.onCredentials(cred));
+            long deadline = System.currentTimeMillis() + 10_000L;
+            while (c.state() != UpgradeController.State.GAVE_UP
+                    && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20L);
+            }
+            check("第 " + round + " 轮进入 GAVE_UP",
+                    c.state() == UpgradeController.State.GAVE_UP);
+            c.rescueFromWarmTunnel(cred, ready);
+            if (round <= 2) {
+                check("第 " + round + " 轮救援切换", bridge.connects.size() == round
+                        && c.state() == UpgradeController.State.UPGRADED);
+            } else {
+                check("第三轮救援被上限拒绝", bridge.connects.size() == 2
+                        && c.state() == UpgradeController.State.GAVE_UP);
+            }
+            // 模拟隧道死掉、玩家掉回中转重进
+            c.shutdown();
+        }
+
+        // 开关关闭时完全不救
+        FakeBridge offBridge = new FakeBridge(tmp);
+        UpgradeController off = new UpgradeController(offBridge, Timings.defaults(), null, null);
+        off.setRedirectOnWarmReady(false);
+        Credentials credOff = sampleCredAt("room-cap-off", "k");
+        check("关闭开关：凭证启动升级", off.onCredentials(credOff));
+        check("关闭开关：升级放弃", offBridge.settled.await(10, TimeUnit.SECONDS));
+        off.rescueFromWarmTunnel(credOff, ready);
+        check("关闭开关：就绪不触发切换", offBridge.connects.isEmpty()
+                && off.state() == UpgradeController.State.GAVE_UP);
+        off.shutdown();
     }
 
     // ---------- 每玩家令牌 ----------

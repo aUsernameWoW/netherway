@@ -1,6 +1,8 @@
 package cn.ripplecraft.netherway.core;
 
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import cn.ripplecraft.netherway.core.telemetry.QualityObserver;
 import cn.ripplecraft.netherway.core.telemetry.QualitySummary;
@@ -22,7 +24,10 @@ public final class UpgradeController {
         PUNCHING,
         /** 已切换到 P2P 连接。 */
         UPGRADED,
-        /** 本次会话已放弃升级，不再重试。 */
+        /**
+         * 本次会话已放弃主动打洞，不再重试。预热隧道后续就绪时仍可
+         * 就地切换救活（{@link #rescueFromWarmTunnel}，有次数上限）。
+         */
         GAVE_UP
     }
 
@@ -79,6 +84,17 @@ public final class UpgradeController {
      */
     private volatile QualitySummary.Nat telemetryNat = QualitySummary.Nat.UNKNOWN;
 
+    /** 游玩中预热就绪后是否立即切换（client.redirectOnWarmReady），默认开。 */
+    private volatile boolean redirectOnWarmReady = true;
+    /** 每个房间本会话最多自动救援次数；用完后只留路由表，等玩家自行重连。 */
+    private static final int MAX_WARM_RESCUES = 2;
+    /**
+     * 各房间已用的自动救援次数。与 telemetryNat 一样跨 {@link #shutdown()}
+     * 存活：「救援→隧道死→重进→升级又败→再救援」的循环每圈都经过一次
+     * shutdown，随会话清零的话上限就形同虚设。guarded by {@link #transition}。
+     */
+    private final Map<String, Integer> warmRescueCounts = new HashMap<String, Integer>();
+
     public UpgradeController(ClientBridge bridge, Timings timings) {
         this(bridge, timings, null, null, QualityObserver.NOOP);
     }
@@ -111,7 +127,22 @@ public final class UpgradeController {
                     return b > 0 ? b : UpgradeController.this.timings.outcomeWaitMs();
                 }
             });
+            // 正向救援口：升级已放弃、玩家还经中转挂在服务器上时，预热隧道
+            // 一旦就绪就把连接就地切换过去。打洞互斥保证此回调必然晚于同轮
+            // giveUp 的 GAVE_UP 提交（门闩在 runUpgrade 的 finally 里才释放），
+            // 单触发点即可，不存在「回调看到 PUNCHING 而错过」的竞态。
+            warmup.setReadyObserver(new WarmupController.ReadyObserver() {
+                @Override
+                public void onWarmTunnelReady(Credentials cred, AgentEvent event) {
+                    rescueFromWarmTunnel(cred, event);
+                }
+            });
         }
+    }
+
+    /** 游玩中预热就绪后是否立即切换；平台层接线时按客户端配置设置。 */
+    public void setRedirectOnWarmReady(boolean enabled) {
+        this.redirectOnWarmReady = enabled;
     }
 
     public State state() {
@@ -422,6 +453,69 @@ public final class UpgradeController {
             }
         });
         return true;
+    }
+
+    /**
+     * 预热隧道就绪时的救援：玩家经中转在服务器里游玩、本会话升级已放弃
+     * （GAVE_UP）的话，就地切换到刚就绪的隧道，不必等玩家断开重连。
+     * 典型时序（2026-08-16 CI 实测）：升级冷启动 15 秒超时先败，让路的
+     * 预热随后 5 秒打通——没有这条路径玩家只能手动重连才走上直连。
+     *
+     * <p>只救 GAVE_UP：{@link #activeKey} 在 giveUp 后保留、只被
+     * {@link #shutdown()} 清空，恰好同时证明「玩家还连着」且「连的正是
+     * 这个房间的服务器」。IDLE（没收到过凭证）无从校验目标，不救；
+     * 采用已就绪隧道零打洞成本，与 GAVE_UP「别反复折腾玩家网络」的
+     * 本意不冲突。排队到切换执行之间隧道死掉的话，后果与玩家点直连
+     * 条目失败一致（回菜单重连一次），不为它加一套探测。
+     */
+    void rescueFromWarmTunnel(Credentials cred, AgentEvent ready) {
+        if (!redirectOnWarmReady || cred == null || ready == null
+                || ready.type() != AgentEvent.Type.READY) {
+            return;
+        }
+        final long gen;
+        synchronized (transition) {
+            if (state.get() != State.GAVE_UP || !cred.dedupKey().equals(activeKey)) {
+                return;
+            }
+            Integer used = warmRescueCounts.get(cred.dedupKey());
+            if (used != null && used >= MAX_WARM_RESCUES) {
+                bridge.debug("房间 " + cred.room()
+                        + " 本会话的自动切换次数已用完，改为等待玩家自行重连");
+                return;
+            }
+            warmRescueCounts.put(cred.dedupKey(),
+                    Integer.valueOf(used == null ? 1 : used.intValue() + 1));
+            // 与 markUpgraded 相同的提交纪律：READY 与「将发起重定向」
+            // 必须是同一次状态提交，gen 取自同一临界区。
+            // 预热侧凭证必带 origin（缓存拦截无地址凭证），换上它让切换
+            // 落地后重复下发凭证的 origin 回补有最可靠的兜底。
+            activeCredentials = cred;
+            lastReady = ready;
+            telemetrySource = QualitySummary.Source.WARMUP_REUSE;
+            telemetryBackend = QualitySummary.Backend.fromBackendId(cred.backendId());
+            redirectScheduled = true;
+            state.set(State.UPGRADED);
+            gen = epoch;
+        }
+        rememberNat(ready);
+        bridge.info("游玩中预热直连就绪，从中转切换（房间 " + cred.room()
+                + "，端口 " + ready.port() + "）");
+        observe(QualitySummary.of(QualitySummary.Path.UPGRADE,
+                QualitySummary.Stage.TUNNEL_READY, QualitySummary.Outcome.SUCCESS)
+                .withSource(QualitySummary.Source.WARMUP_REUSE)
+                .withTimings(ready.elapsedMs(), ready.rttMs()));
+        final int port = ready.port();
+        long rtt = ready.rttMs();
+        final String msg = rtt > 0
+                ? "后台直连已就绪（延迟 " + rtt + "ms），正在切换…"
+                : "后台直连已就绪，正在切换…";
+        bridge.runOnGameThread(new Runnable() {
+            @Override
+            public void run() {
+                runRedirect(gen, QualitySummary.Source.WARMUP_REUSE, msg, port);
+            }
+        });
     }
 
     /**

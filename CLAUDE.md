@@ -275,7 +275,13 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
   命中重复分支并回执成功，零新协议。
 - **中转进服**：既有升级流程，但 `runUpgrade` 先查预热隧道，就绪则直接复用
   （`reuseWarmTunnel`），不再对同一房间起第二个 agent；若玩家在预热 READY 前
-  已进入服务器，READY 后仍立即切换。
+  已进入服务器，READY 后仍立即切换——包括升级已 GAVE_UP 之后：预热 READY
+  会回调 `rescueFromWarmTunnel`（`WarmupController.ReadyObserver`），只要
+  `activeKey` 匹配就从 GAVE_UP 就地切换（`client.redirectOnWarmReady`，默认
+  开）。打洞互斥保证该回调必然晚于同轮 giveUp 的状态提交，单触发点无竞态；
+  每房间每会话最多自动切换 2 次，计数跨 shutdown 存活以免隧道不稳时反复
+  打断玩家（典型时序 2026-08-16 CI 实测：升级 15 秒超时先败，让路的预热
+  随后 5 秒打通，此前玩家只能手动重连才走上直连）。
 - **预热失败/无缓存**：一切如旧。凭证轮换后优先由下一轮预取直接取回新
   密钥；没有可预取的地址时仍走「打洞失败→中转→新凭证覆盖」闭环恢复，
   玩家与服主都无需操作。
@@ -379,10 +385,12 @@ info 及以上回显到 `LogOptions.Echo`（tunnel 模式即 stderr → 游戏�
 **必须识别重复下发的凭证。** 切换连接后玩家会重新登录，服务端会再下发一次凭证，
 不去重就会陷入「升级→重连→再升级」的死循环。
 
-**预热失败绝不能进 `GAVE_UP`。** 那个状态的语义是「本会话不再重试」，会把玩家
-进服后的正常升级一并锁死——预热因此是独立的 `WarmupController`，失败当无事发生。
-同理，平台层采认经入口覆盖或独立直连条目建立的连接前必须先
-`controller.shutdown()` 复位到 IDLE。
+**预热失败绝不能进 `GAVE_UP`。** 那个状态的语义是「本会话不再主动打洞」，会把
+玩家进服后的正常升级一并锁死——预热因此是独立的 `WarmupController`，失败当无事
+发生。同理，平台层采认经入口覆盖或独立直连条目建立的连接前必须先
+`controller.shutdown()` 复位到 IDLE。注意 GAVE_UP 锁的只是打洞：预热隧道
+后续就绪时仍会经 `rescueFromWarmTunnel` 把连接就地切换过去（零打洞成本，
+与「别反复折腾玩家网络」的本意不冲突，有次数上限）。
 
 **预热与升级的 agent 各写各的日志文件**（`tunnel-warmup.log` / `tunnel.log`）。
 预热未出结果时玩家就经中转进服的话，两个 agent 会同时在跑，共用文件会互相踩踏。

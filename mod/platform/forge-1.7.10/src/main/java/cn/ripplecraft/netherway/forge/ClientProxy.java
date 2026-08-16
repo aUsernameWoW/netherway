@@ -46,6 +46,7 @@ public final class ClientProxy extends CommonProxy {
                 config.prewarmPort(), buildPrefetcher(bridge, config, telemetry), telemetry);
         UpgradeController controller = new UpgradeController(
                 bridge, config.clientTimings(), cache, warmup, telemetry);
+        controller.setRedirectOnWarmReady(config.redirectOnWarmReady());
         ClientEvents events = new ClientEvents(controller, warmup, bridge);
 
         // 凭证包走频道自己的事件总线，tick 与连接事件走 FML 总线

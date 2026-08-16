@@ -35,6 +35,14 @@ public final class WarmupController {
         long punchWaitBoundMs();
     }
 
+    /**
+     * 升级侧的救援口：预热隧道 READY 时回调，供「玩家正经中转游玩、
+     * 本会话升级已放弃」的连接就地切换。回调在预热管理线程触发。
+     */
+    public interface ReadyObserver {
+        void onWarmTunnelReady(Credentials cred, AgentEvent event);
+    }
+
     /** 平台层关心的时刻。回调在后台线程触发，实现自行转到游戏主线程。 */
     public interface Listener {
         void onTunnelStarting(Credentials cred, int port);
@@ -100,6 +108,7 @@ public final class WarmupController {
     private volatile boolean stopped;
     private volatile Thread worker;
     private volatile UpgradeGate upgradeGate;
+    private volatile ReadyObserver readyObserver;
     /** agent 最近探测出的 NAT 形态；宿主网络属性，各房间共享。 */
     private volatile QualitySummary.Nat lastNat = QualitySummary.Nat.UNKNOWN;
 
@@ -405,6 +414,7 @@ public final class WarmupController {
                 if (listener != null) {
                     listener.onTunnelReady(room.cred, outcome);
                 }
+                notifyReadyObserver(room.cred, outcome);
                 observe(cred, room.qualityWindow.succeeded(QualitySummary.Stage.TUNNEL_READY,
                         outcome.elapsedMs(), outcome.rttMs()));
                 return true;
@@ -539,6 +549,10 @@ public final class WarmupController {
         }
     }
 
+    public void setReadyObserver(ReadyObserver observer) {
+        this.readyObserver = observer;
+    }
+
     private boolean upgradeBusy() {
         UpgradeGate gate = upgradeGate;
         return gate != null && gate.punching();
@@ -622,6 +636,20 @@ public final class WarmupController {
         notifyClosed(previous);
         if (listener != null) {
             listener.onTunnelReady(cred, event);
+        }
+        notifyReadyObserver(cred, event);
+    }
+
+    private void notifyReadyObserver(Credentials cred, AgentEvent event) {
+        ReadyObserver observer = readyObserver;
+        if (observer == null) {
+            return;
+        }
+        try {
+            observer.onWarmTunnelReady(cred, event);
+        } catch (RuntimeException e) {
+            // 救援失败只损失一次就地切换，绝不能连累预热隧道本身
+            bridge.warn("预热就绪回调异常（隧道不受影响）", e);
         }
     }
 

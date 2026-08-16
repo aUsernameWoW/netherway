@@ -52,6 +52,7 @@ public final class ModConfig {
     private final boolean verboseLogging;
     private final boolean clientPrewarm;
     private final boolean replaceServerEntries;
+    private final boolean redirectOnWarmReady;
     private final int prewarmPort;
     private final String directEntryName;
     private final boolean clientPrefetch;
@@ -242,6 +243,10 @@ public final class ModConfig {
                 "预热就绪后是否在运行期把原服务器条目的连接目标解析到本地隧道。\n"
                 + "不会修改 servers.dat；下次启动仍用真实入口预取和回退。\n"
                 + "关闭后改为在 servers.dat 中维护独立的 [P2P直连] 条目");
+        redirectOnWarmReady = cfg.getBoolean("redirectOnWarmReady", "client", true,
+                "经中转在服务器里游玩期间，后台直连一旦就绪是否立即切换过去。\n"
+                + "切换表现为一次快速重连（约数秒），每个服务本会话最多自动切换两次。\n"
+                + "关闭后隧道仍会建立，但要等你自己断开重连才走直连");
         prewarmPort = cfg.getInt("prewarmPort", "client", 25595, 0, 65535,
                 "预热隧道的本地端口，被占用时自动改用空闲端口（条目地址会跟着更新）；\n"
                 + "0 表示每次随机");
@@ -429,6 +434,10 @@ public final class ModConfig {
 
     public boolean replaceServerEntries() {
         return replaceServerEntries;
+    }
+
+    public boolean redirectOnWarmReady() {
+        return redirectOnWarmReady;
     }
 
     public int prewarmPort() {
