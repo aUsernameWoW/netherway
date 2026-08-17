@@ -25,7 +25,7 @@ frpc is embedded as a library in the agent bundled with the mod. The mod starts 
 
 ## Installation
 
-Download the Netherway build matching your Minecraft version and platform:
+Download the Netherway build matching your Minecraft version and platform from [GitHub Releases](https://github.com/aUsernameWoW/netherway/releases):
 
 - Forge / Fabric: place the JAR in the `mods/` folder of both the client and server instances.
 - Sponge: place the JAR in the server's `mods/` folder.

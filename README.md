@@ -17,7 +17,7 @@ Netherway 让这类服务器也能 P2P 直连：玩家和服务器打洞成功�
 
 ## 使用方法
 
-下载与你的 Minecraft 版本和平台匹配的 Netherway：
+从 [GitHub Releases](https://github.com/aUsernameWoW/netherway/releases) 下载与你的 Minecraft 版本和平台匹配的 Netherway：
 
 - Forge / Fabric 版：客户端和服务端分别放入对应实例的 `mods/` 文件夹。
 - Sponge 版：放入服务端的 `mods/` 文件夹。
@@ -39,7 +39,7 @@ Once Netherway successfully performs NAT traversal, gameplay traffic flows direc
 
 ### Usage
 
-Download the Netherway build matching your Minecraft version and platform:
+Download the Netherway build matching your Minecraft version and platform from [GitHub Releases](https://github.com/aUsernameWoW/netherway/releases):
 
 - Forge / Fabric: place the JAR in the `mods/` folder of both the client and server instances.
 - Sponge: place the JAR in the server's `mods/` folder.
