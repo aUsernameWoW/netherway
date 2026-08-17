@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 520" width="520" height="520" role="img" aria-label="Netherway icon"><defs>
+  <linearGradient id="massGrad" gradientUnits="userSpaceOnUse" x1="0" y1="40" x2="0" y2="440">
+    <stop offset="0" stop-color="#311A55"/><stop offset="1" stop-color="#241040"/>
+  </linearGradient>
+  <linearGradient id="frameGrad" gradientUnits="userSpaceOnUse" x1="0" y1="160" x2="0" y2="384">
+    <stop offset="0" stop-color="#9A5CE8"/><stop offset="1" stop-color="#C77BF0"/>
+  </linearGradient>
+  <linearGradient id="doorGrad" gradientUnits="userSpaceOnUse" x1="0" y1="174" x2="0" y2="384">
+    <stop offset="0" stop-color="#BE3392"/><stop offset="0.55" stop-color="#EF57A8"/><stop offset="1" stop-color="#FFB3DA"/>
+  </linearGradient>
+  <linearGradient id="roadGrad" gradientUnits="userSpaceOnUse" x1="0" y1="384" x2="0" y2="472">
+    <stop offset="0" stop-color="#F78CC5"/><stop offset="0.45" stop-color="#D94FA8"/><stop offset="1" stop-color="#7E2CBB"/>
+  </linearGradient>
+  <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+    <feGaussianBlur stdDeviation="12"/>
+  </filter>
+  <mask id="massCut">
+    <rect x="0" y="0" width="520" height="520" fill="white"/>
+    <polygon points="190,382 330,382 378,474 142,474" fill="black"/>
+  </mask></defs><g mask="url(#massCut)"><rect x="140" y="40" width="200" height="40" fill="url(#massGrad)"/><rect x="100" y="80" width="320" height="40" fill="url(#massGrad)"/><rect x="60" y="120" width="400" height="280" fill="url(#massGrad)"/><rect x="100" y="400" width="320" height="40" fill="url(#massGrad)"/><rect x="360" y="120" width="100" height="80" fill="#341B58"/><rect x="60" y="320" width="80" height="80" fill="#221039"/></g><rect x="204" y="174" width="112" height="210" fill="#EF57A8" filter="url(#glow)" opacity="0.28"/><polygon points="204,384 316,384 364,472 156,472" fill="#D94FA8" filter="url(#glow)" opacity="0.18"/><rect x="190" y="160" width="140" height="14" fill="url(#frameGrad)"/><rect x="190" y="160" width="14" height="224" fill="url(#frameGrad)"/><rect x="316" y="160" width="14" height="224" fill="url(#frameGrad)"/><rect x="204" y="174" width="112" height="210" fill="url(#doorGrad)"/><ellipse cx="260" cy="372" rx="40" ry="24" fill="#FFDFF1" filter="url(#glow)" opacity="0.5"/><polygon points="204,384 316,384 364,472 156,472" fill="url(#roadGrad)"/><rect x="48" y="52" width="40" height="40" fill="#7A3BE0"/><rect x="100" y="8" width="24" height="24" fill="#4A2394"/><rect x="360" y="20" width="34" height="34" fill="#7A3BE0"/><rect x="436" y="76" width="24" height="24" fill="#EE3D9C"/><rect x="12" y="212" width="32" height="32" fill="#EE3D9C"/><rect x="476" y="264" width="24" height="24" fill="#4A2394"/></svg>
