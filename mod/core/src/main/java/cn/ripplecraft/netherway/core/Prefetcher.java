@@ -2,8 +2,10 @@ package cn.ripplecraft.netherway.core;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
@@ -134,6 +136,16 @@ public final class Prefetcher {
             long waves = (candidates.size() + parallelism - 1L) / parallelism;
             List<Future<FetchResult>> futures = pool.invokeAll(tasks,
                     perCandidate * waves + 1000L, TimeUnit.MILLISECONDS);
+            // 旧缓存只用来定日志级别：参数没变的续期不值得一条 info，
+            // 稳态下的对账应当安静。读不出来就当全新写入。
+            Map<String, Credentials> before = new HashMap<String, Credentials>();
+            try {
+                for (Credentials prev : cache.loadAll()) {
+                    before.put(prev.dedupKey(), prev);
+                }
+            } catch (IOException ignored) {
+            } catch (RuntimeException ignored) {
+            }
             Set<String> storedKeys = new HashSet<String>();
             // Future 与 tasks 同序：cfg/server.dat 的优先级仍然决定同一目标
             // 出现多个别名时采用哪份，线程调度不会改变结果。
@@ -164,9 +176,14 @@ public final class Prefetcher {
                         bridge.debug(L10n.tr("prefetch.duplicate", addr));
                         continue;
                     }
+                    Credentials previous = before.get(cred.dedupKey());
                     cache.store(cred);
                     stored = true;
-                    bridge.info(L10n.tr("prefetch.ok", addr, cred.room()));
+                    if (previous != null && previous.sameConnectionAs(cred)) {
+                        bridge.debug(L10n.tr("prefetch.unchanged", addr, cred.room()));
+                    } else {
+                        bridge.info(L10n.tr("prefetch.ok", addr, cred.room()));
+                    }
                 } catch (CancellationException e) {
                     bridge.debug(L10n.tr("prefetch.timeout", addr));
                 } catch (ExecutionException e) {

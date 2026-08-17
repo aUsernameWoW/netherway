@@ -33,6 +33,16 @@ public final class WarmupController {
         boolean punching();
 
         long punchWaitBoundMs();
+
+        /**
+         * 该房间的隧道是否正承载玩家当前连接（复用/采认/救援之后）。
+         * agent 上报 degraded 时据此决定能不能拆掉重建——玩家脚下的
+         * 隧道绝不主动拆：真断了会表现为掉线并复位状态机，误报则
+         * 什么都不该动。默认 false 保持旧行为。
+         */
+        default boolean roomInUse(String dedupKey) {
+            return false;
+        }
     }
 
     /**
@@ -77,6 +87,8 @@ public final class WarmupController {
         int backoffAttempt;
         long nextAttemptAt;
         boolean addressWarningLogged;
+        /** agent 上报隧道持续自检失败；下一环由 {@link #teardownDegraded} 处理。 */
+        boolean degraded;
         final QualityWindow qualityWindow = new QualityWindow(QualitySummary.Path.WARMUP,
                 QualitySummary.Source.COLD_AGENT);
 
@@ -97,6 +109,8 @@ public final class WarmupController {
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final Object roomsLock = new Object();
     private final Map<String, RoomState> rooms = new LinkedHashMap<String, RoomState>();
+    /** 置位后管理循环把下一次预取提前到现在（degraded 触发的立即对账）。 */
+    private final AtomicBoolean prefetchAsap = new AtomicBoolean(false);
 
     /** 预热/升级打洞共用的互斥门闩。 */
     private final Object punchLock = new Object();
@@ -177,6 +191,10 @@ public final class WarmupController {
         boolean loggedIdle = false;
         while (!stopped) {
             try {
+                teardownDegraded();
+                if (prefetchAsap.getAndSet(false)) {
+                    nextPrefetchAt = 0L;
+                }
                 long now = System.currentTimeMillis();
                 if (prefetcher != null && now >= nextPrefetchAt) {
                     prefetcher.refresh(cache);
@@ -189,9 +207,13 @@ public final class WarmupController {
                     empty = rooms.isEmpty();
                 }
                 if (prefetcher != null && now >= nextPrefetchAt) {
-                    // 无凭证时快些重试；已有服务时只周期性刷新，用来发现密钥轮换。
+                    // 无凭证时快些重试；已有服务时只慢速对账。轮换发现的
+                    // 主路径是 agent 的 degraded 事件（经 teardownDegraded
+                    // 立即触发对账），这里只兜「事件没来」的底——比如
+                    // frp 升级后健康探测匹配不上日志文本。
                     nextPrefetchAt = System.currentTimeMillis()
-                            + timings.warmupRetryDelayMs(empty ? 0 : Integer.MAX_VALUE);
+                            + (empty ? timings.warmupRetryDelayMs(0)
+                                     : timings.prefetchRefreshMs());
                 }
 
                 if (empty) {
@@ -254,7 +276,7 @@ public final class WarmupController {
                 }
                 Credentials previous = room.cred;
                 room.cred = entry.getValue();
-                if (!sameConnectionSettings(previous, room.cred)) {
+                if (!previous.sameConnectionAs(room.cred)) {
                     if (room.agent != null) {
                         close.add(room.agent);
                     }
@@ -266,12 +288,80 @@ public final class WarmupController {
                     room.backoffAttempt = 0;
                     room.nextAttemptAt = 0L;
                     room.addressWarningLogged = false;
+                    room.degraded = false;
                     bridge.info(L10n.tr("warmup.paramsUpdated", room.cred.room()));
                 }
             }
         }
         notifyClosed(closedReady);
         closeAll(close);
+    }
+
+    /**
+     * agent 上报就绪后的隧道持续自检失败；回调在 agent 的读线程触发，
+     * 这里只做标记，拆除与重建都留给管理线程（{@link #teardownDegraded}）。
+     * proc 校验挡掉迟到的旧事件：房间被参数轮换重建后，旧 agent 的
+     * 上报不能拆掉新隧道。
+     */
+    void onTunnelDegraded(String dedupKey, AgentProcess proc) {
+        String roomName;
+        synchronized (roomsLock) {
+            RoomState room = rooms.get(dedupKey);
+            if (room == null || room.ready == null || room.ready.proc != proc) {
+                return;
+            }
+            room.degraded = true;
+            roomName = room.cred.room();
+        }
+        bridge.debug(L10n.tr("warmup.degradedReported", roomName));
+    }
+
+    /**
+     * 把 agent 报告失效的隧道摘下来立即重建，并提前一次凭证对账
+     * （失效的典型原因是服务端重启换钥，旧密钥重打也打不通）。
+     * 正承载玩家连接的房间除外——那条隧道真断了会表现为掉线并复位
+     * 状态机，之后的再次上报会命中重建；误报则不该动玩家脚下的隧道。
+     * 包内可见以便自检直接驱动（管理线程每环调用它）。
+     */
+    void teardownDegraded() {
+        List<AgentProcess> close = new ArrayList<AgentProcess>();
+        List<Ready> closedReady = new ArrayList<Ready>();
+        List<String> rebuilding = new ArrayList<String>();
+        UpgradeGate gate = upgradeGate;
+        synchronized (roomsLock) {
+            for (RoomState room : rooms.values()) {
+                if (!room.degraded) {
+                    continue;
+                }
+                room.degraded = false;
+                if (room.ready == null) {
+                    continue; // 参数轮换等路径已经处理过这条隧道
+                }
+                if (gate != null && gate.roomInUse(room.cred.dedupKey())) {
+                    bridge.debug(L10n.tr("warmup.degradedInUse", room.cred.room()));
+                    continue;
+                }
+                if (room.agent != null) {
+                    close.add(room.agent);
+                }
+                closedReady.add(room.ready);
+                room.agent = null;
+                room.ready = null;
+                room.backoffAttempt = 0;
+                room.nextAttemptAt = 0L;
+                rebuilding.add(room.cred.room());
+            }
+        }
+        for (String roomName : rebuilding) {
+            bridge.info(L10n.tr("warmup.tunnelDegraded", roomName));
+        }
+        if (!rebuilding.isEmpty()) {
+            prefetchAsap.set(true);
+        }
+        notifyClosed(closedReady);
+        closeAll(close);
+        // 刻意不发遥测：随后的重建轮会产生自己的成败摘要，这里再报
+        // 一次 TUNNEL_LOST 只会把一次失效算成两条。
     }
 
     /** 每环只串行执行到期尝试；READY 的 agent 不阻塞后续服务。 */
@@ -361,6 +451,8 @@ public final class WarmupController {
                 AgentProcess.buildCommand(exe, cred, timings, agentLog, bindPort))));
 
         long waitMs = timings.outcomeWaitMs(cred.punchTimeoutMs());
+        final java.util.concurrent.atomic.AtomicReference<AgentProcess> procRef =
+                new java.util.concurrent.atomic.AtomicReference<AgentProcess>();
         AgentProcess proc = null;
         boolean retained = false;
         try {
@@ -376,6 +468,10 @@ public final class WarmupController {
                                         listener.onTunnelStarting(cred, event.port());
                                     }
                                 }
+                                // degraded 只在 READY 之后出现；procRef 此时必已就位
+                                if (event.type() == AgentEvent.Type.DEGRADED) {
+                                    onTunnelDegraded(cred.dedupKey(), procRef.get());
+                                }
                             }
 
                             @Override
@@ -383,6 +479,7 @@ public final class WarmupController {
                                 bridge.debug(L10n.tr("warmup.agentStderr", cred.room(), line));
                             }
                         });
+                procRef.set(proc);
             } catch (java.io.IOException e) {
                 observe(cred, room.qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
                         QualitySummary.FailureStage.START,
@@ -447,24 +544,6 @@ public final class WarmupController {
 
     private long managerPollMs() {
         return Math.max(100L, Math.min(1000L, timings.probeIntervalMs()));
-    }
-
-    /**
-     * 忽略每次预认证都会续签的玩家令牌；其余 backend 参数任一变化
-     * 都视为建联目标已更新。core 不解释这些参数的具体意义。
-     */
-    private static boolean sameConnectionSettings(Credentials a, Credentials b) {
-        if (a == null || b == null || !a.backendId().equals(b.backendId())
-                || !a.dedupKey().equals(b.dedupKey())) {
-            return false;
-        }
-        Map<String, String> ap = new LinkedHashMap<String, String>(a.params());
-        Map<String, String> bp = new LinkedHashMap<String, String>(b.params());
-        ap.remove(Credentials.PARAM_USER);
-        ap.remove(Credentials.PARAM_USER_TOKEN);
-        bp.remove(Credentials.PARAM_USER);
-        bp.remove(Credentials.PARAM_USER_TOKEN);
-        return ap.equals(bp);
     }
 
     // ---------- 打洞互斥 ----------
@@ -560,7 +639,9 @@ public final class WarmupController {
     public Integer readyPort(String dedupKey) {
         synchronized (roomsLock) {
             RoomState room = rooms.get(dedupKey);
-            return room == null || room.ready == null || !alive(room.ready)
+            // degraded 的隧道从标记那一刻起就不再对外供给：路由、复用与
+            // 采认都不该把玩家送上一条 agent 自己都说打不通的隧道。
+            return room == null || room.ready == null || room.degraded || !alive(room.ready)
                     ? null : Integer.valueOf(room.ready.event.port());
         }
     }
@@ -568,7 +649,7 @@ public final class WarmupController {
     public AgentEvent readyEvent(String dedupKey) {
         synchronized (roomsLock) {
             RoomState room = rooms.get(dedupKey);
-            return room == null || room.ready == null || !alive(room.ready)
+            return room == null || room.ready == null || room.degraded || !alive(room.ready)
                     ? null : room.ready.event;
         }
     }
@@ -577,7 +658,8 @@ public final class WarmupController {
     public Credentials credentialsForPort(int port) {
         synchronized (roomsLock) {
             for (RoomState room : rooms.values()) {
-                if (room.ready != null && room.ready.event.port() == port && alive(room.ready)) {
+                if (room.ready != null && !room.degraded
+                        && room.ready.event.port() == port && alive(room.ready)) {
                     return room.cred;
                 }
             }

@@ -73,6 +73,7 @@ public final class ModConfig {
     private final int warmupRetryInitialSeconds;
     private final int warmupRetryMaxSeconds;
     private final int prefetchTimeoutSeconds;
+    private final int prefetchRefreshSeconds;
 
     // ---- telemetry ----
     /**
@@ -256,6 +257,8 @@ public final class ModConfig {
                 120, 1, 86_400, L10n.tr("cfg.client.warmupRetryMaxSeconds"));
         prefetchTimeoutSeconds = cfg.getInt("prefetchTimeoutSeconds", "client",
                 60, 5, 600, L10n.tr("cfg.client.prefetchTimeoutSeconds"));
+        prefetchRefreshSeconds = cfg.getInt("prefetchRefreshSeconds", "client",
+                600, 30, 86_400, L10n.tr("cfg.client.prefetchRefreshSeconds"));
 
         cfg.setCategoryComment("telemetry", L10n.tr("cfg.telemetry.category"));
         telemetryEnhanced = cfg.getBoolean("enhanced", "telemetry", true,
@@ -448,7 +451,8 @@ public final class ModConfig {
                 probeIntervalMs, probeTimeoutMs, startupGraceMs)
                 .withWarmupRetry(warmupRetryInitialSeconds * 1000L,
                         warmupRetryMaxSeconds * 1000L)
-                .withPrefetchTimeout(prefetchTimeoutSeconds * 1000L);
+                .withPrefetchTimeout(prefetchTimeoutSeconds * 1000L)
+                .withPrefetchRefresh(prefetchRefreshSeconds * 1000L);
     }
 
     public boolean telemetryEnabled() {

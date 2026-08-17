@@ -349,6 +349,16 @@ public final class L10n {
         def("warmup.readyObserverError",
                 "The warm-tunnel ready callback failed (the tunnel itself is unaffected)",
                 "预热就绪回调异常（隧道不受影响）");
+        def("warmup.degradedReported",
+                "Agent reports the warm tunnel for room {0} keeps failing health checks",
+                "agent 报告房间 {0} 的预热隧道持续自检失败");
+        def("warmup.tunnelDegraded",
+                "Warm tunnel for room {0} is no longer usable; rebuilding and refreshing credentials",
+                "房间 {0} 的预热隧道已不可用，将重建并立即刷新凭证");
+        def("warmup.degradedInUse",
+                "Warm tunnel for room {0} reported unhealthy but is carrying the current connection; "
+                        + "leaving it alone",
+                "房间 {0} 的隧道上报失效，但正承载当前连接，暂不处理");
     }
 
     private static void defPrefetch() {
@@ -367,6 +377,9 @@ public final class L10n {
         def("prefetch.ok",
                 "Prefetched credentials for room {1} from {0}",
                 "已从 {0} 预取到房间 {1} 的凭证");
+        def("prefetch.unchanged",
+                "Credentials for room {1} from {0} are unchanged",
+                "{0} 的房间 {1} 凭证未变化");
         def("prefetch.timeout",
                 "Prefetching credentials from {0} timed out",
                 "向 {0} 预取凭证超时");
@@ -1027,6 +1040,11 @@ public final class L10n {
         def("cfg.client.prefetchTimeoutSeconds",
                 "Prefetch timeout in seconds per candidate (including TCP round trips)",
                 "单个候选的预取超时秒数（含 TCP 往返）");
+        def("cfg.client.prefetchRefreshSeconds",
+                "Seconds between background credential sweeps once tunnels are up; rotation is "
+                        + "normally caught right away by agent health events, this sweep is only the "
+                        + "fallback",
+                "隧道就绪后的后台凭证对账间隔秒数——轮换通常由 agent 健康事件即时发现，这里只兜底");
         def("cfg.telemetry.category",
                 "Anonymous quality measurement. Sends version, platform and coarse results; depending on "
                         + "the switches also\n"

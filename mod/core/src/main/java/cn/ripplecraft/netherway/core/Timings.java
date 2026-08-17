@@ -18,6 +18,7 @@ public final class Timings {
     private static final long DEFAULT_WARMUP_RETRY_INITIAL_MS = 10_000L;
     private static final long DEFAULT_WARMUP_RETRY_MAX_MS = 120_000L;
     private static final long DEFAULT_PREFETCH_TIMEOUT_MS = 60_000L;
+    private static final long DEFAULT_PREFETCH_REFRESH_MS = 600_000L;
 
     private final long punchTimeoutMs;
     private final long probeIntervalMs;
@@ -26,18 +27,19 @@ public final class Timings {
     private final long warmupRetryInitialMs;
     private final long warmupRetryMaxMs;
     private final long prefetchTimeoutMs;
+    private final long prefetchRefreshMs;
 
     public Timings(long punchTimeoutMs, long probeIntervalMs,
                    long probeTimeoutMs, long startupGraceMs) {
         this(punchTimeoutMs, probeIntervalMs, probeTimeoutMs, startupGraceMs,
                 DEFAULT_WARMUP_RETRY_INITIAL_MS, DEFAULT_WARMUP_RETRY_MAX_MS,
-                DEFAULT_PREFETCH_TIMEOUT_MS);
+                DEFAULT_PREFETCH_TIMEOUT_MS, DEFAULT_PREFETCH_REFRESH_MS);
     }
 
     private Timings(long punchTimeoutMs, long probeIntervalMs,
                     long probeTimeoutMs, long startupGraceMs,
                     long warmupRetryInitialMs, long warmupRetryMaxMs,
-                    long prefetchTimeoutMs) {
+                    long prefetchTimeoutMs, long prefetchRefreshMs) {
         this.punchTimeoutMs = punchTimeoutMs;
         this.probeIntervalMs = probeIntervalMs;
         this.probeTimeoutMs = probeTimeoutMs;
@@ -45,6 +47,7 @@ public final class Timings {
         this.warmupRetryInitialMs = warmupRetryInitialMs;
         this.warmupRetryMaxMs = warmupRetryMaxMs;
         this.prefetchTimeoutMs = prefetchTimeoutMs;
+        this.prefetchRefreshMs = prefetchRefreshMs;
     }
 
     public static Timings defaults() {
@@ -55,13 +58,21 @@ public final class Timings {
     /** 换掉预热重试的退避区间，其余参数不变。 */
     public Timings withWarmupRetry(long initialMs, long maxMs) {
         return new Timings(punchTimeoutMs, probeIntervalMs, probeTimeoutMs,
-                startupGraceMs, initialMs, maxMs, prefetchTimeoutMs);
+                startupGraceMs, initialMs, maxMs, prefetchTimeoutMs, prefetchRefreshMs);
     }
 
     /** 换掉凭证预取子进程的总超时，其余参数不变。 */
     public Timings withPrefetchTimeout(long timeoutMs) {
         return new Timings(punchTimeoutMs, probeIntervalMs, probeTimeoutMs,
-                startupGraceMs, warmupRetryInitialMs, warmupRetryMaxMs, timeoutMs);
+                startupGraceMs, warmupRetryInitialMs, warmupRetryMaxMs, timeoutMs,
+                prefetchRefreshMs);
+    }
+
+    /** 换掉稳态凭证对账的刷新间隔，其余参数不变。 */
+    public Timings withPrefetchRefresh(long refreshMs) {
+        return new Timings(punchTimeoutMs, probeIntervalMs, probeTimeoutMs,
+                startupGraceMs, warmupRetryInitialMs, warmupRetryMaxMs, prefetchTimeoutMs,
+                refreshMs);
     }
 
     /** 把非正值回填成默认值，避免配置文件写了 0 导致空转或死等。 */
@@ -73,7 +84,8 @@ public final class Timings {
                 startupGraceMs > 0 ? startupGraceMs : DEFAULT_STARTUP_GRACE_MS,
                 warmupRetryInitialMs > 0 ? warmupRetryInitialMs : DEFAULT_WARMUP_RETRY_INITIAL_MS,
                 warmupRetryMaxMs > 0 ? warmupRetryMaxMs : DEFAULT_WARMUP_RETRY_MAX_MS,
-                prefetchTimeoutMs > 0 ? prefetchTimeoutMs : DEFAULT_PREFETCH_TIMEOUT_MS);
+                prefetchTimeoutMs > 0 ? prefetchTimeoutMs : DEFAULT_PREFETCH_TIMEOUT_MS,
+                prefetchRefreshMs > 0 ? prefetchRefreshMs : DEFAULT_PREFETCH_REFRESH_MS);
     }
 
     /** 打洞总超时，超时即放弃升级。 */
@@ -145,11 +157,20 @@ public final class Timings {
         return prefetchTimeoutMs;
     }
 
+    /**
+     * 隧道就绪后的稳态凭证对账间隔。轮换发现的主路径是 agent 的
+     * degraded 事件（隧道自检失败即时上报），这个周期只兜「事件没来」
+     * 的底——比如 frp 升级后健康探测匹配不上日志文本。
+     */
+    public long prefetchRefreshMs() {
+        return prefetchRefreshMs;
+    }
+
     @Override
     public String toString() {
         return "Timings{punch=" + punchTimeoutMs + "ms probe=" + probeIntervalMs
                 + "/" + probeTimeoutMs + "ms grace=" + startupGraceMs
                 + "ms retry=" + warmupRetryInitialMs + ".." + warmupRetryMaxMs
-                + "ms prefetch=" + prefetchTimeoutMs + "ms}";
+                + "ms prefetch=" + prefetchTimeoutMs + "/" + prefetchRefreshMs + "ms}";
     }
 }

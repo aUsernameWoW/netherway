@@ -126,6 +126,15 @@ public final class UpgradeController {
                     long b = punchWaitBoundMs;
                     return b > 0 ? b : UpgradeController.this.timings.outcomeWaitMs();
                 }
+
+                @Override
+                public boolean roomInUse(String dedupKey) {
+                    // UPGRADED + 房间匹配 = 玩家当前连接可能正走在这条预热
+                    // 隧道上（复用/采认/救援），degraded 时不许拆。冷启动
+                    // agent 承载的场景也会命中，多让一步无害——真轮换时
+                    // 服务端已重启，玩家掉线复位后重建照常进行。
+                    return state.get() == State.UPGRADED && dedupKey.equals(activeKey);
+                }
             });
             // 正向救援口：升级已放弃、玩家还经中转挂在服务器上时，预热隧道
             // 一旦就绪就把连接就地切换过去。打洞互斥保证此回调必然晚于同轮

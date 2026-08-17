@@ -69,7 +69,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.nethe
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 470 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 530 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -105,7 +105,14 @@ Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者�
 {"event":"starting","backend":"frp-xtcp","port":63128}
 {"event":"ready","port":63128,"elapsedMs":1792,"rttMs":31,"version":"1.7.10","online":1}
 {"event":"failed","reason":"打洞超时"}
+{"event":"degraded","port":63128}
 ```
+
+`degraded` 是 READY 之后的建议性事件（进程不退出）：frp 的
+keepTunnelOpenWorker 自检在窗口内连续失败时发出（典型原因是服务端重启
+换钥后 frp 拿旧凭证无限重试），预热侧收到即摘下重建并立即预取，正承载
+玩家连接的房间刻意不动。frp 日志文本的匹配钉在 Go 侧
+`cmd/netherway/health.go`，bump frp 版本时随 interop 测试一并核对。
 
 字段定义在 Go 侧 `cmd/netherway/modbridge.go` 的 `event` 结构与 Java 侧
 `AgentEvent` 中，**改动必须两边同步**。遥测的固定枚举再多一处同步点：
@@ -304,6 +311,14 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 其余来自服务器列表（server.dat，`prefetchServers` 留空时自动扫描）。
 所有候选用有界线程池并行请求，成功结果全部入缓存；预认证不打洞，
 因此这种并行不干扰 NAT。密钥轮换后只重建对应服务的隧道。
+
+密钥轮换的发现是事件驱动为主、对账兜底（2026-08-18 起）：主路径是
+agent 的 `degraded` 事件——就绪隧道被轮换废掉后进程不死也不自愈
+（`LoginFailExit=false`），frp 自检的连续失败经 `health.go` 翻译成事件，
+预热侧立即摘除重建并提前预取；无凭证时预取仍按退避快速重试，已有服务
+时退为慢速对账（`client.prefetchRefreshSeconds`，默认 600 秒），只兜
+「事件没来」的底（如 frp 升级后日志文本变了）。对账结果与缓存相同时
+只记 debug，参数真变了才打 info——稳态下预取应当安静。
 玩家可三种方式进服，互为兜底：
 
 - **原条目运行期覆盖（默认）**：点击时目标隧道已经 READY，就把这一次连接直接

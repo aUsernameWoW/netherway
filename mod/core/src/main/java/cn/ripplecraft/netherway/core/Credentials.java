@@ -400,6 +400,26 @@ public final class Credentials {
         return backendId + ":" + room();
     }
 
+    /**
+     * 两份凭证是否指向同一建联目标且参数等价。刻意忽略
+     * {@link #PARAM_USER}/{@link #PARAM_USER_TOKEN}：每玩家令牌每次
+     * 预认证都会续签，不该被当成「参数轮换」。预热重建隧道与预取的
+     * 「凭证未变化」日志降噪都以此为准。
+     */
+    public boolean sameConnectionAs(Credentials other) {
+        if (other == null || !backendId.equals(other.backendId)
+                || !dedupKey().equals(other.dedupKey())) {
+            return false;
+        }
+        Map<String, String> a = new LinkedHashMap<String, String>(params);
+        Map<String, String> b = new LinkedHashMap<String, String>(other.params);
+        a.remove(PARAM_USER);
+        a.remove(PARAM_USER_TOKEN);
+        b.remove(PARAM_USER);
+        b.remove(PARAM_USER_TOKEN);
+        return a.equals(b);
+    }
+
     /** 刻意不输出任何参数值（token 与密钥都在其中），只列键名便于排查。 */
     @Override
     public String toString() {

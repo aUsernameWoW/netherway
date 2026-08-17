@@ -19,6 +19,12 @@ public final class AgentEvent {
         FAILED,
         /** 隧道结束（正常收到停止信号，或异常退出）。 */
         STOPPED,
+        /**
+         * 就绪后的隧道持续自检失败（典型原因：服务端重启、密钥轮换，
+         * backend 只会拿旧凭证无限重试）。建议性事件，agent 进程不退出：
+         * 预热侧据此立即刷新凭证并重建，正承载玩家连接时则忽略。
+         */
+        DEGRADED,
         /** 无法识别的事件名。新版 agent 加了事件时老版 mod 会走到这里。 */
         UNKNOWN
     }
@@ -103,6 +109,8 @@ public final class AgentEvent {
             type = Type.FAILED;
         } else if ("stopped".equals(event)) {
             type = Type.STOPPED;
+        } else if ("degraded".equals(event)) {
+            type = Type.DEGRADED;
         } else {
             type = Type.UNKNOWN;
         }

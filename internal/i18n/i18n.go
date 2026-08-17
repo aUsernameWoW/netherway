@@ -278,6 +278,9 @@ authplugin 专有:
 	"tunnel.notReadyIn": {
 		"the tunnel did not become ready within %.1fs",
 		"隧道未在 %.1fs 内就绪"},
+	"tunnel.degraded": {
+		"the maintained tunnel keeps failing health checks; asking the mod to refresh credentials and rebuild",
+		"维护中的隧道持续自检失败，已提示 mod 刷新凭证并重建"},
 
 	// ---- authplugin（子命令与校验逻辑）----
 	"flag.auth.listen": {

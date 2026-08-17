@@ -89,6 +89,9 @@ public final class SelfTest {
         testPreauthIdentityValidation();
         testCredentialV2StillDecodes();
         testWarmupRetryBackoff();
+        testCredentialsSameConnection();
+        testPrefetchQuietWhenUnchanged();
+        testWarmupDegradedTeardown();
         testTelemetryQualityWindow();
         testTelemetryFailureCodeContract();
         testTelemetryCollector();
@@ -379,6 +382,10 @@ public final class SelfTest {
 
         AgentEvent starting = AgentEvent.parse("{\"event\":\"starting\",\"port\":1}");
         check("识别 starting", starting != null && starting.type() == AgentEvent.Type.STARTING);
+
+        AgentEvent degraded = AgentEvent.parse("{\"event\":\"degraded\",\"port\":25595}");
+        check("识别 degraded", degraded != null && degraded.type() == AgentEvent.Type.DEGRADED);
+        check("degraded 携带端口", degraded.port() == 25595);
     }
 
     private static void testAgentEventTolerance() {
@@ -1933,12 +1940,145 @@ public final class SelfTest {
         check("退避封顶", t.warmupRetryDelayMs(4) == 120_000L
                 && t.warmupRetryDelayMs(1000) == 120_000L);
         Timings zero = new Timings(0, 0, 0, 0).withWarmupRetry(0, 0)
-                .withPrefetchTimeout(0).normalized();
+                .withPrefetchTimeout(0).withPrefetchRefresh(0).normalized();
         check("非正退避回填默认值", zero.warmupRetryDelayMs(0) == 10_000L
                 && zero.warmupRetryDelayMs(1000) == 120_000L);
         check("非正预取超时回填默认值", zero.prefetchTimeoutMs() == 60_000L);
         check("配置的预取超时生效",
                 Timings.defaults().withPrefetchTimeout(5_000L).prefetchTimeoutMs() == 5_000L);
+        check("对账间隔默认 10 分钟", Timings.defaults().prefetchRefreshMs() == 600_000L);
+        check("非正对账间隔回填默认值", zero.prefetchRefreshMs() == 600_000L);
+        check("配置的对账间隔生效",
+                Timings.defaults().withPrefetchRefresh(30_000L).prefetchRefreshMs() == 30_000L);
+    }
+
+    private static void testCredentialsSameConnection() {
+        Credentials base = sampleCredAt("room-a", "secret-1");
+        java.util.Map<String, String> renewA = new java.util.LinkedHashMap<String, String>();
+        renewA.put(Credentials.PARAM_USER, "alice");
+        renewA.put(Credentials.PARAM_USER_TOKEN, "token-1");
+        java.util.Map<String, String> renewB = new java.util.LinkedHashMap<String, String>();
+        renewB.put(Credentials.PARAM_USER, "alice");
+        renewB.put(Credentials.PARAM_USER_TOKEN, "token-2");
+        check("令牌续签不算参数轮换",
+                base.withExtraParams(renewA).sameConnectionAs(base.withExtraParams(renewB)));
+        check("密钥轮换算参数变化",
+                !base.sameConnectionAs(sampleCredAt("room-a", "secret-2")));
+        check("不同入口不等价", !sampleCred("room-a", "s").withOrigin("a.example.com", 25565)
+                .sameConnectionAs(sampleCred("room-a", "s").withOrigin("b.example.com", 25565)));
+        check("null 不等价", !base.sameConnectionAs(null));
+    }
+
+    private static void testPrefetchQuietWhenUnchanged() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-prefetch-quiet");
+        FakeBridge bridge = new FakeBridge(tmp);
+        final List<ServerCandidates.Address> candidates = ServerCandidates.build(
+                new String[] {"one.example.com"}, null);
+        final String[] secret = {"stable-secret"};
+        Prefetcher prefetcher = new Prefetcher(bridge,
+                SessionIdentity.of("Alice", "069a79f444e94726a5befca90e38aaf5"),
+                candidates, Timings.defaults().withPrefetchTimeout(1000L),
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Source.CONFIG,
+                cn.ripplecraft.netherway.core.telemetry.QualityObserver.NOOP,
+                new Prefetcher.Fetcher() {
+                    @Override
+                    public Credentials fetch(ServerCandidates.Address addr, SessionIdentity id,
+                                             int timeoutMs) {
+                        return sampleCred("quiet-room", secret[0]);
+                    }
+                });
+        CredentialCache cache = new CredentialCache(tmp.resolve("credentials"));
+
+        check("首轮预取成功", prefetcher.refresh(cache));
+        check("续期轮预取成功", prefetcher.refresh(cache));
+        String okLine = "已从 one.example.com:25565 预取到房间 quiet-room 的凭证";
+        int okCount = 0;
+        synchronized (bridge.logs) {
+            for (String line : bridge.logs) {
+                if (line.equals(okLine)) {
+                    okCount++;
+                }
+            }
+        }
+        check("参数未变时只有首轮打 info", okCount == 1);
+        check("续期降为 debug", bridge.logs.contains(
+                "DEBUG one.example.com:25565 的房间 quiet-room 凭证未变化"));
+
+        secret[0] = "rotated-secret";
+        check("轮换轮预取成功", prefetcher.refresh(cache));
+        okCount = 0;
+        synchronized (bridge.logs) {
+            for (String line : bridge.logs) {
+                if (line.equals(okLine)) {
+                    okCount++;
+                }
+            }
+        }
+        check("参数轮换后恢复 info", okCount == 2);
+    }
+
+    private static void testWarmupDegradedTeardown() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-warmup-degraded");
+        FakeBridge bridge = new FakeBridge(tmp);
+        final List<String> closed = new ArrayList<String>();
+        WarmupController.Listener listener = new WarmupController.Listener() {
+            @Override
+            public void onTunnelStarting(Credentials cred, int port) {
+            }
+
+            @Override
+            public void onTunnelClosed(Credentials cred, int port) {
+                closed.add(cred.room() + ":" + port);
+            }
+        };
+        WarmupController warmup = new WarmupController(bridge,
+                new CredentialCache(tmp.resolve("credentials")), Timings.defaults(),
+                listener, 0, null);
+        final boolean[] inUse = {false};
+        warmup.setUpgradeGate(new WarmupController.UpgradeGate() {
+            @Override
+            public boolean punching() {
+                return false;
+            }
+
+            @Override
+            public long punchWaitBoundMs() {
+                return 0L;
+            }
+
+            @Override
+            public boolean roomInUse(String dedupKey) {
+                return inUse[0];
+            }
+        });
+        Credentials cred = sampleCredAt("degraded-room", "secret");
+        AgentEvent ready = AgentEvent.parse("{\"event\":\"ready\",\"port\":25596,\"rttMs\":20}");
+        warmup.injectReadyForTest(cred, ready);
+        check("注入的隧道可查", warmup.readyPort(cred.dedupKey()) != null);
+
+        warmup.onTunnelDegraded("no-such-key", null);
+        check("未知房间的上报被忽略", warmup.readyPort(cred.dedupKey()) != null);
+
+        // 注入的 Ready 不带进程，proc 以 null 匹配（生产路径为 procRef）
+        warmup.onTunnelDegraded(cred.dedupKey(), null);
+        check("degraded 隧道立即停止对外供给", warmup.readyPort(cred.dedupKey()) == null
+                && warmup.readyEvent(cred.dedupKey()) == null
+                && warmup.credentialsForPort(25596) == null);
+
+        inUse[0] = true;
+        warmup.teardownDegraded();
+        check("承载中的房间不拆", closed.isEmpty());
+        check("跳过后隧道恢复供给", warmup.readyPort(cred.dedupKey()) != null);
+        check("跳过写了 debug 日志", bridge.logs.contains(
+                "DEBUG 房间 degraded-room 的隧道上报失效，但正承载当前连接，暂不处理"));
+
+        inUse[0] = false;
+        warmup.onTunnelDegraded(cred.dedupKey(), null);
+        warmup.teardownDegraded();
+        check("空闲的失效隧道被拆除", closed.contains("degraded-room:25596"));
+        check("拆除后不再供给", warmup.readyPort(cred.dedupKey()) == null);
+        check("拆除写了 info 日志", bridge.logs.contains(
+                "房间 degraded-room 的预热隧道已不可用，将重建并立即刷新凭证"));
     }
 
     // ---------- Telemetry ----------

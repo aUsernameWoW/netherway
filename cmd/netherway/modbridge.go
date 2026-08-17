@@ -250,6 +250,11 @@ func cmdTunnel(args []string) error {
 		MaxRetriesAnHour: *maxRetries,
 	}.Normalize()
 
+	// stderr 回显外再包一层健康扫描：READY 之后 frp 自检持续失败时
+	// 经 degradedCh 通知主循环发 degraded 事件（见 health.go）。
+	degradedCh := make(chan struct{}, 1)
+	health := newTunnelHealthScanner(os.Stderr, degradedCh)
+
 	tunnelErr := make(chan error, 1)
 	go func() {
 		tunnelErr <- b.Run(ctx, merged, backend.Options{
@@ -261,7 +266,7 @@ func cmdTunnel(args []string) error {
 			Logf:     diagf,
 			// frp info 及以上的日志回显到 stderr，经 mod 进游戏日志——
 			// 「xtcp server 不存在」这类只有 frp 知道的失败原因不再只躺在文件里
-			LogEcho: os.Stderr,
+			LogEcho: health,
 		})
 	}()
 
@@ -316,15 +321,24 @@ func cmdTunnel(args []string) error {
 		e.RTTMs = measureRTT(port, timings.ProbeTimeout, deadline)
 		e.Nat = takeNat()
 		emit(e)
+		health.arm()
 	}
 
 	// 就绪后保持运行，直到 mod 结束这个进程（玩家断开或退出游戏）。
-	select {
-	case <-ctx.Done():
-		emit(event{Event: "stopped"})
-		return nil
-	case err := <-tunnelErr:
-		emit(event{Event: "stopped", Reason: fmt.Sprint(err)})
-		return err
+	// 期间 frp 自检连续报告隧道已断（典型原因：服务端重启、密钥轮换，
+	// frp 只会拿旧凭证无限重试）时发 degraded。事件是建议性的，进程
+	// 不退出：frp 仍可能自愈，mod 正承载连接时也会选择不动。
+	for {
+		select {
+		case <-ctx.Done():
+			emit(event{Event: "stopped"})
+			return nil
+		case err := <-tunnelErr:
+			emit(event{Event: "stopped", Reason: fmt.Sprint(err)})
+			return err
+		case <-degradedCh:
+			diagf("%s", i18n.T("tunnel.degraded"))
+			emit(event{Event: "degraded", Port: port})
+		}
 	}
 }
