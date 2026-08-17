@@ -1,4 +1,9 @@
-# Netherway
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/netherway-logo-dark.svg">
+    <img alt="Netherway" src="docs/logo/netherway-logo-light.svg" width="480">
+  </picture>
+</p>
 
 [简体中文](#解决什么问题) | [English](#english)
 
