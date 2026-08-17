@@ -1,7 +1,7 @@
 [{
   "modid": "netherway",
   "name": "Netherway",
-  "description": "让 Minecraft 玩家和服务器之间走 P2P 直连，游戏流量不经过中转节点。类似 HMCL、PCL 启动器自带的联机功能，只不过面向的是有正经服务端的场景。 / Establishes a peer-to-peer connection between Minecraft players and servers, so gameplay traffic no longer passes through a relay — similar to the multiplayer features built into launchers such as HMCL and PCL, but designed for dedicated servers.",
+  "description": "让 Minecraft 玩家和服务器之间走 P2P 直连。 / Peer-to-peer direct connection between Minecraft players and servers.",
   "version": "${version}",
   "mcversion": "${mcversion}",
   "url": "https://github.com/aUsernameWoW/netherway",

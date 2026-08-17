@@ -4,9 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-让 Minecraft 玩家通过 frp 的 xtcp 打洞 P2P 直连服务器，绕过中转节点。
+让 Minecraft 玩家和服务器之间走 P2P 直连，游戏流量不经过中转节点。
 产品定位是通用的建联 mod：只把服务凭证变成本地 TCP 入口，不做选服、
-排名、游戏内容或服务器管理。Forge 1.7.10 是当前第一个平台适配，
+排名、游戏内容或服务器管理。项目不与任何具体打洞/隧道方案绑定：方案
+经 backend 抽象接入（见「backend 抽象」），frp 的 xtcp 只是第一个、
+当前默认的 backend，属实现细节而非产品定义——项目早期因想运用 xtcp
+而生，但从不 depend on 它。对外文案（README、mod 简介、商店页）的
+定位句只讲「P2P 直连」这个目的，不写机制名；运维语境（flag 帮助、
+frps 配置文档）照常使用准确名词。Forge 1.7.10 是当前第一个平台适配，
 先前的大型整合环境只用于压力/兼容性验证，不是产品边界。
 
 端到端测量数据见 `docs/field-notes.md`。
@@ -21,8 +26,9 @@ mod；旧缓存目录成为孤儿（首次中转进服后在新目录自愈）�
 
 仓库包含两个独立但配套的部分：
 
-- **Go agent**（仓库根目录）— 内嵌 frpc 作为库，负责打洞与隧道；
-  开了内嵌会合点时还内嵌 frps（`internal/rendezvous`）
+- **Go agent**（仓库根目录）— 负责打洞与隧道，方案经 backend 抽象
+  可替换；当前的 frp-xtcp backend 内嵌 frpc 作为库，开了内嵌会合点时
+  还内嵌 frps（`internal/rendezvous`）
 - **Java mod core**（`mod/core`）— 供 Minecraft mod 使用，驱动 agent 并在打洞成功后切换连接
 
 ## 常用命令
@@ -196,6 +202,10 @@ core 的 `TlsRecord`）。
 公网侧因此对本项目再无任何要求：不装插件、不必支持 xtcp、不必同版本，
 只要能把 TCP 转到 Minecraft 端口。租来的隧道服务、nginx stream、一条 NAT
 规则都可以，服主不必自建 frps。
+
+整节机制专属于 frp-xtcp backend：嗅探识别的是 frp 的 TLS 控制通道、
+内嵌的是 frps。信令模型不同的未来 backend 未必需要会合点，届时另行
+设计，不要往这套嗅探/转发上硬套。
 
 几条必须记住的约束：
 
