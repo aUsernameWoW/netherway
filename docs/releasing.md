@@ -60,14 +60,14 @@ flowchart LR
 `vMAJOR.MINOR.PATCH-rc.N`。创建 annotated tag，而不是 lightweight tag：
 
 ```bash
-git tag -a v0.1.0 -m "Netherway v0.1.0"
-git push origin v0.1.0
+git tag -a v1.0.0 -m "Netherway v1.0.0"
+git push origin v1.0.0
 ```
 
 推送前再次确认 tag 指向预期提交，且 `v` 后面的版本与 `modVersion` 一致：
 
 ```bash
-git show --no-patch v0.1.0
+git show --no-patch v1.0.0
 sed -n 's/^modVersion=//p' mod/platform/forge-1.7.10/gradle.properties
 ```
 
@@ -105,11 +105,11 @@ tag push 会触发 `.github/workflows/release.yml`：
 使用 GitHub CLI 验证 Release、下载资产并校验来源：
 
 ```bash
-gh release verify v0.1.0 -R aUsernameWoW/netherway
-gh release download v0.1.0 -R aUsernameWoW/netherway --pattern '*.jar'
-gh release verify-asset v0.1.0 netherway-forge-1.7.10-0.1.0.jar \
+gh release verify v1.0.0 -R aUsernameWoW/netherway
+gh release download v1.0.0 -R aUsernameWoW/netherway --pattern '*.jar'
+gh release verify-asset v1.0.0 netherway-forge-1.7.10-1.0.0.jar \
   -R aUsernameWoW/netherway
-gh attestation verify netherway-forge-1.7.10-0.1.0.jar \
+gh attestation verify netherway-forge-1.7.10-1.0.0.jar \
   --repo aUsernameWoW/netherway
 ```
 

@@ -25,7 +25,7 @@ frpc 以库的形式内嵌在 mod 自带的 agent 里，由 mod 自动启停，�
 
 ## 安装
 
-下载与你的 Minecraft 版本和平台匹配的 Netherway：
+从 [GitHub Releases](https://github.com/aUsernameWoW/netherway/releases) 下载与你的 Minecraft 版本和平台匹配的 Netherway：
 
 - Forge / Fabric 版：客户端和服务端分别放入对应实例的 `mods/` 文件夹。
 - Sponge 版：放入服务端的 `mods/` 文件夹。
