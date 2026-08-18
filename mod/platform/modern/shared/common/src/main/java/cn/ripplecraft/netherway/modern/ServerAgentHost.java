@@ -111,6 +111,13 @@ public final class ServerAgentHost {
             shutdownHook = new Thread(new Runnable() {
                 @Override
                 public void run() {
+                    // A JVM-initiated destroy is an expected stop. Mark it
+                    // before killing, or the log pump races us and reports a
+                    // scary "serve exited (configuration error?)" warning.
+                    // Mod servers never see this (their stop() runs in the
+                    // server-stopping event, before JVM hooks), but on Bukkit
+                    // a SIGTERM runs this hook in parallel with onDisable.
+                    stopping.set(true);
                     proc.destroy();
                 }
             }, "netherway-serve-shutdown");
