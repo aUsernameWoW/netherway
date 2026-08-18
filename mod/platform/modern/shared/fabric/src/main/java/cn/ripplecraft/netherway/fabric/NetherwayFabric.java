@@ -37,7 +37,8 @@ public final class NetherwayFabric implements ModInitializer {
 
         // 服务端遥测在 ServerRuntime 内部按 DEDICATED_SERVER 装配；这里给出
         // 服务端半边的整体装配。客户端半边在 NetherwayFabricClient。
-        final ServerRuntime server = new ServerRuntime(config, wiring);
+        final ServerRuntime server = new ServerRuntime(config, wiring,
+                new cn.ripplecraft.netherway.modern.ConnectionAddressRewriter());
         final CredentialService credentials = new CredentialService(config);
         final UpgradeReportService reports = new UpgradeReportService(config);
 

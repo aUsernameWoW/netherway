@@ -71,7 +71,8 @@ public final class NetherwayForge {
         this.config = ModConfig.loadSafely(
                 FMLPaths.CONFIGDIR.get().resolve("netherway.cfg"));
         TelemetryWiring wiring = new TelemetryWiring(modVersion(), VersionInfo.MC_VERSION);
-        this.server = new ServerRuntime(config, wiring);
+        this.server = new ServerRuntime(config, wiring,
+                new cn.ripplecraft.netherway.modern.ConnectionAddressRewriter());
         this.credentials = new CredentialService(config);
         this.reports = new UpgradeReportService(config);
 

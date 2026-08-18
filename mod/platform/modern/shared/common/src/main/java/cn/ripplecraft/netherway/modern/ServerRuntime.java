@@ -28,11 +28,19 @@ public final class ServerRuntime {
 
     private final ModConfig config;
     private final TelemetryWiring telemetryWiring;
+    private final SnifferCore.AddressRewriter addressRewriter;
     private ServerAgentHost agent;
 
-    public ServerRuntime(ModConfig config, TelemetryWiring telemetryWiring) {
+    /**
+     * @param addressRewriter platform hook for the PROXY-protocol address
+     *                        write-back (see {@link SnifferCore.AddressRewriter});
+     *                        mod entries pass {@link ConnectionAddressRewriter}
+     */
+    public ServerRuntime(ModConfig config, TelemetryWiring telemetryWiring,
+                         SnifferCore.AddressRewriter addressRewriter) {
         this.config = config;
         this.telemetryWiring = telemetryWiring;
+        this.addressRewriter = addressRewriter;
     }
 
     /**
@@ -56,7 +64,7 @@ public final class ServerRuntime {
         }
         int rendezvousPort = resolveRendezvousPort();
         SnifferCore.install(host == null ? null : new PreauthService(host),
-                !config.serveProxyProtocol().isEmpty(), rendezvousPort);
+                !config.serveProxyProtocol().isEmpty(), rendezvousPort, addressRewriter);
 
         if (!config.serverRunAgent()) {
             return;

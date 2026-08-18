@@ -4,7 +4,6 @@ import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.PreauthProtocol;
 import cn.ripplecraft.netherway.core.PreauthService;
 import cn.ripplecraft.netherway.core.TlsRecord;
-import cn.ripplecraft.netherway.modern.mixin.ConnectionAddressAccessor;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
@@ -21,7 +20,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
-import net.minecraft.network.Connection;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -61,18 +59,40 @@ public final class SnifferCore {
     private SnifferCore() {
     }
 
+    /**
+     * Platform hook that writes the PROXY-stripped real source address back
+     * into the connection object sitting in the pipeline. This is the only
+     * spot where the sniffer needs to touch a Minecraft type, so it is
+     * injected per platform: the modern mod supplies a Mixin-accessor-based
+     * implementation ({@code ConnectionAddressRewriter}), the Bukkit plugin a
+     * reflective one. Keeping the seam here lets everything else in this
+     * class stay Minecraft-free.
+     */
+    public interface AddressRewriter {
+
+        /**
+         * Applies {@code source} as the connection's remote address.
+         *
+         * @return true if the address was written; false if the connection
+         *         object could not be found or written (the caller logs it)
+         */
+        boolean apply(Channel channel, InetSocketAddress source);
+    }
+
     /** 嗅探器的运行期依赖，install 时组装一次。 */
     static final class Context {
         final PreauthService preauth;
         final boolean proxyProtocol;
         final int rendezvousPort;
+        final AddressRewriter rewriter;
         final ExecutorService worker;
 
         Context(PreauthService preauth, boolean proxyProtocol, int rendezvousPort,
-                ExecutorService worker) {
+                AddressRewriter rewriter, ExecutorService worker) {
             this.preauth = preauth;
             this.proxyProtocol = proxyProtocol;
             this.rendezvousPort = rendezvousPort;
+            this.rewriter = rewriter;
             this.worker = worker;
         }
     }
@@ -82,9 +102,13 @@ public final class SnifferCore {
     /**
      * 服务器就绪后调用（ServerStarted 事件）。之后 accept 的每条 TCP 连接
      * 都会经 {@link #attach} 得到嗅探 handler。
+     *
+     * @param rewriter platform hook for the PROXY-protocol address
+     *                 write-back; only consulted when {@code proxyProtocol}
+     *                 is set, may be null when stripping is disabled
      */
     public static void install(PreauthService preauth, boolean proxyProtocol,
-                               int rendezvousPort) {
+                               int rendezvousPort, AddressRewriter rewriter) {
         if (preauth == null && !proxyProtocol && rendezvousPort <= 0) {
             return;
         }
@@ -97,7 +121,7 @@ public final class SnifferCore {
                         return t;
                     }
                 });
-        active = new Context(preauth, proxyProtocol, rendezvousPort, worker);
+        active = new Context(preauth, proxyProtocol, rendezvousPort, rewriter, worker);
         if (preauth != null) {
             LOG.info(L10n.tr("sniffer.preauthHooked", 1));
         }
@@ -416,14 +440,13 @@ public final class SnifferCore {
         }
 
         /**
-         * 把真实来源写回 Connection（pipeline 里名为 packet_handler 的那个）。
-         * 字段访问经 Mixin accessor，mojmap/SRG/intermediary 三套运行时名
-         * 由 Mixin 自动处理——不要退回反射字符串。
+         * Writes the real source back into the connection object via the
+         * platform-supplied {@link AddressRewriter}. The rewriter owns the
+         * platform-specific part (Mixin accessor on the mod side, reflection
+         * on the Bukkit side); this method only logs the outcome.
          */
         private void rewriteRemote(ChannelHandlerContext c, InetSocketAddress source) {
-            ChannelHandler tail = c.pipeline().get("packet_handler");
-            if (tail instanceof Connection) {
-                ((ConnectionAddressAccessor) tail).netherway$setAddress(source);
+            if (ctx.rewriter != null && ctx.rewriter.apply(c.channel(), source)) {
                 LOG.debug(L10n.tr("sniffer.proxyStripped", source));
             } else {
                 LOG.warn(L10n.tr("sniffer.noPacketHandler", source));
