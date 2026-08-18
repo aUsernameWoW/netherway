@@ -37,9 +37,9 @@ allprojects {
     apply plugin: "maven-publish"
 
     base {
-        archivesName = "${project.archives_base_name}-${project.name}"
+        archivesName = "${project.archives_base_name}-${project.name}-${project.minecraft_version}"
     }
-    version = project.mod_version
+    version = project.modVersion
     group = project.maven_group
 
     repositories {

@@ -351,7 +351,7 @@ jobs:
             echo 'flag=' >> "$GITHUB_OUTPUT"
           else
             sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
-            echo "flag=-Pmod_version=${sha:0:7}" >> "$GITHUB_OUTPUT"
+            echo "flag=-PmodVersion=${sha:0:7}" >> "$GITHUB_OUTPUT"
           fi
       - name: Gradle build
         working-directory: mod/platform/modern/${{ matrix.mc }}
@@ -359,27 +359,35 @@ jobs:
           ./gradlew build ${{ steps.modver.outputs.flag }}
           -Dorg.gradle.java.installations.fromEnv=${{ matrix.from_env }}
           --console=plain
-      # 每版本产出 forge + fabric 两个重映射 jar（-forge / -fabric 分类器）
-      - name: 收集 loader 产物
+      # 每版本产出 forge + fabric 两个重映射 jar，命名与 1.7.10/1.12.2 同构：
+      # netherway-<loader>-<mc>-<版本或短哈希>.jar。中间产物（-dev-shadow 的
+      # 未重映射 shadow jar、-sources）绝不上传。
+      - name: 定位 forge/fabric 发布 JAR
         id: jars
         shell: bash
         run: |
           base="$GITHUB_WORKSPACE/mod/platform/modern/${{ matrix.mc }}"
-          mapfile -t jars < <(
-            find "$base/forge/build/libs" "$base/fabric/build/libs" \
-              -maxdepth 1 -type f -name '*.jar' \
-              ! -name '*-dev*.jar' ! -name '*-sources.jar' -print 2>/dev/null
-          )
-          if [ "${#jars[@]}" -lt 2 ]; then
-            printf '预期至少 forge+fabric 两个发布 JAR，实际 %d 个：\n' "${#jars[@]}"
-            printf '%s\n' "${jars[@]}"
-            exit 1
-          fi
-          printf '%s\n' "${jars[@]}"
+          for loader in forge fabric; do
+            mapfile -t found < <(
+              find "$base/$loader/build/libs" -maxdepth 1 -type f -name '*.jar' \
+                ! -name '*-dev*.jar' ! -name '*-sources.jar' -print
+            )
+            if [ "${#found[@]}" -ne 1 ]; then
+              printf '预期 %s 侧恰好一个发布 JAR，实际 %d 个：\n' "$loader" "${#found[@]}"
+              printf '%s\n' "${found[@]}"
+              exit 1
+            fi
+            printf '%s=%s\n' "$loader" "${found[0]}" >> "$GITHUB_OUTPUT"
+          done
+      # archive:false 让 artifact 名就是 JAR 文件名，与 1.7.10/1.12.2 的
+      # 上传方式一致（release.yml 依赖这一约定按文件名下载）
       - uses: actions/upload-artifact@v7
         with:
-          name: netherway-${{ matrix.mc }}
-          path: |
-            mod/platform/modern/${{ matrix.mc }}/forge/build/libs/*.jar
-            mod/platform/modern/${{ matrix.mc }}/fabric/build/libs/*.jar
+          path: ${{ steps.jars.outputs.forge }}
+          archive: false
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.jars.outputs.fabric }}
+          archive: false
           if-no-files-found: error

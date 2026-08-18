@@ -25,9 +25,9 @@ dependencies {
 sourceSets.main.java.srcDir "../../shared/fabric/src/main/java"
 
 processResources {
-    inputs.property "version", project.mod_version
+    inputs.property "version", project.version
     filesMatching("fabric.mod.json") {
-        expand version: project.mod_version
+        expand version: project.version
     }
 }
 
@@ -39,5 +39,4 @@ shadowJar {
 remapJar {
     inputFile.set shadowJar.archiveFile
     dependsOn shadowJar
-    archiveClassifier = "fabric"
 }
