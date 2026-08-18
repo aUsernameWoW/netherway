@@ -85,7 +85,8 @@ public final class DirectServerEntry implements WarmupController.Listener {
             bridge.info(L10n.tr("direntry.migrated", name, address));
             return;
         }
-        list.add(new ServerData(name, address, ServerData.Type.OTHER), false);
+        // isLan=false（ServerData.Type 枚举是 1.20.2 才有的）；第二参 hidden=false
+        list.add(new ServerData(name, address, false), false);
         list.save();
         bridge.info(L10n.tr("direntry.added", name, address));
     }

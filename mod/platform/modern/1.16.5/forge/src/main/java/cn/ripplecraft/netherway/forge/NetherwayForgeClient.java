@@ -28,9 +28,9 @@ import net.minecraftforge.fml.network.event.EventNetworkChannel;
  *
  * <p><b>1.16.5 delta：</b>{@code EventNetworkChannel} 在
  * {@code net.minecraftforge.fml.network.event}；连接生命周期事件是
- * {@code ClientPlayerNetworkEvent.LoggedIn/LoggedOut}（1.19.3 起才改名
- * LoggingIn/LoggingOut），取连接用 {@code getNetworkManager()}（1.17+ 才是
- * getConnection()）。
+ * {@code ClientPlayerNetworkEvent.LoggedInEvent/LoggedOutEvent}（1.19.3 起
+ * 才改名 LoggingIn/LoggingOut），取连接用 {@code getNetworkManager()}
+ * （1.17+ 才是 getConnection()）。
  */
 public final class NetherwayForgeClient {
 
@@ -94,8 +94,8 @@ public final class NetherwayForgeClient {
     }
 
     @SubscribeEvent
-    public void onLoggedIn(ClientPlayerNetworkEvent.LoggedIn event) {
-        // 1.16.5：LoggedIn/LoggedOut（1.19.3 起才改名 LoggingIn/LoggingOut）。
+    public void onLoggedIn(ClientPlayerNetworkEvent.LoggedInEvent event) {
+        // 1.16.5：LoggedInEvent/LoggedOutEvent（1.19.3 起才改名 LoggingIn/LoggingOut）。
         // 取连接用 getNetworkManager()（返回 net.minecraft.network.Connection）。
         if (event.getNetworkManager() != null) {
             runtime.onConnected(event.getNetworkManager());
@@ -103,7 +103,7 @@ public final class NetherwayForgeClient {
     }
 
     @SubscribeEvent
-    public void onLoggedOut(ClientPlayerNetworkEvent.LoggedOut event) {
+    public void onLoggedOut(ClientPlayerNetworkEvent.LoggedOutEvent event) {
         // 字段可空，且新建集成服务器时也会触发——都交给 ClientRuntime 里按连接
         // 身份归类的逻辑消化（null 连接视作与切换无关）。
         if (event.getNetworkManager() != null) {

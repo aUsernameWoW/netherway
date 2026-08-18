@@ -27,7 +27,7 @@ import net.minecraft.network.FriendlyByteBuf;
 public final class NetherwayFabricClient implements ClientModInitializer {
 
     @Override
-    public void onInitialize() {
+    public void onInitializeClient() {
         ModConfig config = ModConfig.loadSafely(
                 net.fabricmc.loader.api.FabricLoader.getInstance()
                         .getConfigDir().resolve("netherway.cfg"));

@@ -1,3 +1,5 @@
+apply plugin: "com.github.johnrengelman.shadow"
+
 architectury {
     platformSetupLoomIde()
     fabric()

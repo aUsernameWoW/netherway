@@ -54,7 +54,8 @@ public final class VersionClient {
             String ip = host + ":" + port;
             // 1.20.1 的 startConnecting 自己会先 clearLevel 退出当前世界；
             // ServerData 必须非空（quickPlayLog 无空判），boolean 传 false。
-            ServerData data = new ServerData("Netherway", ip, ServerData.Type.OTHER);
+            // isLan=false（ServerData.Type 枚举是 1.20.2 才有的）
+            ServerData data = new ServerData("Netherway", ip, false);
             ConnectScreen.startConnecting(
                     new JoinMultiplayerScreen(new TitleScreen()), mc,
                     ServerAddress.parseString(ip), data, false);

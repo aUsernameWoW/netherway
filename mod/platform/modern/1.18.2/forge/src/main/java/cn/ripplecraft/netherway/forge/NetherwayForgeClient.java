@@ -85,17 +85,16 @@ public final class NetherwayForgeClient {
     }
 
     @SubscribeEvent
-    public void onLoggedIn(ClientPlayerNetworkEvent.LoggedIn event) {
-        // 1.18.2：LoggedIn/LoggedOut（1.19.3 起才改名为 LoggingIn/LoggingOut）。
-        // 取连接用 getConnection()；若某 40.x 版本编译报错，改为 getNetworkManager()。
+    public void onLoggedIn(ClientPlayerNetworkEvent.LoggedInEvent event) {
+        // 1.18.2：LoggedInEvent/LoggedOutEvent（1.19.3 起才改名 LoggingIn/LoggingOut）。
         if (event.getConnection() != null) {
             runtime.onConnected(event.getConnection());
         }
     }
 
     @SubscribeEvent
-    public void onLoggedOut(ClientPlayerNetworkEvent.LoggedOut event) {
-        // LoggedOut 的字段可空，且新建集成服务器时也会触发——都交给
+    public void onLoggedOut(ClientPlayerNetworkEvent.LoggedOutEvent event) {
+        // LoggedOutEvent 的字段可空，且新建集成服务器时也会触发——都交给
         // ClientRuntime 里按连接身份归类的逻辑消化（null 连接视作与切换无关）。
         if (event.getConnection() != null) {
             runtime.onDisconnected(event.getConnection());

@@ -9,6 +9,8 @@
 plugins {
     id "architectury-plugin" version "3.4-SNAPSHOT"
     id "dev.architectury.loom" version "1.7-SNAPSHOT" apply false
+    // fabric/forge 用 shadowJar 把 common 的 transformProduction* 打进发布 jar
+    id "com.github.johnrengelman.shadow" version "8.1.1" apply false
 }
 
 architectury {
@@ -52,7 +54,8 @@ allprojects {
 
     tasks.withType(JavaCompile).configureEach {
         options.encoding = "UTF-8"
-        options.release = 8
+        // 不设 options.release：JDK 8 的 javac 没有 --release 旗标，
+        // 字节码级别由下面的 toolchain(8) 保证
     }
 
     java {

@@ -9,6 +9,8 @@
 plugins {
     id "architectury-plugin" version "3.4-SNAPSHOT"
     id "dev.architectury.loom" version "1.7-SNAPSHOT" apply false
+    // fabric/forge 用 shadowJar 把 common 的 transformProduction* 打进发布 jar
+    id "com.github.johnrengelman.shadow" version "8.1.1" apply false
 }
 
 architectury {
