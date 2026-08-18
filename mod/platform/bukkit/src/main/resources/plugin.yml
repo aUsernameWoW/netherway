@@ -1,0 +1,6 @@
+name: Netherway
+main: cn.ripplecraft.netherway.bukkit.NetherwayPlugin
+version: "${version}"
+api-version: "1.13"
+description: P2P direct connections between players and the server; game traffic bypasses relays.
+website: https://github.com/aUsernameWoW/netherway

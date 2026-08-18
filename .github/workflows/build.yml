@@ -391,3 +391,69 @@ jobs:
           path: ${{ steps.jars.outputs.fabric }}
           archive: false
           if-no-files-found: error
+
+  plugin-bukkit:
+    # Bukkit/Spigot/Paper server-side plugin. Plain Java project (no Loom, no
+    # Minecraft decompilation): compiles core + the Minecraft-free server half
+    # of modern/shared against spigot-api 1.13, emits one version-spanning jar
+    # named like the mod jars (netherway-bukkit-<version or short hash>.jar).
+    name: Bukkit plugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # JDK 17 for the compile toolchain (targets Java 8 bytecode via
+      # --release), JDK 21 for Gradle itself; the last install wins JAVA_HOME.
+      - name: Install JDK 17 (compile toolchain)
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: 17
+      - name: Install JDK 21 (runs Gradle)
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Build the bundled agent binaries (no secrets)
+        run: ./mod/build-natives.sh
+      - name: Resolve plugin version
+        id: modver
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo 'flag=' >> "$GITHUB_OUTPUT"
+          else
+            sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
+            echo "flag=-PmodVersion=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Gradle build
+        working-directory: mod/platform/bukkit
+        run: >-
+          ./gradlew build ${{ steps.modver.outputs.flag }}
+          -Dorg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
+          --console=plain
+      - name: Locate the release JAR
+        id: release-jar
+        shell: bash
+        run: |
+          mapfile -t jars < <(
+            find "$GITHUB_WORKSPACE/mod/platform/bukkit/build/libs" \
+              -maxdepth 1 -type f -name '*.jar' -print
+          )
+          if [ "${#jars[@]}" -ne 1 ]; then
+            printf 'Expected exactly one release JAR, found %d:\n' "${#jars[@]}"
+            printf '%s\n' "${jars[@]}"
+            exit 1
+          fi
+          printf 'path=%s\n' "${jars[0]}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.release-jar.outputs.path }}
+          archive: false
+          if-no-files-found: error

@@ -1,0 +1,86 @@
+// Bukkit/Spigot/Paper server-side plugin.
+//
+// One jar spans the whole 1.13+ range: everything the server half does —
+// credential delivery over plugin messaging, preauth / embedded-rendezvous
+// forwarding / PROXY stripping on raw first bytes — is independent of the
+// Minecraft protocol version. The only version-sensitive parts (pipeline
+// injection, PROXY address write-back) are reflective and mapping-agnostic.
+//
+// Compiles against the oldest supported API (spigot-api 1.13.2) so newer API
+// can't creep in by accident, and emits Java 8 bytecode (1.13 servers run on
+// Java 8). Server internals (NMS) are reached via reflection only — see
+// PipelineInjector / NmsAddressRewriter.
+plugins {
+    id "java"
+}
+
+version = project.modVersion
+group = project.maven_group
+
+base {
+    archivesName = "${project.archives_base_name}-bukkit"
+}
+
+repositories {
+    mavenLocal()
+    maven { url "https://hub.spigotmc.org/nexus/content/repositories/snapshots/" }
+    // bungeecord-chat, a transitive dependency of spigot-api
+    maven { url "https://oss.sonatype.org/content/repositories/snapshots/" }
+    mavenCentral()
+}
+
+dependencies {
+    // transitive=false: the 2018-era snapshot transitives (bungeecord-chat
+    // etc.) have been purged from their repos, and we touch none of them.
+    compileOnly("org.spigotmc:spigot-api:1.13.2-R0.1-SNAPSHOT") { transitive = false }
+    // Provided by the server at runtime; versions pinned to the 1.13-era
+    // floor so we can't use API that an old server lacks.
+    compileOnly "io.netty:netty-buffer:4.1.24.Final"
+    compileOnly "io.netty:netty-transport:4.1.24.Final"
+    compileOnly "org.apache.logging.log4j:log4j-api:2.8.2"
+}
+
+// core (dependency-free pure Java) and the Minecraft-free server half of
+// modern/shared are compiled in as sources — single source of truth, no
+// intermediate artifacts, same as the mod jars do it.
+sourceSets.main.java {
+    srcDir "../../core/src/main/java"
+    srcDir "../modern/shared/common/src/main/java"
+    // The shared tree also contains the client half and the Mixin-based
+    // pieces; the plugin takes only the Minecraft-free server classes.
+    exclude "cn/ripplecraft/netherway/modern/client/**"
+    exclude "cn/ripplecraft/netherway/modern/mixin/**"
+    exclude "cn/ripplecraft/netherway/modern/ConnectionAddressRewriter.java"
+}
+
+def nativesDir = file("../../build/natives")
+
+processResources {
+    // expand() values are not tracked as task inputs by themselves; without
+    // this a -PmodVersion override reuses the previous plugin.yml.
+    inputs.property "version", project.version
+    filesMatching("plugin.yml") {
+        expand version: project.version
+    }
+    from(file("../../../THIRD-PARTY-NOTICES.md")) { into "META-INF" }
+    from(file("../../../LICENSE")) { into "META-INF" }
+    if (nativesDir.isDirectory()) {
+        from(nativesDir) { into "natives" }
+    } else {
+        doFirst {
+            logger.warn("Warning: {} does not exist; the jar will not contain the agent binary (run mod/build-natives.sh first)",
+                    nativesDir)
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+    options.release = 8
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}

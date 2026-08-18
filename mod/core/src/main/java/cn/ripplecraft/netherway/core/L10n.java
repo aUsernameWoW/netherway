@@ -136,6 +136,7 @@ public final class L10n {
         defProxyProtocol();
         defForgeClient();
         defSniffer();
+        defBukkit();
         defForgeServer();
         defConfig();
         defCfgComments();
@@ -689,6 +690,17 @@ public final class L10n {
         def("sniffer.exclusiveError",
                 "Connection error while in exclusive mode ({0}); disconnecting: {1}",
                 "独占中的连接异常（{0}），断开: {1}");
+    }
+
+    /** Bukkit/Spigot/Paper plugin platform layer. */
+    private static void defBukkit() {
+        def("bukkit.injected",
+                "Server network pipeline hooked ({0} listen channel(s))",
+                "已挂接服务端网络管线（{0} 个监听通道）");
+        def("bukkit.injectFailed",
+                "Failed to hook the server network pipeline; preauth, the embedded rendezvous and PROXY "
+                        + "header stripping are unavailable (credential delivery after login still works): {0}",
+                "服务端网络管线挂接失败，预认证、内嵌会合点与 PROXY 剥头均不可用（登录后下发凭证不受影响）: {0}");
     }
 
     /** Forge 服务端半边（入口、下发、回执、内置 serve）。 */
