@@ -1,0 +1,64 @@
+// Architectury Loom 多 loader 工程（1.18.2，Forge + Fabric）。
+//
+// 只把 Architectury 当构建工具链用：mojmap 映射让一套源码同时编 Forge 与
+// Fabric，version 差异用 modern/shared 共享源码 + 本工作区的版本覆盖表达，
+// 不引入 Architectury API 运行期依赖（见 docs/multi-version.md 决策）。
+//
+// Gradle 进程需 Java 17+（loom 新线可能要 21）；产物字节码经 toolchain 固定
+// 为 Java 17（1.18.2 运行时基线）。
+plugins {
+    id "architectury-plugin" version "3.4-SNAPSHOT"
+    id "dev.architectury.loom" version "1.7-SNAPSHOT" apply false
+}
+
+architectury {
+    minecraft = project.minecraft_version
+}
+
+subprojects {
+    apply plugin: "dev.architectury.loom"
+
+    loom {
+        silentMojangMappingsLicense()
+    }
+
+    dependencies {
+        minecraft "com.mojang:minecraft:${project.minecraft_version}"
+        // 一套源码跨 loader 的前提：官方 Mojang 映射
+        mappings loom.officialMojangMappings()
+    }
+}
+
+allprojects {
+    apply plugin: "java"
+    apply plugin: "architectury-plugin"
+    apply plugin: "maven-publish"
+
+    base {
+        archivesName = "${project.archives_base_name}-${project.name}"
+    }
+    version = project.mod_version
+    group = project.maven_group
+
+    repositories {
+        mavenLocal()
+        maven { url "https://maven.architectury.dev/" }
+        maven { url "https://maven.fabricmc.net/" }
+        maven { url "https://maven.minecraftforge.net/" }
+        // 国内镜像；失效时注释掉回退官方源
+        maven { url "https://bmclapi2.bangbang93.com/maven" }
+        mavenCentral()
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = "UTF-8"
+        options.release = 17
+    }
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(17)
+        }
+        withSourcesJar()
+    }
+}

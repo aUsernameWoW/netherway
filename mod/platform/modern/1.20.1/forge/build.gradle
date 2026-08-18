@@ -1,0 +1,44 @@
+architectury {
+    platformSetupLoomIde()
+    forge()
+}
+
+loom {
+    forge {
+        mixinConfig "netherway.mixins.json"
+        mixinConfig "netherway-client.mixins.json"
+    }
+}
+
+configurations {
+    common
+    shadowBundle
+    compileClasspath.extendsFrom common
+    runtimeClasspath.extendsFrom common
+    developmentForge.extendsFrom common
+}
+
+dependencies {
+    forge "net.minecraftforge:forge:${project.forge_version}"
+
+    common(project(path: ":common", configuration: "namedElements")) { transitive false }
+    shadowBundle project(path: ":common", configuration: "transformProductionForge")
+}
+
+processResources {
+    inputs.property "version", project.mod_version
+    filesMatching("META-INF/mods.toml") {
+        expand version: project.mod_version
+    }
+}
+
+shadowJar {
+    configurations = [project.configurations.shadowBundle]
+    archiveClassifier = "dev-shadow"
+}
+
+remapJar {
+    inputFile.set shadowJar.archiveFile
+    dependsOn shadowJar
+    archiveClassifier = "forge"
+}

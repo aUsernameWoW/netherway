@@ -1,0 +1,13 @@
+[{
+  "modid": "netherway",
+  "name": "Netherway",
+  "description": "让 Minecraft 玩家和服务器之间走 P2P 直连。 / Peer-to-peer direct connection between Minecraft players and servers.",
+  "version": "${version}",
+  "mcversion": "${mcversion}",
+  "url": "https://github.com/aUsernameWoW/netherway",
+  "authorList": ["ripplecraft"],
+  "credits": "",
+  "logoFile": "assets/netherway/logo.png",
+  "screenshots": [],
+  "dependencies": []
+}]

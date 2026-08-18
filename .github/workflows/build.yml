@@ -234,3 +234,152 @@ jobs:
           path: ${{ steps.release-jar.outputs.path }}
           archive: false
           if-no-files-found: error
+
+  mod-1122:
+    name: Forge 1.12.2 mod
+    runs-on: ubuntu-latest
+    # 与 forge-1.7.10 同为 RFG：首次要下载并反编译 Minecraft，留足余量
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: 安装 JDK 8（编译 toolchain）
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: 8
+      - name: 安装 JDK 21（运行 Gradle）
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+      - name: 构建打进 jar 的 agent 二进制（无密钥）
+        run: ./mod/build-natives.sh
+      - name: 确定 mod 版本号
+        id: modver
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo 'flag=' >> "$GITHUB_OUTPUT"
+          else
+            sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
+            echo "flag=-PmodVersion=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+      # build 已含 configSelfTest（用真实 Forge 1.12.2 Configuration 解析器）
+      - name: Gradle build
+        working-directory: mod/platform/forge-1.12.2
+        run: >-
+          ./gradlew build ${{ steps.modver.outputs.flag }}
+          -Dorg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64 --console=plain
+      - name: 定位唯一的发布版 JAR
+        id: release-jar
+        shell: bash
+        run: |
+          mapfile -t jars < <(
+            find "$GITHUB_WORKSPACE/mod/platform/forge-1.12.2/build/libs" \
+              -maxdepth 1 -type f -name '*.jar' ! -name '*-dev.jar' -print
+          )
+          if [ "${#jars[@]}" -ne 1 ]; then
+            printf '预期恰好一个非 -dev 发布 JAR，实际找到 %d 个：\n' "${#jars[@]}"
+            printf '%s\n' "${jars[@]}"
+            exit 1
+          fi
+          printf 'path=%s\n' "${jars[0]}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.release-jar.outputs.path }}
+          archive: false
+          if-no-files-found: error
+
+  mod-modern:
+    # Architectury Loom 多 loader 工作区，一套源码经 mojmap 同时出 Forge+Fabric。
+    # 三个版本各自独立工作区（可各自 pin loom 版本），矩阵并行、互不 fail-fast：
+    # 1.16.5 是本方案唯一真风险点（arch-loom 对该版偏边缘），单独红不拖累其余。
+    name: Modern ${{ matrix.mc }} (Forge+Fabric)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mc: '1.16.5'
+            toolchain: '8'
+            from_env: 'JAVA_HOME_8_X64'
+          - mc: '1.18.2'
+            toolchain: '17'
+            from_env: 'JAVA_HOME_17_X64'
+          - mc: '1.20.1'
+            toolchain: '17'
+            from_env: 'JAVA_HOME_17_X64'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # 装齐三档 JDK：8/17 供 toolchain（按版本挑），21 跑 Gradle/loom。
+      # 顺序靠后的成为默认 JAVA_HOME，故最后装 21。
+      - name: 安装 JDK 8
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: 8
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: 17
+      - name: 安装 JDK 21（运行 Gradle）
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+      - name: 构建打进 jar 的 agent 二进制（无密钥）
+        run: ./mod/build-natives.sh
+      - name: 确定 mod 版本号
+        id: modver
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo 'flag=' >> "$GITHUB_OUTPUT"
+          else
+            sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
+            echo "flag=-Pmod_version=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Gradle build
+        working-directory: mod/platform/modern/${{ matrix.mc }}
+        run: >-
+          ./gradlew build ${{ steps.modver.outputs.flag }}
+          -Dorg.gradle.java.installations.fromEnv=${{ matrix.from_env }}
+          --console=plain
+      # 每版本产出 forge + fabric 两个重映射 jar（-forge / -fabric 分类器）
+      - name: 收集 loader 产物
+        id: jars
+        shell: bash
+        run: |
+          base="$GITHUB_WORKSPACE/mod/platform/modern/${{ matrix.mc }}"
+          mapfile -t jars < <(
+            find "$base/forge/build/libs" "$base/fabric/build/libs" \
+              -maxdepth 1 -type f -name '*.jar' \
+              ! -name '*-dev*.jar' ! -name '*-sources.jar' -print 2>/dev/null
+          )
+          if [ "${#jars[@]}" -lt 2 ]; then
+            printf '预期至少 forge+fabric 两个发布 JAR，实际 %d 个：\n' "${#jars[@]}"
+            printf '%s\n' "${jars[@]}"
+            exit 1
+          fi
+          printf '%s\n' "${jars[@]}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: netherway-${{ matrix.mc }}
+          path: |
+            mod/platform/modern/${{ matrix.mc }}/forge/build/libs/*.jar
+            mod/platform/modern/${{ matrix.mc }}/fabric/build/libs/*.jar
+          if-no-files-found: error

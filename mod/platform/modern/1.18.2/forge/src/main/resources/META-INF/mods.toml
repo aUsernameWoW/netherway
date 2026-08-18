@@ -1,0 +1,33 @@
+modLoader = "javafml"
+loaderVersion = "[40,)"
+license = "AGPL-3.0-or-later"
+issueTrackerURL = "https://github.com/aUsernameWoW/netherway/issues"
+
+[[mods]]
+modId = "netherway"
+version = "${version}"
+displayName = "Netherway"
+authors = "ripplecraft"
+logoFile = "assets/netherway/logo.png"
+description = '''
+让 Minecraft 玩家和服务器之间走 P2P 直连。
+Peer-to-peer direct connection between Minecraft players and servers.'''
+
+# 没装 mod 的客户端/服务器照常互联——纯增强，不构成准入门槛（详见入口的 DisplayTest）
+[[dependencies.netherway]]
+    modId = "forge"
+    mandatory = true
+    versionRange = "[40,)"
+    ordering = "NONE"
+    side = "BOTH"
+[[dependencies.netherway]]
+    modId = "minecraft"
+    mandatory = true
+    versionRange = "[1.18.2]"
+    ordering = "NONE"
+    side = "BOTH"
+
+[[mixins]]
+config = "netherway.mixins.json"
+[[mixins]]
+config = "netherway-client.mixins.json"

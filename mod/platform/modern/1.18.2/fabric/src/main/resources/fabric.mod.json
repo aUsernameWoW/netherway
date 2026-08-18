@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "netherway",
+  "version": "${version}",
+  "name": "Netherway",
+  "description": "让 Minecraft 玩家和服务器之间走 P2P 直连。 / Peer-to-peer direct connection between Minecraft players and servers.",
+  "authors": ["ripplecraft"],
+  "contact": {
+    "homepage": "https://github.com/aUsernameWoW/netherway",
+    "sources": "https://github.com/aUsernameWoW/netherway"
+  },
+  "license": "AGPL-3.0-or-later",
+  "icon": "assets/netherway/logo.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["cn.ripplecraft.netherway.fabric.NetherwayFabric"],
+    "client": ["cn.ripplecraft.netherway.fabric.NetherwayFabricClient"]
+  },
+  "mixins": [
+    "netherway.mixins.json",
+    "netherway-client.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.14.0",
+    "fabric-api": "*",
+    "minecraft": "~1.18.2"
+  }
+}

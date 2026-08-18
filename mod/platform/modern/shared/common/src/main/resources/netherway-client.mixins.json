@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "cn.ripplecraft.netherway.modern.client.mixin",
+  "client": [
+    "ConnectScreenMixin",
+    "ServerStatusPingerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

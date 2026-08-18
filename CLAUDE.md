@@ -288,9 +288,23 @@ frp 没有提供查询 visitor 打洞状态的 API（`StatusExporter` 只覆盖 
 `mod/core` 里**没有任何 Minecraft 类型**。碰游戏 API 的只剩三件事——收发自定义
 消息、玩家登录事件、触发重连——全部收敛在 `ClientBridge` 接口里。换 Minecraft
 版本或 mod 加载器时只需重写那一层（约一两百行），core 原样复用。
-当前唯一的适配层是 `mod/platform/forge-1.7.10`（服务端下发 + 客户端切换在
-同一个 jar 里），要点见其 README：主线程派发走 tick 队列；断开事件必须区分
-「升级引发的重连」与「真退出」，真退出用 `shutdown()` 而非 `onDisconnected()`。
+
+适配层现有三套（选型与逐版差异见 [`docs/multi-version.md`](docs/multi-version.md)）：
+
+- `mod/platform/forge-1.7.10` — 第一个平台，RetroFuturaGradle。
+- `mod/platform/forge-1.12.2` — 与 1.7.10 逐类同构（`cpw.mods.fml` →
+  `net.minecraftforge.fml` + 少量改名），同用 RFG。
+- `mod/platform/modern` — 1.16.5/1.18.2/1.20.1 各出 Forge+Fabric，用
+  Architectury Loom + mojmap，**一套源码同时编两 loader**，但不引入
+  Architectury API 运行期依赖（凭证频道保持裸 vanilla custom payload）。
+  绝大部分逻辑在 `modern/shared`，逐版差异经各版本 `Version*` 类与两个
+  客户端 Mixin 隔离；服务端 Netty 注入统一走 `ServerConnectionListener$1`
+  的一个 Mixin。1.13+ 频道名从裸 `netherway` 变为 `netherway:main`
+  （ResourceLocation 强制 namespace）。
+
+各适配层要点见其 README：主线程派发（1.7.10/1.12.2 走 tick 队列，modern 走
+`Minecraft.execute`）；断开事件必须区分「升级引发的重连」与「真退出」，真退出用
+`shutdown()` 而非 `onDisconnected()`。
 
 `UpgradeController` 是整个流程的状态机：`IDLE → PUNCHING → UPGRADED / GAVE_UP`。
 

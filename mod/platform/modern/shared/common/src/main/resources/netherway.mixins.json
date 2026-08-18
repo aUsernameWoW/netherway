@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "cn.ripplecraft.netherway.modern.mixin",
+  "mixins": [
+    "ConnectionAccessorMixin",
+    "ServerConnectionInitMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

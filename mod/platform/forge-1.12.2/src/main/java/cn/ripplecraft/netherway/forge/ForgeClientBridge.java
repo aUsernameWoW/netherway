@@ -1,0 +1,330 @@
+package cn.ripplecraft.netherway.forge;
+
+import cn.ripplecraft.netherway.core.ClientBridge;
+import cn.ripplecraft.netherway.core.L10n;
+import cn.ripplecraft.netherway.core.ServerCandidates;
+import net.minecraftforge.fml.common.network.FMLEventChannel;
+import net.minecraftforge.fml.common.network.internal.FMLProxyPacket;
+import io.netty.buffer.Unpooled;
+import java.io.File;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.nio.file.Path;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiMainMenu;
+import net.minecraft.client.gui.GuiMultiplayer;
+import net.minecraft.client.multiplayer.GuiConnecting;
+import net.minecraft.client.multiplayer.ServerAddress;
+import net.minecraft.client.multiplayer.ServerData;
+import net.minecraft.client.multiplayer.WorldClient;
+import net.minecraft.network.NetworkManager;
+import net.minecraft.util.text.TextComponentString;
+import net.minecraft.util.text.TextFormatting;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+/**
+ * {@link ClientBridge} 的 Forge 1.12.2 实现——整个 mod 里唯一
+ * 大量触碰 Minecraft 客户端类的地方。
+ *
+ * <p>主线程派发用 tick 队列而不是 {@code Minecraft.addScheduledTask}：
+ * 与 1.7.10 平台层保持同一写法，行为差异只会出在一处，
+ * 由 {@link ClientEvents#onClientTick} 每 tick 开头排空。
+ */
+public final class ForgeClientBridge implements ClientBridge {
+
+    private static final Logger LOG = LogManager.getLogger(Netherway.MODID);
+    /** 回环目标正常只需数 tick；这里留足慢机器启动网络栈的余量。 */
+    private static final long REDIRECT_TIMEOUT_NANOS = 30L * 1000L * 1000L * 1000L;
+
+    private final ConcurrentLinkedQueue<Runnable> tasks = new ConcurrentLinkedQueue<Runnable>();
+    private final FMLEventChannel channel;
+    private final boolean verboseLog;
+
+    /** 升级重定向的目标端口；0 表示当前没有进行中的重定向。 */
+    private volatile int redirectPort;
+
+    /**
+     * 最近一次收到 connected 事件的连接。Forge 的 connected/disconnected
+     * 事件可能交错到达，不能用一个布尔标志猜某次断开属于旧连接还是新连接。
+     */
+    private NetworkManager activeManager;
+
+    /** 本轮切换发起时的旧连接；只在等待目标连接期间保留。 */
+    private NetworkManager redirectOriginManager;
+
+    /** {@link System#nanoTime()} 时间基准上的切换截止时刻。 */
+    private long redirectDeadlineNanos;
+
+    /**
+     * 发起切换时玩家所在服务器的地址。{@code loadWorld(null)} 会连带清掉
+     * {@code currentServerData}（见 {@link #currentServerAddress}），而切换
+     * 落地后服务端还会重发一次凭证、需要这个地址补会合点——所以在清掉之前
+     * 存一份。只在重定向的生命周期内有效：新连接被识别为与切换无关时立即
+     * 作废，绝不能拿 A 服的地址去补 B 服的凭证。
+     */
+    private volatile ServerCandidates.Address switchOrigin;
+
+    public ForgeClientBridge(FMLEventChannel channel, boolean verboseLog) {
+        this.channel = channel;
+        this.verboseLog = verboseLog;
+    }
+
+    @Override
+    public void runOnGameThread(Runnable task) {
+        tasks.add(task);
+    }
+
+    /** 每个客户端 tick 开头由 {@link ClientEvents} 调用。 */
+    void drainTasks() {
+        Runnable task;
+        while ((task = tasks.poll()) != null) {
+            try {
+                task.run();
+            } catch (RuntimeException e) {
+                LOG.warn(L10n.tr("fbridge.taskFailed"), e);
+            }
+        }
+    }
+
+    enum ConnectResult {
+        ORDINARY,
+        REDIRECT_LANDED,
+        REDIRECT_MISSED
+    }
+
+    enum DisconnectResult {
+        ACTIVE,
+        STALE,
+        REDIRECT_ORIGIN
+    }
+
+    /**
+     * 新连接建立时由 {@link ClientEvents} 调用：
+     * 同时更新当前活动 manager，并判断它是否为本轮重定向目标。
+     *
+     * <p>目标连接可能先报 connected，旧连接之后才报 disconnected。先把
+     * {@link #activeManager} 换成目标 manager，迟到的旧断开就会被识别为
+     * {@link DisconnectResult#STALE}，不会误停刚落地的 agent。
+     */
+    synchronized ConnectResult connectionOpened(NetworkManager manager) {
+        int expected = redirectPort;
+        if (expected == 0) {
+            // 玩家自己发起的连接：切换前记住的地址（若有残留）已经过时
+            activeManager = manager;
+            switchOrigin = null;
+            return ConnectResult.ORDINARY;
+        }
+
+        boolean landed = isRedirectTarget(manager, expected);
+        SocketAddress remote = manager == null ? null : manager.getRemoteAddress();
+        activeManager = manager;
+        clearRedirectTracking();
+        if (landed) {
+            debug(L10n.tr("fbridge.redirectLanded", remote));
+            return ConnectResult.REDIRECT_LANDED;
+        }
+
+        switchOrigin = null;
+        debug(L10n.tr("fbridge.redirectMissed", remote, expected));
+        return ConnectResult.REDIRECT_MISSED;
+    }
+
+    /**
+     * 断开事件按 manager 身份归类。等待目标期间，旧 manager 的断开只表示
+     * 切换按计划推进。目标 manager 在 connected 以前无法可靠取得，因此其
+     * 他 manager 不能冒充失败信号——它也可能是更旧连接的迟到事件；统一交给
+     * 三十秒 timeout 收口。没有切换时，只有活动 manager 的断开才是真正退出。
+     */
+    synchronized DisconnectResult connectionClosed(NetworkManager manager) {
+        if (redirectPort != 0) {
+            if (manager != null && (manager == redirectOriginManager
+                    || manager == activeManager)) {
+                if (activeManager == manager) {
+                    activeManager = null;
+                }
+                return DisconnectResult.REDIRECT_ORIGIN;
+            }
+
+            return DisconnectResult.STALE;
+        }
+
+        if (manager != null && manager == activeManager) {
+            activeManager = null;
+            switchOrigin = null;
+            return DisconnectResult.ACTIVE;
+        }
+        return DisconnectResult.STALE;
+    }
+
+    /** tick 上的有界兜底；返回 true 只发生一次，由事件层完成 controller 收口。 */
+    synchronized boolean redirectTimedOut() {
+        if (redirectPort == 0 || System.nanoTime() - redirectDeadlineNanos < 0L) {
+            return false;
+        }
+        int expected = redirectPort;
+        clearRedirectTracking();
+        switchOrigin = null;
+        debug(L10n.tr("fbridge.redirectTimeout", expected));
+        return true;
+    }
+
+    private static boolean isRedirectTarget(NetworkManager manager, int expectedPort) {
+        SocketAddress remote = manager == null ? null : manager.getRemoteAddress();
+        if (!(remote instanceof InetSocketAddress)) {
+            return false;
+        }
+        InetSocketAddress addr = (InetSocketAddress) remote;
+        return addr.getPort() == expectedPort
+                && addr.getAddress() != null
+                && addr.getAddress().isLoopbackAddress();
+    }
+
+    private void clearRedirectTracking() {
+        redirectPort = 0;
+        redirectOriginManager = null;
+        redirectDeadlineNanos = 0L;
+    }
+
+    @Override
+    public void connectTo(String host, int port) {
+        debug(L10n.tr("fbridge.connectTo", host, port));
+        // 下面的 loadWorld(null) 会把 currentServerData 清成 null（退出世界
+        // 分支的连带动作），之后就再也推导不出玩家原来连的是哪台服务器——
+        // 而重定向落地后服务端还会重发一次凭证需要它。必须赶在清掉之前存好。
+        ServerCandidates.Address origin = currentServerAddress();
+        // 跟踪必须在断开动作之前立起来：断开事件在 netty 线程异步到达。
+        // manager 身份能覆盖两种合法顺序：旧断开→新连接，以及新连接→旧断开。
+        synchronized (this) {
+            redirectPort = port;
+            redirectOriginManager = activeManager;
+            redirectDeadlineNanos = System.nanoTime() + REDIRECT_TIMEOUT_NANOS;
+            switchOrigin = origin;
+        }
+
+        try {
+            Minecraft mc = Minecraft.getMinecraft();
+            WorldClient world = mc.world;
+            if (world != null) {
+                world.sendQuittingDisconnectingPacket();
+            }
+            mc.loadWorld((WorldClient) null);
+            mc.displayGuiScreen(new GuiConnecting(
+                    new GuiMultiplayer(new GuiMainMenu()), mc, host, port));
+        } catch (RuntimeException e) {
+            // controller 会在上层把 redirectPending 记为失败；bridge 自己也必须
+            // 同步撤销 tracker，不能让接下来 30 秒的普通连接被误认作旧重定向。
+            synchronized (this) {
+                clearRedirectTracking();
+                switchOrigin = null;
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 玩家当前正在连的服务器地址，取自 {@code Minecraft.currentServerData}
+     * ——也就是他在服务器列表里选中并填写的那一条，而不是当前 socket 的对端。
+     *
+     * <p>这个区分是必需的：升级成功后我们会把玩家重连到本机回环，服务端随后
+     * 还会再下发一次凭证，若用对端地址补凭证就会把回环写进缓存。
+     *
+     * <p><b>切换之后 currentServerData 是 null</b>：{@link #connectTo} 里的
+     * {@code loadWorld(null)} 走到「退出世界」分支时会连带
+     * {@code setServerData(null)}（GuiConnecting 的 (host, port) 构造函数
+     * 自己也会再调一次 loadWorld(null)）——曾经以为「不带 ServerData 的
+     * 构造函数不碰它、切换后天然还在」，2026-08-09 实测证明是错的。
+     * 所以推导失败时回退到 {@link #switchOrigin}：connectTo 在清掉之前
+     * 存下的原服务器地址，且只在本次重定向的生命周期内有效。
+     *
+     * <p>仍然显式挡掉回环：玩家也可能是从直连条目（{@link DirectServerEntry}
+     * 写进服务器列表的 {@code 127.0.0.1:<预热端口>}）进服的，那一条的地址
+     * 推导不出真实服务器，按接口契约返回 null 更诚实。
+     *
+     * <p>端口用 {@code ServerAddress} 解析，它会做 SRV 记录查询——玩家填的
+     * 域名可能没写端口而由 SRV 指向别处，这是 Minecraft 自己的解析规则，
+     * 照搬即可，不要自己拆冒号。
+     */
+    @Override
+    public ServerCandidates.Address currentServerAddress() {
+        Minecraft mc = Minecraft.getMinecraft();
+        ServerData data = mc.getCurrentServerData();
+        if (data == null || data.serverIP == null || data.serverIP.isEmpty()) {
+            return switchOrigin;
+        }
+        try {
+            ServerAddress parsed = ServerAddress.fromString(data.serverIP);
+            String host = parsed.getIP();
+            if (host == null || host.isEmpty() || isLoopback(host)) {
+                return switchOrigin;
+            }
+            return ServerCandidates.Address.of(host, parsed.getPort());
+        } catch (RuntimeException e) {
+            LOG.debug(L10n.tr("fbridge.parseServerFailed", data.serverIP), e);
+            return switchOrigin;
+        }
+    }
+
+    /**
+     * 只按字面判断，不做 DNS 解析：这个方法可能在网络线程上被调用，
+     * 而这里只是想挡掉直连条目那种明显的回环写法。
+     */
+    private static boolean isLoopback(String host) {
+        String h = host.trim().toLowerCase(java.util.Locale.ROOT);
+        return h.equals("localhost") || h.equals("::1") || h.startsWith("127.");
+    }
+
+    @Override
+    public void notifyPlayer(String message) {
+        Minecraft mc = Minecraft.getMinecraft();
+        if (mc.player != null) {
+            mc.player.sendMessage(new TextComponentString(
+                    TextFormatting.GREEN + L10n.tr("chat.prefix")
+                            + TextFormatting.RESET + message));
+        }
+    }
+
+    @Override
+    public void sendToServer(final byte[] payload) {
+        // 升级线程会调进来，经 tick 队列转到主线程再发；
+        // 没有连接时安静丢弃——回执是尽力而为的诊断信息
+        runOnGameThread(new Runnable() {
+            @Override
+            public void run() {
+                if (Minecraft.getMinecraft().getConnection() == null) {
+                    debug(L10n.tr("fbridge.noConnection"));
+                    return;
+                }
+                channel.sendToServer(new FMLProxyPacket(new net.minecraft.network.PacketBuffer(
+                        Unpooled.wrappedBuffer(payload)), Netherway.CHANNEL));
+            }
+        });
+    }
+
+    @Override
+    public Path cacheDirectory() {
+        return new File(Minecraft.getMinecraft().gameDir, "netherway").toPath();
+    }
+
+    @Override
+    public void info(String message) {
+        LOG.info(message);
+    }
+
+    @Override
+    public void warn(String message, Throwable error) {
+        LOG.warn(message, error);
+    }
+
+    @Override
+    public void debug(String message) {
+        // 默认的 log4j 配置不显示 DEBUG 级别，verbose 时提到 INFO，
+        // 让玩家不用动日志配置就能看到完整的打洞过程
+        if (verboseLog) {
+            LOG.info(message);
+        } else {
+            LOG.debug(message);
+        }
+    }
+}

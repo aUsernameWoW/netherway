@@ -1,0 +1,35 @@
+architectury {
+    common(rootProject.enabled_platforms.split(","))
+}
+
+dependencies {
+    // Mixin/annotation 处理在各平台子项目里由 loom 接线；common 只需编译期可见
+    compileOnly "org.spongepowered:mixin:0.8.5"
+}
+
+// core（零依赖纯 Java）与 modern/shared 的公共源码以源码形式编入 common，
+// 再由 architectury 的 transform 分发进 Forge/Fabric 产物——单一真源，
+// 不发布中间构件。
+sourceSets.main.java.srcDir "../../../../core/src/main/java"
+sourceSets.main.java.srcDir "../../shared/common/src/main/java"
+sourceSets.main.resources.srcDir "../../shared/common/src/main/resources"
+
+// 本工作区（1.20.1）自带的版本覆盖源码就在 common/src/main/java，无需额外声明。
+
+// mixin json 无 ${version} 占位，无需 expand；loader 元数据（fabric.mod.json /
+// mods.toml）的版本替换在各自子项目的 processResources 里做。common 只负责把
+// agent 二进制与许可证文本随资源分发（经 architectury transform 进两个产物）。
+def nativesDir = rootProject.file("../../../build/natives")
+
+processResources {
+    from(rootProject.file("../../../../THIRD-PARTY-NOTICES.md")) { into "META-INF" }
+    from(rootProject.file("../../../../LICENSE")) { into "META-INF" }
+    if (nativesDir.isDirectory()) {
+        from(nativesDir) { into "natives" }
+    } else {
+        doFirst {
+            logger.warn("警告: {} 不存在，jar 将不含 agent 二进制（先运行 mod/build-natives.sh）",
+                    nativesDir)
+        }
+    }
+}
