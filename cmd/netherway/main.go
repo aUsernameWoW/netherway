@@ -18,6 +18,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/aUsernameWoW/netherway/internal/backend/frpxtcp"
+	"github.com/aUsernameWoW/netherway/internal/backend/goncp2p"
 	"github.com/aUsernameWoW/netherway/internal/config"
 	"github.com/aUsernameWoW/netherway/internal/i18n"
 	"github.com/aUsernameWoW/netherway/internal/stunpick"
@@ -101,8 +103,25 @@ func cmdServe(args []string) error {
 	proxyProtocol := fs.String("proxy-protocol", "", i18n.T("flag.serve.proxyProtocol"))
 	rendezvousPort := fs.Int("rendezvous", 0, i18n.T("flag.serve.rendezvous"))
 	signingKey := fs.String("signing-key", "", i18n.T("flag.serve.signingKey"))
+	backendName := fs.String("backend", frpxtcp.Name, i18n.T("flag.serve.backend"))
+	params := paramFlags{}
+	fs.Var(params, "O", i18n.T("flag.serve.param"))
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *backendName == goncp2p.Name {
+		// gonc-p2p publish path: no frps, no rendezvous, no per-player token
+		// layer — the MQTT brokers are the rendezvous and the session key is
+		// the whole admission story (same params the server hands out in
+		// credentials; Java side composes them in ServeCommand).
+		if *rendezvousPort != 0 {
+			return i18n.Errorf("serve.goncRendezvous")
+		}
+		ctx, stop := signalContext()
+		defer stop()
+		fmt.Println(i18n.T("serve.goncPublish", *localPort))
+		return goncp2p.Serve(ctx, params, *localPort, os.Stdout,
+			func(f string, a ...any) { fmt.Printf(f+"\n", a...) })
 	}
 	if *rendezvousPort != 0 {
 		return serveEmbedded(ep, room, *localPort, *rendezvousPort,

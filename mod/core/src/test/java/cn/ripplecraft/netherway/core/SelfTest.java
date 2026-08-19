@@ -44,6 +44,8 @@ public final class SelfTest {
         testCredentialsHidesSecrets();
         testCredentialsDedupKey();
         testFrpXtcpParamKeys();
+        testGoncP2pCredentials();
+        testServeCommandGoncP2p();
         testUpgradeReportRoundTrip();
         testUpgradeReportSanitizes();
         testUpgradeReportForwardCompat();
@@ -677,6 +679,83 @@ public final class SelfTest {
                 Credentials.frpXtcpParamKeys().equals(c.params().keySet()));
         check("契约键集含 secret", Credentials.frpXtcpParamKeys().contains("secret"));
         check("契约键集不含 key", !Credentials.frpXtcpParamKeys().contains("key"));
+    }
+
+    // ---------- gonc-p2p ----------
+
+    private static void testGoncP2pCredentials() throws Exception {
+        Credentials full = Credentials.goncP2p("KEY", "survival",
+                "tcp://a:1883,tcp://b:1883", "udp://s:3478", "any", 20000);
+        check("gonc 契约键集与全参工厂一致",
+                Credentials.goncP2pParamKeys().equals(full.params().keySet()));
+        check("gonc 契约键含 sessionKey",
+                Credentials.goncP2pParamKeys().contains("sessionKey"));
+        check("gonc 契约键含 room", Credentials.goncP2pParamKeys().contains("room"));
+
+        Credentials decoded = Credentials.decode(full.encode());
+        check("gonc 凭证往返 backend",
+                Credentials.BACKEND_GONC_P2P.equals(decoded.backendId()));
+        check("gonc 凭证往返参数", decoded.params().equals(full.params()));
+        check("gonc 凭证往返超时", decoded.punchTimeoutMs() == 20000);
+
+        Credentials minimal = Credentials.goncP2p("KEY", "survival", null, "", null, 0);
+        check("gonc 可选参数为空时省略",
+                minimal.params().keySet().equals(
+                        new java.util.LinkedHashSet<String>(
+                                java.util.Arrays.asList("sessionKey", "room"))));
+        // broker 就是会合点，这类凭证不需要、也绝不能被补上服务器地址
+        check("gonc 凭证不缺会合点地址", !minimal.needsRendezvousAddress());
+        Credentials touched = minimal.rendezvousAt("example.com", 25565);
+        check("gonc 凭证不被 rendezvousAt 改写",
+                touched.params().equals(minimal.params()));
+        check("gonc toString 不含密钥值", !full.toString().contains("KEY"));
+
+        boolean threw = false;
+        try {
+            Credentials.goncP2p("", "survival", null, null, null, 0);
+        } catch (IllegalArgumentException e) {
+            threw = true;
+        }
+        check("gonc 空 sessionKey 应拒绝", threw);
+    }
+
+    private static void testServeCommandGoncP2p() {
+        java.util.Map<String, String> params = new java.util.LinkedHashMap<String, String>();
+        params.put("sessionKey", "SUPER_SESSION_KEY");
+        params.put("room", "survival");
+        params.put("brokers", "tcp://a:1883");
+
+        List<String> cmd = ServeCommand.build(Paths.get("/srv/netherway"),
+                Credentials.BACKEND_GONC_P2P, params, 25570,
+                new ServeCommand.Options()
+                        .metaToken("IGNORED").proxyProtocol("v1")
+                        .rendezvousPort(63333).signingKey("IGNORED"));
+        check("gonc serve 子命令", "serve".equals(cmd.get(1)));
+        int backend = cmd.indexOf("-backend");
+        check("gonc serve 带 -backend",
+                backend >= 0 && Credentials.BACKEND_GONC_P2P.equals(cmd.get(backend + 1)));
+        check("gonc serve 参数经 -O 透传", cmd.contains("sessionKey=SUPER_SESSION_KEY")
+                && cmd.contains("room=survival") && cmd.contains("brokers=tcp://a:1883"));
+        int port = cmd.indexOf("-port");
+        check("gonc serve 本地端口", port >= 0 && "25570".equals(cmd.get(port + 1)));
+        // frp 专属选项对 gonc-p2p 无意义，必须整组忽略
+        check("gonc serve 忽略 frp 专属旗标", !cmd.contains("-rendezvous")
+                && !cmd.contains("-meta-token") && !cmd.contains("-proxy-protocol")
+                && !cmd.contains("-signing-key"));
+
+        String desc = ServeCommand.describe(cmd);
+        check("gonc serve 描述不含 sessionKey 值", !desc.contains("SUPER_SESSION_KEY"));
+        check("gonc serve 描述保留键名", desc.contains("sessionKey=***"));
+        check("gonc serve 描述保留房间", desc.contains("room=survival"));
+
+        // 同一入口对 frp-xtcp 仍走老组装（回归保护）
+        java.util.Map<String, String> frp = new java.util.LinkedHashMap<String, String>();
+        frp.put("server", "frps.example.com");
+        frp.put("room", "test");
+        List<String> frpCmd = ServeCommand.build(Paths.get("/srv/netherway"),
+                Credentials.BACKEND_FRP_XTCP, frp, 25570, new ServeCommand.Options());
+        check("backend 入口对 frp 走旗标组装", frpCmd.contains("-server")
+                && !frpCmd.contains("-backend") && !frpCmd.contains("-O"));
     }
 
     // ---------- UpgradeReport ----------

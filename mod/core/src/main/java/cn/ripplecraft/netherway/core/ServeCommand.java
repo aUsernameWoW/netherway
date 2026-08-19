@@ -64,6 +64,37 @@ public final class ServeCommand {
     }
 
     /**
+     * 按 backend 组装 serve 命令行。frp-xtcp 走专属旗标（历史契约）；
+     * gonc-p2p 走通用的 {@code -backend}+{@code -O}，参数表原样透传——
+     * 与凭证同源这条纪律对两种 backend 同样成立。
+     *
+     * <p>{@link Options} 里的 frp 专属项（meta token、会合点、签发密钥、
+     * PROXY protocol）对 gonc-p2p 无意义，静默忽略；平台层不必按 backend
+     * 分支组装。
+     */
+    public static List<String> build(Path exe, String backendId, Map<String, String> params,
+                                     int localPort, Options opts) {
+        if (Credentials.BACKEND_GONC_P2P.equals(backendId)) {
+            List<String> cmd = new ArrayList<String>();
+            cmd.add(exe.toAbsolutePath().toString());
+            cmd.add("serve");
+            cmd.add("-backend");
+            cmd.add(Credentials.BACKEND_GONC_P2P);
+            for (Map.Entry<String, String> e : params.entrySet()) {
+                if (e.getValue() == null || e.getValue().isEmpty()) {
+                    continue;
+                }
+                cmd.add("-O");
+                cmd.add(e.getKey() + "=" + e.getValue());
+            }
+            cmd.add("-port");
+            cmd.add(Integer.toString(localPort));
+            return cmd;
+        }
+        return build(exe, params, localPort, opts);
+    }
+
+    /**
      * 由 frp-xtcp 参数表组装 serve 命令行。
      *
      * <p>与 backend 契约同一纪律：无法识别的键直接忽略；缺失的键不传旗标，
@@ -129,6 +160,7 @@ public final class ServeCommand {
      * 供日志输出的命令行描述。serve 的旗标语义已知，只需抹掉真正敏感的
      * {@code -token}、{@code -secret} 与 {@code -signing-key}；服务器地址、
      * 房间名与会合点端口保留——排查「注册到哪去了」正需要它们。
+     * {@code -O} 形式的参数按键名判断：密钥类只留键名，其余原样保留。
      */
     public static String describe(List<String> cmd) {
         StringBuilder sb = new StringBuilder();
@@ -142,6 +174,17 @@ public final class ServeCommand {
                     || "-signing-key".equals(arg))
                     && i + 1 < cmd.size()) {
                 sb.append(" ***");
+                i++;
+            } else if ("-O".equals(arg) && i + 1 < cmd.size()) {
+                String kv = cmd.get(i + 1);
+                int eq = kv.indexOf('=');
+                String key = eq > 0 ? kv.substring(0, eq) : kv;
+                if ("sessionKey".equals(key) || "secret".equals(key)
+                        || "token".equals(key) || Credentials.PARAM_USER_TOKEN.equals(key)) {
+                    sb.append(' ').append(key).append("=***");
+                } else {
+                    sb.append(' ').append(kv);
+                }
                 i++;
             }
         }

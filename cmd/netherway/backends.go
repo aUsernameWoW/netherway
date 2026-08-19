@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/aUsernameWoW/netherway/internal/backend"
 	"github.com/aUsernameWoW/netherway/internal/backend/frpxtcp"
+	"github.com/aUsernameWoW/netherway/internal/backend/goncp2p"
 )
 
 // 这里是 backend 的唯一注册点：新增一种隧道方案 = 一个实现包 + 这里一行。
@@ -12,4 +13,5 @@ import (
 // 没编译进来的 backend 自然就不可选。
 func init() {
 	backend.Register(frpxtcp.New())
+	backend.Register(goncp2p.New())
 }

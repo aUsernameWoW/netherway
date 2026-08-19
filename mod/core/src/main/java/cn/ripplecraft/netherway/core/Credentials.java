@@ -44,6 +44,9 @@ public final class Credentials {
     /** frp xtcp 打洞 backend 的标识，与 Go 侧 internal/backend/frpxtcp 一致。 */
     public static final String BACKEND_FRP_XTCP = "frp-xtcp";
 
+    /** gonc P2P backend 的标识，与 Go 侧 internal/backend/goncp2p 一致。 */
+    public static final String BACKEND_GONC_P2P = "gonc-p2p";
+
     /** 所有 backend 必填的参数：房间名，用于向玩家展示与重复凭证去重。 */
     public static final String PARAM_ROOM = "room";
 
@@ -159,6 +162,45 @@ public final class Credentials {
      */
     public static java.util.Set<String> frpXtcpParamKeys() {
         return FRP_XTCP_PARAM_KEYS;
+    }
+
+    /**
+     * 构造 gonc P2P 打洞的凭证。
+     *
+     * <p>信令走 MQTT broker，凭证因此<b>不含任何服务器地址</b>——broker 就是
+     * 会合点，{@link #rendezvousAt} 对这种凭证是无操作。sessionKey 一身三职：
+     * 派生 MQTT topic、加密信令、派生 TLS/DTLS 双向认证证书。
+     * 键名与 Go 侧 internal/backend/goncp2p 的参数契约一致。
+     *
+     * @param brokers     可选（null/空 = agent 内置默认），逗号分隔的 broker URL
+     * @param stunServers 可选，逗号分隔的 STUN 地址（gonc 语法，非 frp 的单地址）
+     * @param network     可选，钉死打洞网络（any/tcp4/udp4/…）
+     */
+    public static Credentials goncP2p(String sessionKey, String roomName,
+                                      String brokers, String stunServers, String network,
+                                      int punchTimeoutMs) {
+        Map<String, String> p = new LinkedHashMap<String, String>();
+        p.put("sessionKey", require(sessionKey, "sessionKey"));
+        p.put(PARAM_ROOM, require(roomName, "roomName"));
+        if (brokers != null && !brokers.isEmpty()) {
+            p.put("brokers", brokers);
+        }
+        if (stunServers != null && !stunServers.isEmpty()) {
+            p.put("stunServers", stunServers);
+        }
+        if (network != null && !network.isEmpty()) {
+            p.put("network", network);
+        }
+        return new Credentials(BACKEND_GONC_P2P, p, punchTimeoutMs);
+    }
+
+    /** 从全参工厂产物提取键集，保证与上面的键名字面量永远一致、不会改岔。 */
+    private static final java.util.Set<String> GONC_P2P_PARAM_KEYS =
+            goncP2p("_", "_", "_", "_", "_", 0).params().keySet();
+
+    /** gonc-p2p 契约的全部参数键，用途同 {@link #frpXtcpParamKeys}。 */
+    public static java.util.Set<String> goncP2pParamKeys() {
+        return GONC_P2P_PARAM_KEYS;
     }
 
     private static String require(String v, String name) {

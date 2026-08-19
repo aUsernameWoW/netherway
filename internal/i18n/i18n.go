@@ -207,6 +207,27 @@ authplugin 专有:
 	"flag.serve.signingKey": {
 		"per-player token signing key; only meaningful in embedded-rendezvous mode (same value as the server mod's tokenSigningKey)",
 		"每玩家令牌签发密钥，仅内嵌会合点模式下有意义（与服务端 mod 的 tokenSigningKey 同值）"},
+	"flag.serve.backend": {
+		"tunnel backend to publish with (frp-xtcp or gonc-p2p)",
+		"发布用的隧道 backend（frp-xtcp 或 gonc-p2p）"},
+	"flag.serve.param": {
+		"backend parameter as key=value, repeatable (gonc-p2p only; frp-xtcp keeps its dedicated flags)",
+		"backend 参数 key=value，可重复（仅 gonc-p2p；frp-xtcp 沿用专属旗标）"},
+	"serve.goncPublish": {
+		"publishing local Minecraft port %d over gonc-p2p (MQTT signaling, no rendezvous server)",
+		"经 gonc-p2p 发布本机 Minecraft 端口 %d（MQTT 信令，无会合点服务器）"},
+	"serve.goncRendezvous": {
+		"-rendezvous only applies to the frp-xtcp backend",
+		"-rendezvous 只适用于 frp-xtcp backend"},
+	"serve.goncRetry": {
+		"wait/punch cycle failed: %v; re-arming",
+		"等待/打洞一轮失败: %v；重新武装"},
+	"serve.goncSession": {
+		"player session established (peer %s via %s)",
+		"玩家会话已建立（对端 %s，经 %s）"},
+	"serve.goncSessionEnd": {
+		"player session ended (peer %s)",
+		"玩家会话结束（对端 %s）"},
 	"serve.publish": {
 		"publishing local port %d as room %q (P2P)",
 		"发布本地端口 %d 为房间 %q（P2P）"},
@@ -449,6 +470,41 @@ authplugin 专有:
 	"frpxtcp.withKeys": {
 		"%w (received parameter keys: %s)",
 		"%w（收到的参数键: %s）"},
+
+	// ---- gonc-p2p backend ----
+	"goncp2p.unknownKeys": {
+		"ignoring unknown parameter keys %v (keys gonc-p2p understands: %s)",
+		"忽略未知参数键 %v（gonc-p2p 认识的键: %s）"},
+	"goncp2p.noSessionKey": {
+		"session key is empty: pass parameter %s (the server generates it and hands it out in credentials)",
+		"会话密钥为空：请传参数 %s（由服务端生成并随凭证下发）"},
+	"goncp2p.badNetwork": {
+		"invalid parameter %s: %q (allowed: %s)",
+		"参数 %s 非法: %q（允许: %s）"},
+	"goncp2p.effective": {
+		"effective parameters: %s=%s %s=%s %s=%s %s=%s",
+		"生效参数: %s=%s %s=%s %s=%s %s=%s"},
+	"goncp2p.empty": {
+		"unset",
+		"空"},
+	"goncp2p.set": {
+		"set (%d bytes)",
+		"已设置(%d字节)"},
+	"goncp2p.defaultList": {
+		"(built-in defaults)",
+		"（内置默认列表）"},
+	"goncp2p.retry": {
+		"P2P attempt failed: %v; retrying in %v",
+		"打洞尝试失败: %v；%v 后重试"},
+	"goncp2p.established": {
+		"P2P session established with %s via %s; serving local port %d",
+		"已与 %s 经 %s 建立 P2P 会话；本地端口 %d 开始服务"},
+	"goncp2p.sessionLost": {
+		"tunnel session lost (peer or transport gone)",
+		"隧道会话已断开（对端或传输层消失）"},
+	"goncp2p.logOpenFailed": {
+		"cannot open log file %s: %v; backend diagnostics go to the echo stream only",
+		"无法打开日志文件 %s: %v；backend 诊断只走回显通道"},
 
 	// ---- STUN ----
 	"stun.picked": {

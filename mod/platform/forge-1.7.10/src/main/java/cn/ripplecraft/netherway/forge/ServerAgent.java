@@ -83,7 +83,7 @@ public final class ServerAgent {
             return;
         }
         try {
-            List<String> cmd = ServeCommand.build(exe, config.serverParams(), localPort,
+            List<String> cmd = ServeCommand.build(exe, config.serverBackendId(), config.serverParams(), localPort,
                     new ServeCommand.Options()
                             .metaToken(config.serveAuthToken())
                             .proxyProtocol(config.serveProxyProtocol())

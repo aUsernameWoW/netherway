@@ -86,7 +86,7 @@ public final class QualitySummary {
      * ingest 的 allowed 列表加 wire 值。
      */
     public enum Backend {
-        UNKNOWN("unknown"), FRP_XTCP("frp_xtcp"), OTHER("other");
+        UNKNOWN("unknown"), FRP_XTCP("frp_xtcp"), GONC_P2P("gonc_p2p"), OTHER("other");
         private final String wire;
         Backend(String wire) { this.wire = wire; }
         String wire() { return wire; }
@@ -95,6 +95,7 @@ public final class QualitySummary {
         public static Backend fromBackendId(String backendId) {
             if (backendId == null || backendId.isEmpty()) return UNKNOWN;
             if ("frp-xtcp".equals(backendId)) return FRP_XTCP;
+            if ("gonc-p2p".equals(backendId)) return GONC_P2P;
             return OTHER;
         }
     }
