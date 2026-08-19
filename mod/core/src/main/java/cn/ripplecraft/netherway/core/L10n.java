@@ -947,14 +947,17 @@ public final class L10n {
                         + "When on, the mod installs a sniffing header stripper on the server network "
                         + "pipeline, so login logs and bans\n"
                         + "see the player's real source address instead of 127.0.0.1.\n"
-                        + "Current frp only sends the header on the stcp relay path; xtcp P2P streams "
-                        + "pick this up once upstream supports it.\n"
+                        + "Backend gonc-p2p carries the real player address today (serve injects the "
+                        + "punched peer address itself).\n"
+                        + "On frp-xtcp only the stcp relay path currently sends the header; xtcp P2P "
+                        + "streams pick this up once upstream supports it.\n"
                         + "With runAgent=false, pass the same -proxy-protocol flag to the standalone "
                         + "serve yourself",
                 "让隧道进程连本地 MC 端口前先发 PROXY protocol 头（填 v1 或 v2，留空关闭）。\n"
                         + "开启后本 mod 会给服务端接入链装嗅探式剥头组件，登录日志与封禁\n"
                         + "看到的是玩家真实来源地址而不是 127.0.0.1。\n"
-                        + "当前 frp 只有 stcp 中转路径实际带头，xtcp 的 P2P 流等上游支持后自动生效。\n"
+                        + "gonc-p2p backend 现在就能透传真实玩家地址（serve 自行注入打洞对端地址）。\n"
+                        + "frp-xtcp 下当前只有 stcp 中转路径实际带头，xtcp 的 P2P 流等上游支持后自动生效。\n"
                         + "runAgent=false 时须给独立运行的 serve 手动加同值的 -proxy-protocol 旗标");
         def("cfg.server.preauth",
                 "Let players obtain direct-connection credentials on the Minecraft port before joining "

@@ -102,7 +102,7 @@ func TestMuxGlue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go serveSession(ctx, serverEnd, mcPort, io.Discard)
+	go serveSession(ctx, serverEnd, mcPort, nil, io.Discard)
 
 	bindLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -37,9 +37,13 @@ public final class ServeCommand {
         }
 
         /**
-         * PROXY protocol 版本（"v1"/"v2"，对应 {@code -proxy-protocol}）。
-         * 开了就意味着 MC 服务端必须装着剥头组件（本 mod 的平台层负责），
-         * 值与配置键 {@code server.proxyProtocol} 同源。
+         * PROXY protocol version ("v1"/"v2", flag {@code -proxy-protocol});
+         * same value as the cfg key {@code server.proxyProtocol}. Applies to
+         * both backends: turning it on means the MC side must strip the
+         * header (this mod's platform layer does). Under gonc-p2p serve
+         * itself injects the punched peer's address, so the MC server sees
+         * the real player IP; under frp-xtcp the header is frp's to send and
+         * current xtcp P2P streams never carry one (fatedier/frp#2748).
          */
         public Options proxyProtocol(String v) {
             this.proxyProtocol = v;
@@ -68,9 +72,9 @@ public final class ServeCommand {
      * gonc-p2p 走通用的 {@code -backend}+{@code -O}，参数表原样透传——
      * 与凭证同源这条纪律对两种 backend 同样成立。
      *
-     * <p>{@link Options} 里的 frp 专属项（meta token、会合点、签发密钥、
-     * PROXY protocol）对 gonc-p2p 无意义，静默忽略；平台层不必按 backend
-     * 分支组装。
+     * <p>{@link Options} 里的 frp 专属项（meta token、会合点、签发密钥）
+     * 对 gonc-p2p 无意义，静默忽略；PROXY protocol 两种 backend 都转发。
+     * 平台层不必按 backend 分支组装。
      */
     public static List<String> build(Path exe, String backendId, Map<String, String> params,
                                      int localPort, Options opts) {
@@ -89,6 +93,10 @@ public final class ServeCommand {
             }
             cmd.add("-port");
             cmd.add(Integer.toString(localPort));
+            if (opts.proxyProtocol != null && !opts.proxyProtocol.isEmpty()) {
+                cmd.add("-proxy-protocol");
+                cmd.add(opts.proxyProtocol);
+            }
             return cmd;
         }
         return build(exe, params, localPort, opts);

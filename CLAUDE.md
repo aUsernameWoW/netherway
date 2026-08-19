@@ -69,7 +69,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.nethe
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 530 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 552 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -197,8 +197,9 @@ cs=tls 路径），其上跑 smux——每条 MC 连接一个 stream，两端都
   `Credentials.goncP2p`。
 - 服务端跑 `serve -backend gonc-p2p -O k=v … -port <MC端口>`；
   `ServeCommand.build` 按 backendId 分岔，frp 专属选项（meta-token/
-  rendezvous/signing-key/proxy-protocol）静默忽略。`sessionKey=auto` 与
-  `secret=auto` 同构（ModConfig 生成、重启轮换）。
+  rendezvous/signing-key）静默忽略，`-proxy-protocol` 两种 backend 都
+  转发。`sessionKey=auto` 与 `secret=auto` 同构（ModConfig 生成、重启
+  轮换）。
 - **frp 专属机制整组不适用**，ModConfig 强制关闭并告警/提示：
   `rendezvous` 按关闭处理（info）、`tokenSigningKey` 置空（warn，两条
   下发路径都不再附 user/userToken）；嗅探器的 TLS 转发分支自然不触发。
@@ -210,15 +211,21 @@ cs=tls 路径），其上跑 smux——每条 MC 连接一个 stream，两端都
 - smux 陷阱：传输层 read error 只关未导出的错误通道，`IsClosed()`/
   `CloseChan()` 要等 keepalive 超时（30s）才翻转；硬错误的即时检测靠
   挂一个 `AcceptStream`（wait 侧永不开流，它只在会话死亡时返回）。
-- PROXY protocol 暂未接：serve 的 gonc 分支忽略该旗标，MC 侧嗅探剥头
-  对无头流量本就安全。punched 对端地址已知，将来可在 serve 拨 MC 前
-  注入 v1/v2 头，把真实玩家 IP 透传给 MC 服务端（frp xtcp 至今给不了）。
+- PROXY protocol 已接通（gonc 模式独有的能力）：`serve -backend gonc-p2p
+  -proxy-protocol v1|v2` 时，serve 在每条拨向 MC 端口的回环连接前注入
+  头（src = 打洞对端公网地址——一会话一玩家，这就是玩家地址；dst = 与
+  src 同族的回环 + MC 端口，v1 禁止混族；打洞走 UDP 时头仍声明 TCP，
+  描述的是交给 MC 的字节流）。头由 pires/go-proxyproto（frp 同款库）
+  组装、每会话构建一次；对端地址解析失败则该会话不带头继续（降级安全，
+  MC 侧嗅探剥头对无头流量本就安全）。frp xtcp 至今给不了真实玩家 IP
+  （fatedier/frp#2748）。Go 侧 `TestProxyHeader` 与 Java 侧 SelfTest 的
+  剥头向量钉住同一组字节。
 
 ### Go agent 的运行模式
 
 | 子命令 | 用途 | 关键差异 |
 |---|---|---|
-| `serve` | 服务器宿主机 | 默认注册 xtcp 代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand`；`-meta-token` 向 authplugin 表明身份；`-rendezvous` 启用内嵌会合点（见下节）；`-backend gonc-p2p` 时改跑 gonc 的 wait 循环（`goncp2p.Serve`），frp 旗标不适用 |
+| `serve` | 服务器宿主机 | 默认注册 xtcp 代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand`；`-meta-token` 向 authplugin 表明身份；`-rendezvous` 启用内嵌会合点（见下节）；`-backend gonc-p2p` 时改跑 gonc 的 wait 循环（`goncp2p.Serve`），frp 旗标不适用（`-proxy-protocol` 例外，两种 backend 都支持） |
 | `tunnel` | 供 mod 调用 | **经 backend 抽象、无兜底**，超时即退出，stdout 输出 JSON |
 | `authplugin` | frps 宿主机 | frps 的 HTTP server plugin：Login 校验每玩家令牌，NewProxy 只放行静态令牌（serve）；`-allow-legacy` 是迁移开关。内嵌会合点模式下不必独立部署，`internal/rendezvous` 会在回环上自带一份 |
 

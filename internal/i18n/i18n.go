@@ -219,6 +219,12 @@ authplugin 专有:
 	"serve.goncRendezvous": {
 		"-rendezvous only applies to the frp-xtcp backend",
 		"-rendezvous 只适用于 frp-xtcp backend"},
+	"serve.goncProxyProtocolOn": {
+		"PROXY protocol %s enabled: each player session's punched peer address is passed to the MC server in the header; the MC side must strip it, or players cannot connect",
+		"PROXY protocol %s 已启用：每个玩家会话的打洞对端地址将随头透传给 MC 服务端；确保 MC 侧装有剥头组件，否则玩家会连不上"},
+	"serve.goncProxyHeaderSkip": {
+		"cannot build a PROXY header from peer address %q: %v; serving this session without one (the MC side will see 127.0.0.1)",
+		"无法由对端地址 %q 组装 PROXY 头: %v；本会话不带头继续（MC 侧将看到 127.0.0.1）"},
 	"serve.goncRetry": {
 		"wait/punch cycle failed: %v; re-arming",
 		"等待/打洞一轮失败: %v；重新武装"},

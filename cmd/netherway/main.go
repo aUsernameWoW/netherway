@@ -117,10 +117,17 @@ func cmdServe(args []string) error {
 		if *rendezvousPort != 0 {
 			return i18n.Errorf("serve.goncRendezvous")
 		}
+		if err := checkProxyProtocol(*proxyProtocol); err != nil {
+			return err
+		}
 		ctx, stop := signalContext()
 		defer stop()
 		fmt.Println(i18n.T("serve.goncPublish", *localPort))
-		return goncp2p.Serve(ctx, params, *localPort, os.Stdout,
+		if *proxyProtocol != "" {
+			fmt.Println(i18n.T("serve.goncProxyProtocolOn", *proxyProtocol))
+		}
+		return goncp2p.Serve(ctx, params, *localPort,
+			goncp2p.ServeOptions{ProxyProtocol: *proxyProtocol}, os.Stdout,
 			func(f string, a ...any) { fmt.Printf(f+"\n", a...) })
 	}
 	if *rendezvousPort != 0 {

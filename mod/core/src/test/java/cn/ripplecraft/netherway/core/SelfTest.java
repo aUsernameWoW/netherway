@@ -738,10 +738,16 @@ public final class SelfTest {
                 && cmd.contains("room=survival") && cmd.contains("brokers=tcp://a:1883"));
         int port = cmd.indexOf("-port");
         check("gonc serve 本地端口", port >= 0 && "25570".equals(cmd.get(port + 1)));
-        // frp 专属选项对 gonc-p2p 无意义，必须整组忽略
+        // frp-exclusive options are meaningless under gonc-p2p and must be
+        // dropped as a group; proxy protocol is NOT one of them — gonc serve
+        // injects the punched peer address itself, so the flag goes through.
         check("gonc serve 忽略 frp 专属旗标", !cmd.contains("-rendezvous")
-                && !cmd.contains("-meta-token") && !cmd.contains("-proxy-protocol")
-                && !cmd.contains("-signing-key"));
+                && !cmd.contains("-meta-token") && !cmd.contains("-signing-key"));
+        int pp = cmd.indexOf("-proxy-protocol");
+        check("gonc serve 转发 proxy protocol", pp >= 0 && "v1".equals(cmd.get(pp + 1)));
+        List<String> noPp = ServeCommand.build(Paths.get("/srv/netherway"),
+                Credentials.BACKEND_GONC_P2P, params, 25570, new ServeCommand.Options());
+        check("gonc serve 未开 proxy protocol 不带旗标", !noPp.contains("-proxy-protocol"));
 
         String desc = ServeCommand.describe(cmd);
         check("gonc serve 描述不含 sessionKey 值", !desc.contains("SUPER_SESSION_KEY"));
