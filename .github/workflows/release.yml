@@ -1,6 +1,8 @@
 # 正式发布只由已经存在的 SemVer tag 触发。它先复用 build.yml 的完整门禁，
-# 再下载那次构建产生的同一个原始 JAR，签发 provenance，最后创建 Draft
-# Release。Draft 必须由维护者人工检查并发布；这里绝不自动 Publish。
+# 再下载那次构建产生的全部平台发布 JAR（forge-1.7.10、forge-1.12.2、
+# modern 三版本各 forge+fabric、bukkit，共 9 个），逐一签发 provenance，
+# 最后创建 Draft Release。Draft 必须由维护者人工检查并发布；这里绝不
+# 自动 Publish。
 name: release
 
 on:
@@ -36,9 +38,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # tag 是发布入口，gradle.properties 是源码里的版本事实；两者不一致时
-      # 宁可停住，也不能发布一个文件名、mcmod.info 与 tag 对不上的 JAR。
-      - name: 校验 tag 与项目版本
+      # tag 是发布入口，各平台 gradle.properties 里的 modVersion 是源码里的
+      # 版本事实，全部要与 tag 对齐——宁可停住，也不能发布一个文件名、
+      # mcmod.info 与 tag 对不上的 JAR，或者漏发某个平台忘了同步版本号。
+      - name: 校验 tag 与各平台版本
         id: version
         shell: bash
         run: |
@@ -48,54 +51,76 @@ jobs:
           fi
 
           version="${GITHUB_REF_NAME#v}"
-          configured=$(sed -n 's/^modVersion=//p' mod/platform/forge-1.7.10/gradle.properties)
-          if [ "$configured" != "$version" ]; then
-            echo "tag $GITHUB_REF_NAME 与 modVersion=$configured 不一致"
-            exit 1
-          fi
 
-          printf 'jar=netherway-forge-1.7.10-%s.jar\n' "$version" >> "$GITHUB_OUTPUT"
+          # forge-1.7.10 是历史上的版本事实（release.yml 最早只发它一个平台）；
+          # 其余五份 gradle.properties 一直与它锁步，这里逐一校验，任何一个
+          # 漂移都直接停住，而不是发出一个版本不一致的部分资产集合。
+          for f in \
+            mod/platform/forge-1.7.10/gradle.properties \
+            mod/platform/forge-1.12.2/gradle.properties \
+            mod/platform/modern/1.16.5/gradle.properties \
+            mod/platform/modern/1.18.2/gradle.properties \
+            mod/platform/modern/1.20.1/gradle.properties \
+            mod/platform/bukkit/gradle.properties \
+          ; do
+            configured=$(sed -n 's/^modVersion=//p' "$f")
+            if [ "$configured" != "$version" ]; then
+              echo "tag $GITHUB_REF_NAME 与 $f 的 modVersion=$configured 不一致"
+              exit 1
+            fi
+          done
+
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
           if [[ "$version" == *-* ]]; then
             echo 'prerelease=true' >> "$GITHUB_OUTPUT"
           else
             echo 'prerelease=false' >> "$GITHUB_OUTPUT"
           fi
 
-      # build.yml 使用 archive:false，artifact 名就是 JAR 文件名；v8 能把
-      # 这个非 ZIP artifact 原样下载，后续签名与上传操作的是同一组字节。
-      - name: 下载已通过完整校验的发布 JAR
+      # build.yml 的每个平台 job 都用 archive:false 上传，artifact 名就是
+      # JAR 文件名（各平台的命名规则见其 build.gradle：forge-1.7.10/1.12.2
+      # 是 netherway-forge-<mc>-<版本>.jar；modern 三版本各出 forge/fabric
+      # 两个 netherway-<loader>-<mc>-<版本>.jar；bukkit 是
+      # netherway-bukkit-<版本>.jar）。tag 构建时版本号统一来自
+      # gradle.properties（上一步已校验与 tag 对齐），所以用
+      # netherway-*-<版本>.jar 这个模式一次性把当前已适配的全部平台产物
+      # 都收进来，新增平台只要产物名跟这个模式对上就不必再改这里。
+      - name: 下载已通过完整校验的全部平台发布 JAR
         uses: actions/download-artifact@v8
         with:
-          name: ${{ steps.version.outputs.jar }}
+          pattern: netherway-*-${{ steps.version.outputs.version }}.jar
           path: release
+          merge-multiple: true
 
+      # 数量写死成 9 是刻意的：这是当前六个 platform（forge-1.7.10、
+      # forge-1.12.2、modern 三版本各 forge+fabric、bukkit）该产出的资产总数。
+      # 少了说明某个平台的 job 产物改名却没同步这里的下载模式，宁可在这里
+      # 停住，也不能悄悄发布一个缺平台的 Release。新增平台记得同步改这个数。
       - name: 确认发布资产
         id: asset
         shell: bash
-        env:
-          JAR_NAME: ${{ steps.version.outputs.jar }}
         run: |
-          path="$GITHUB_WORKSPACE/release/$JAR_NAME"
-          if [ ! -f "$path" ]; then
-            echo "未找到发布 JAR：$path"
+          mapfile -t jars < <(find "$GITHUB_WORKSPACE/release" -maxdepth 1 -type f -name '*.jar' | sort)
+          echo "找到 ${#jars[@]} 个发布 JAR："
+          printf '  %s\n' "${jars[@]##*/}"
+          if [ "${#jars[@]}" -ne 9 ]; then
+            echo "预期 9 个平台发布 JAR，实际 ${#jars[@]} 个；下载模式与各平台产物名是否还对得上？"
             exit 1
           fi
-          printf 'path=%s\n' "$path" >> "$GITHUB_OUTPUT"
 
       - name: 生成发布 JAR 的构建来源证明
         uses: actions/attest@v4
         with:
-          subject-path: ${{ steps.asset.outputs.path }}
+          subject-path: release/*.jar
 
       - name: 创建待人工确认的 Draft Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_ASSET: ${{ steps.asset.outputs.path }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
           args=(
-            release create "$GITHUB_REF_NAME" "$RELEASE_ASSET"
+            release create "$GITHUB_REF_NAME" release/*.jar
             --verify-tag
             --draft
             --generate-notes
@@ -106,4 +131,4 @@ jobs:
             args+=(--prerelease)
           fi
           gh "${args[@]}"
-          echo "::notice::Draft Release 已创建；检查资产与说明后再到 Releases 页面手工 Publish。"
+          echo "::notice::Draft Release 已创建（9 个平台资产）；检查资产与说明后再到 Releases 页面手工 Publish。"
