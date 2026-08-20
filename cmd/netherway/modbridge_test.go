@@ -53,15 +53,7 @@ func TestFailedEventContract(t *testing.T) {
 	}
 }
 
-func TestNatWireContract(t *testing.T) {
-	// 线上值与 Java 侧 QualitySummary.Nat、ingest 的 allowed 列表逐字对齐
-	if natWire("EasyNAT") != "easy" || natWire("HardNAT") != "hard" {
-		t.Fatalf("natWire mapping broken: %q/%q", natWire("EasyNAT"), natWire("HardNAT"))
-	}
-	if natWire("SomethingNew") != "" {
-		t.Fatalf("unknown NatType should map to empty, got %q", natWire("SomethingNew"))
-	}
-
+func TestNatEventEncoding(t *testing.T) {
 	encoded, err := json.Marshal(event{Event: "ready", Port: 63128, Nat: "easy"})
 	if err != nil {
 		t.Fatal(err)

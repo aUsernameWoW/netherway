@@ -13,6 +13,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# VARIANT picks which backends get compiled in (build tags in cmd/netherway):
+#   all  (default) — every backend, the regular release binary
+#   frp            — frp-xtcp only  (-tags nogonc)
+#   gonc           — gonc-p2p only  (-tags nofrp), drops frp entirely
+VARIANT="${VARIANT:-all}"
+case "$VARIANT" in
+  all)  GOTAGS="" ;;
+  frp)  GOTAGS="nogonc" ;;
+  gonc) GOTAGS="nofrp" ;;
+  *) echo "unknown VARIANT '$VARIANT' (expected all/frp/gonc)" >&2; exit 2 ;;
+esac
+echo "backend variant: $VARIANT${GOTAGS:+ (-tags $GOTAGS)}"
+
 OUT=mod/build/natives
 # 整目录会被 processResources 原样打进 jar，先清空，
 # 否则上一次构建的多余平台会跟着混进去（平台清单缩减时尤其如此）
@@ -24,7 +37,8 @@ build() {
   mkdir -p "$dir"
   echo "构建 ${goos}/${goarch} -> ${dir}/netherway${suffix}"
   GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-    go build -trimpath -ldflags "-s -w" -o "${dir}/netherway${suffix}" ./cmd/netherway
+    go build -trimpath ${GOTAGS:+-tags "$GOTAGS"} -ldflags "-s -w" \
+    -o "${dir}/netherway${suffix}" ./cmd/netherway
 }
 
 # 只打玩家侧主力平台：每个二进制 20MB 上下，全平台打包会把 jar 撑得太大。

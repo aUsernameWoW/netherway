@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/aUsernameWoW/netherway/internal/backend"
-	"github.com/aUsernameWoW/netherway/internal/backend/frpxtcp"
 	"github.com/aUsernameWoW/netherway/internal/config"
 	"github.com/aUsernameWoW/netherway/internal/i18n"
 	"github.com/aUsernameWoW/netherway/internal/mcping"
@@ -138,35 +137,25 @@ func sortedKeys(m map[string]string) []string {
 	return out
 }
 
+// natProbeSTUNKey 是 NAT 遥测探测读取的参数键。它就是 frpxtcp.ParamSTUN
+// （TestBackendNameMirrors 钉住相等），这里用字面量是因为 gonc-only 变体
+// 不链接 frpxtcp 包；gonc 凭证的 STUN 列表刻意叫 stunServers 不占这个键。
+const natProbeSTUNKey = "stun"
+
 // mergedParams 组装传给 backend 的参数表。
 //
-// frp 的老旗标（-server/-token/…）作为糖保留：手工调试和旧调用方都还能用。
-// 只并入显式传了的，未传的留给 backend 用构建期注入的默认值补齐；
-// -O 是新契约，写了就覆盖同名的糖。
+// frp 的老旗标（-server/-token/…）作为糖保留（legacySugarParams，随变体
+// 裁剪）：手工调试和旧调用方都还能用。只并入显式传了的，未传的留给
+// backend 用构建期注入的默认值补齐；-O 是新契约，写了就覆盖同名的糖。
 func mergedParams(fs *flag.FlagSet, backendName string, explicit map[string]string) map[string]string {
-	merged := map[string]string{}
-	if backendName == frpxtcp.Name {
-		sugar := map[string]string{
-			"server":      frpxtcp.ParamServer,
-			"server-port": frpxtcp.ParamServerPort,
-			"token":       frpxtcp.ParamToken,
-			"stun":        frpxtcp.ParamSTUN,
-			"room":        frpxtcp.ParamRoom,
-			"secret":      frpxtcp.ParamSecret,
-		}
-		fs.Visit(func(f *flag.Flag) {
-			if key, ok := sugar[f.Name]; ok {
-				merged[key] = f.Value.String()
-			}
-		})
-	}
+	merged := legacySugarParams(fs, backendName)
 	maps.Copy(merged, explicit)
 	return merged
 }
 
 func cmdTunnel(args []string) error {
 	fs := flag.NewFlagSet("tunnel", flag.ExitOnError)
-	backendName := fs.String("backend", frpxtcp.Name, i18n.T("flag.tunnel.backend"))
+	backendName := fs.String("backend", defaultBackendName, i18n.T("flag.tunnel.backend"))
 	params := paramFlags{}
 	fs.Var(params, "O", i18n.T("flag.tunnel.param"))
 	_, _, verbose := endpointFlags(fs)
@@ -230,7 +219,7 @@ func cmdTunnel(args []string) error {
 	// 构建期默认值），分类结果只作遥测维度。
 	natCh := make(chan string, 1)
 	go func() {
-		natCh <- probeNat(merged[frpxtcp.ParamSTUN], diagf)
+		natCh <- probeNat(merged[natProbeSTUNKey], diagf)
 	}()
 	takeNat := func() string {
 		select {

@@ -16,14 +16,21 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
-	"github.com/aUsernameWoW/netherway/internal/backend/frpxtcp"
-	"github.com/aUsernameWoW/netherway/internal/backend/goncp2p"
+	"github.com/aUsernameWoW/netherway/internal/backend"
 	"github.com/aUsernameWoW/netherway/internal/config"
 	"github.com/aUsernameWoW/netherway/internal/i18n"
-	"github.com/aUsernameWoW/netherway/internal/stunpick"
-	"github.com/aUsernameWoW/netherway/internal/tunnel"
+)
+
+// Mirrors of frpxtcp.Name / goncp2p.Name. Redeclared as literals so that a
+// variant build (-tags nofrp / nogonc) can still name the excluded backend
+// in dispatch and error messages without linking its implementation package.
+// TestBackendNameMirrors pins them to the real constants.
+const (
+	frpXtcpName = "frp-xtcp"
+	goncP2pName = "gonc-p2p"
 )
 
 func main() {
@@ -57,9 +64,19 @@ func usage() {
 	fmt.Fprint(os.Stderr, i18n.T("main.usage"))
 }
 
-// endpointFlags 注册两端共用的选项。
-func endpointFlags(fs *flag.FlagSet) (*tunnel.Endpoint, *config.Room, *bool) {
-	ep := &tunnel.Endpoint{}
+// endpointOpts 收集 frp 经典模式的连接选项。刻意是纯数据结构而非
+// tunnel.Endpoint：main.go 在所有变体下都要编译，不能 import frp。
+type endpointOpts struct {
+	ServerAddr string
+	ServerPort int
+	Token      string
+	STUNServer string
+}
+
+// endpointFlags 注册两端共用的选项。gonc-only 变体下这些旗标仍然注册
+// （帮助文本与旧调用方保持稳定），只是 frp 相关取值不再被消费。
+func endpointFlags(fs *flag.FlagSet) (*endpointOpts, *config.Room, *bool) {
+	ep := &endpointOpts{}
 	room := &config.Room{}
 	fs.StringVar(&ep.ServerAddr, "server", config.DefaultServerAddr, i18n.T("flag.server"))
 	fs.IntVar(&ep.ServerPort, "server-port", config.ServerPortDefault(), i18n.T("flag.serverPort"))
@@ -71,13 +88,6 @@ func endpointFlags(fs *flag.FlagSet) (*tunnel.Endpoint, *config.Room, *bool) {
 	return ep, room, verbose
 }
 
-func validate(ep *tunnel.Endpoint, room *config.Room) error {
-	if err := ep.Validate(); err != nil {
-		return err
-	}
-	return room.Validate()
-}
-
 func logLevelOf(verbose bool) string {
 	if verbose {
 		return "debug"
@@ -85,14 +95,26 @@ func logLevelOf(verbose bool) string {
 	return "info"
 }
 
-// consoleLog 是 serve 这类前台命令的日志配置。
-func consoleLog(verbose bool) tunnel.LogOptions {
-	return tunnel.LogOptions{Level: logLevelOf(verbose), To: "console"}
-}
-
 // signalContext 返回一个在收到 SIGINT/SIGTERM 时取消的 context。
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
+// checkProxyProtocol 在 backend 的配置校验之前给句明白话。
+func checkProxyProtocol(v string) error {
+	switch v {
+	case "", "v1", "v2":
+		return nil
+	default:
+		return i18n.Errorf("serve.badProxyProtocol", v)
+	}
+}
+
+// backendNotBuilt 是变体裁剪掉的 backend 的统一拒绝话术：说清是构建
+// 不含，而不是名字打错（那是 unknownBackend 的语义）。
+func backendNotBuilt(name string) error {
+	return i18n.Errorf("main.backendNotBuilt",
+		name, strings.Join(backend.Names(), ", "))
 }
 
 func cmdServe(args []string) error {
@@ -103,64 +125,25 @@ func cmdServe(args []string) error {
 	proxyProtocol := fs.String("proxy-protocol", "", i18n.T("flag.serve.proxyProtocol"))
 	rendezvousPort := fs.Int("rendezvous", 0, i18n.T("flag.serve.rendezvous"))
 	signingKey := fs.String("signing-key", "", i18n.T("flag.serve.signingKey"))
-	backendName := fs.String("backend", frpxtcp.Name, i18n.T("flag.serve.backend"))
+	backendName := fs.String("backend", defaultBackendName, i18n.T("flag.serve.backend"))
 	params := paramFlags{}
 	fs.Var(params, "O", i18n.T("flag.serve.param"))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *backendName == goncp2p.Name {
-		// gonc-p2p publish path: no frps, no rendezvous, no per-player token
-		// layer — the MQTT brokers are the rendezvous and the session key is
-		// the whole admission story (same params the server hands out in
-		// credentials; Java side composes them in ServeCommand).
-		if *rendezvousPort != 0 {
-			return i18n.Errorf("serve.goncRendezvous")
-		}
-		if err := checkProxyProtocol(*proxyProtocol); err != nil {
-			return err
-		}
-		ctx, stop := signalContext()
-		defer stop()
-		fmt.Println(i18n.T("serve.goncPublish", *localPort))
-		if *proxyProtocol != "" {
-			fmt.Println(i18n.T("serve.goncProxyProtocolOn", *proxyProtocol))
-		}
-		return goncp2p.Serve(ctx, params, *localPort,
-			goncp2p.ServeOptions{ProxyProtocol: *proxyProtocol}, os.Stdout,
-			func(f string, a ...any) { fmt.Printf(f+"\n", a...) })
-	}
-	if *rendezvousPort != 0 {
-		return serveEmbedded(ep, room, *localPort, *rendezvousPort,
+	// serve 的两条路径差异太大（frp 是 frpc+可选内嵌 frps，gonc 是自己的
+	// wait 循环），不走 backend.Lookup 而按名字分派；变体构建下被裁掉的
+	// 那侧由 stub 报「构建不含」。
+	switch *backendName {
+	case goncP2pName:
+		return serveGonc(params, *localPort, *rendezvousPort, *proxyProtocol)
+	case frpXtcpName:
+		return serveFrp(ep, room, *localPort, *rendezvousPort,
 			*signingKey, *metaToken, *proxyProtocol, *verbose)
+	default:
+		return i18n.Errorf("tunnel.unknownBackend",
+			*backendName, strings.Join(backend.Names(), ", "))
 	}
-	if err := validate(ep, room); err != nil {
-		return err
-	}
-	if err := checkProxyProtocol(*proxyProtocol); err != nil {
-		return err
-	}
-	if *metaToken != "" {
-		ep.Metas = map[string]string{"token": *metaToken}
-	}
-
-	ctx, stop := signalContext()
-	defer stop()
-
-	fmt.Println(i18n.T("serve.publish", *localPort, room.Name))
-	picked, err := stunpick.Resolve(ep.STUNServer, func(f string, a ...any) {
-		fmt.Printf(f+"\n", a...)
-	})
-	if err != nil {
-		return err
-	}
-	ep.STUNServer = picked
-	fmt.Printf("frps %s:%d\n", ep.ServerAddr, ep.ServerPort)
-	if *proxyProtocol != "" {
-		fmt.Println(i18n.T("serve.proxyProtocolOn", *proxyProtocol))
-	}
-	return tunnel.Serve(ctx, *ep, *room, *localPort,
-		tunnel.ServeOptions{ProxyProtocol: *proxyProtocol}, consoleLog(*verbose))
 }
 
 // pickPort 优先使用 want，被占用时让系统分配一个空闲端口。

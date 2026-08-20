@@ -1,3 +1,5 @@
+//go:build !nofrp
+
 package main
 
 import (
@@ -111,14 +113,4 @@ func staticTokensOf(token string) []string {
 		return nil
 	}
 	return []string{token}
-}
-
-// checkProxyProtocol 在 frp 的配置校验之前给句明白话。
-func checkProxyProtocol(v string) error {
-	switch v {
-	case "", "v1", "v2":
-		return nil
-	default:
-		return i18n.Errorf("serve.badProxyProtocol", v)
-	}
 }
