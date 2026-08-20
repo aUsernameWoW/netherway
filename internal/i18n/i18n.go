@@ -91,6 +91,9 @@ var catalog = map[string][2]string{
 	"main.unknownCommand": {
 		"unknown subcommand: %s",
 		"未知子命令: %s"},
+	"main.backendNotBuilt": {
+		"backend %q is not included in this build, available: %s",
+		"该构建不含 backend %q，可用: %s"},
 	"main.error": {
 		"error: %v",
 		"错误: %v"},

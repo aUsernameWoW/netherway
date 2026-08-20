@@ -1,3 +1,5 @@
+//go:build !nofrp
+
 package main
 
 import (
