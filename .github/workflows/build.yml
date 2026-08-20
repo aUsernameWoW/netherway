@@ -22,7 +22,16 @@ on:
   pull_request:
   workflow_dispatch:
   # 正式发布流水线复用这里的全部门禁，避免维护第二份测试清单。
+  # natives_variant 供 variants.yml 复用：把裁剪过 backend 的 agent 二进制
+  # 打进 jar（all/frp/gonc），非 all 时 jar 版本号带 -frp/-gonc 后缀。
+  # release.yml 不传该输入，发布行为不受影响。
   workflow_call:
+    inputs:
+      natives_variant:
+        description: backends compiled into the bundled agent (all/frp/gonc)
+        type: string
+        required: false
+        default: all
 
 # 日常 CI 只读；正式发布所需的签名与 Release 写权限只放在 release.yml。
 permissions:
@@ -30,7 +39,9 @@ permissions:
 
 concurrency:
   # 固定 build 前缀，避免被 release.yml 复用时与外层 release-* 分组冲突。
-  group: build-${{ github.ref }}
+  # 组名带上变体：variants.yml 会对同一 ref 并行调两次本工作流，
+  # 不区分的话两次调用会互相取消。
+  group: build-${{ inputs.natives_variant || 'all' }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -38,6 +49,9 @@ jobs:
     name: Go agent
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # 变体流水线只裁 natives、不改 Go/core 逻辑，这两个门禁在默认构建里
+    # 已经跑过，变体调用时跳过以省一半时长。
+    if: ${{ (inputs.natives_variant || 'all') == 'all' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -51,6 +65,14 @@ jobs:
       # 会合点，钉住登录与代理注册的放行/拒绝规则（frp bump 的行为级防线）。
       # 不开 -race：frp 自身关停路径带数据竞争，见 interop_test.go 头注。
       - run: go test ./...
+      # 变体裁剪（-tags nofrp / nogonc，见 cmd/netherway/backends.go）平时
+      # 没人本地开着编，这里保证两个 tag 组合始终能编译。
+      - name: 变体构建门禁（nofrp / nogonc）
+        run: |
+          go build -tags nofrp ./cmd/netherway
+          go vet -tags nofrp ./cmd/netherway
+          go build -tags nogonc ./cmd/netherway
+          go vet -tags nogonc ./cmd/netherway
       # build.sh 的 -X symbol 名与 internal/config 的变量名是逐字契约，
       # symbol 写错时 Go 会静默忽略、构建照样成功——真实打包时默认值就悄悄
       # 丢了。这里用占位值（无任何真实密钥）构建单平台，断言每个注入值
@@ -138,6 +160,8 @@ jobs:
     name: Java core SelfTest (JDK ${{ matrix.java }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # 同 go：变体只改 natives，core 无需重跑。
+    if: ${{ (inputs.natives_variant || 'all') == 'all' }}
     strategy:
       fail-fast: false
       matrix:
@@ -190,6 +214,8 @@ jobs:
       # 没有这个缓存的话每次 push 都要重来一遍
       - uses: gradle/actions/setup-gradle@v6
       - name: 构建打进 jar 的 agent 二进制（无密钥）
+        env:
+          VARIANT: ${{ inputs.natives_variant || 'all' }}
         run: ./mod/build-natives.sh
       # commit 构建的版本号用短哈希覆盖（命令行 -P 优先于 gradle.properties），
       # jar 文件名与 mcmod.info/@Mod（经 Tags 注入）随 project.version 同源联动，
@@ -202,12 +228,15 @@ jobs:
         shell: bash
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VARIANT: ${{ inputs.natives_variant || 'all' }}
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             echo 'flag=' >> "$GITHUB_OUTPUT"
           else
             sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
-            echo "flag=-PmodVersion=${sha:0:7}" >> "$GITHUB_OUTPUT"
+            suffix=""
+            if [ "$VARIANT" != "all" ]; then suffix="-$VARIANT"; fi
+            echo "flag=-PmodVersion=${sha:0:7}${suffix}" >> "$GITHUB_OUTPUT"
           fi
       - name: Gradle build
         working-directory: mod/platform/forge-1.7.10
@@ -257,18 +286,23 @@ jobs:
           java-version: 21
       - uses: gradle/actions/setup-gradle@v6
       - name: 构建打进 jar 的 agent 二进制（无密钥）
+        env:
+          VARIANT: ${{ inputs.natives_variant || 'all' }}
         run: ./mod/build-natives.sh
       - name: 确定 mod 版本号
         id: modver
         shell: bash
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VARIANT: ${{ inputs.natives_variant || 'all' }}
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             echo 'flag=' >> "$GITHUB_OUTPUT"
           else
             sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
-            echo "flag=-PmodVersion=${sha:0:7}" >> "$GITHUB_OUTPUT"
+            suffix=""
+            if [ "$VARIANT" != "all" ]; then suffix="-$VARIANT"; fi
+            echo "flag=-PmodVersion=${sha:0:7}${suffix}" >> "$GITHUB_OUTPUT"
           fi
       # build 已含 configSelfTest（用真实 Forge 1.12.2 Configuration 解析器）
       - name: Gradle build
@@ -340,18 +374,23 @@ jobs:
           java-version: 21
       - uses: gradle/actions/setup-gradle@v6
       - name: 构建打进 jar 的 agent 二进制（无密钥）
+        env:
+          VARIANT: ${{ inputs.natives_variant || 'all' }}
         run: ./mod/build-natives.sh
       - name: 确定 mod 版本号
         id: modver
         shell: bash
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VARIANT: ${{ inputs.natives_variant || 'all' }}
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             echo 'flag=' >> "$GITHUB_OUTPUT"
           else
             sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
-            echo "flag=-PmodVersion=${sha:0:7}" >> "$GITHUB_OUTPUT"
+            suffix=""
+            if [ "$VARIANT" != "all" ]; then suffix="-$VARIANT"; fi
+            echo "flag=-PmodVersion=${sha:0:7}${suffix}" >> "$GITHUB_OUTPUT"
           fi
       - name: Gradle build
         working-directory: mod/platform/modern/${{ matrix.mc }}
@@ -419,18 +458,23 @@ jobs:
           java-version: 21
       - uses: gradle/actions/setup-gradle@v6
       - name: Build the bundled agent binaries (no secrets)
+        env:
+          VARIANT: ${{ inputs.natives_variant || 'all' }}
         run: ./mod/build-natives.sh
       - name: Resolve plugin version
         id: modver
         shell: bash
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VARIANT: ${{ inputs.natives_variant || 'all' }}
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             echo 'flag=' >> "$GITHUB_OUTPUT"
           else
             sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
-            echo "flag=-PmodVersion=${sha:0:7}" >> "$GITHUB_OUTPUT"
+            suffix=""
+            if [ "$VARIANT" != "all" ]; then suffix="-$VARIANT"; fi
+            echo "flag=-PmodVersion=${sha:0:7}${suffix}" >> "$GITHUB_OUTPUT"
           fi
       - name: Gradle build
         working-directory: mod/platform/bukkit

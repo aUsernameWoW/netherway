@@ -56,6 +56,16 @@ TOKEN=<frps的auth.token> SECRET=<房间密钥> ./build.sh
 
 国内网络下拉依赖需要：`export GOPROXY=https://goproxy.cn,direct GOSUMDB=off`
 
+backend 变体裁剪（2026-08-20 起）：`-tags nofrp` 编出 gonc-only 二进制
+（frp client/内嵌 frps/nathole 全不链接，体积约减半），`-tags nogonc`
+编出 frp-only。tag 只作用于 `cmd/netherway`（注册文件与 serve/natprobe
+等 frp/gonc 专属接缝，stub 见 `variant_nofrp.go`/`variant_nogonc.go`），
+internal 包不带 tag。名字/键名的字面量镜像由 `variant_test.go` 钉住；
+两个 tag 组合的编译由 CI go job 门禁。`mod/build-natives.sh` 经
+`VARIANT=all|frp|gonc` 选择；CI 的 `variants.yml`（push 到
+`variant-test/**` 分支或手动触发）复用 build.yml 产出全平台的
+`-frp`/`-gonc` 后缀测试 jar，发布流水线不受影响。
+
 ### Java core
 
 没有引入 Gradle 与 JUnit（理由见下）。用 Java 8 的 javac 编译，才能真正验证 Java 8 兼容性：
