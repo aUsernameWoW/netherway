@@ -1,0 +1,30 @@
+# Backend-variant test jars: reuse build.yml twice to produce the full set of
+# platform jars with the bundled agent binaries trimmed to a single backend
+# (frp-xtcp only / gonc-p2p only, via -tags nogonc / nofrp). Jar versions get
+# a -frp / -gonc suffix so the artifacts are unambiguous side by side.
+#
+# This is a test-artifact pipeline, not a release channel: it triggers on
+# variant-test/** branches (and manually), never on tags, and nothing here is
+# signed or published. The regular default-build CI still runs separately on
+# the same push/PR and stays the source of truth for green.
+name: variant-jars
+
+on:
+  push:
+    branches: ['variant-test/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frp:
+    name: frp-only jars
+    uses: ./.github/workflows/build.yml
+    with:
+      natives_variant: frp
+  gonc:
+    name: gonc-only jars
+    uses: ./.github/workflows/build.yml
+    with:
+      natives_variant: gonc
