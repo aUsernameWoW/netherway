@@ -3,9 +3,9 @@ module github.com/aUsernameWoW/netherway
 go 1.26.4
 
 require (
-	github.com/fatedier/frp v0.70.1
+	github.com/fatedier/frp v0.71.0
 	github.com/fatedier/golib v0.8.2
-	github.com/pires/go-proxyproto v0.7.0
+	github.com/pires/go-proxyproto v0.15.0
 	github.com/samber/lo v1.53.0
 	github.com/threatexpert/gonc/v2 v2.6.9
 	github.com/xtaci/smux v1.5.57
