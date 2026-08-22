@@ -8,7 +8,7 @@ require (
 	github.com/pires/go-proxyproto v0.7.0
 	github.com/samber/lo v1.53.0
 	github.com/threatexpert/gonc/v2 v2.6.9
-	github.com/xtaci/smux v1.5.57
+	github.com/xtaci/smux v2.0.1+incompatible
 )
 
 require (
