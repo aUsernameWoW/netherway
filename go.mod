@@ -3,8 +3,10 @@ module github.com/aUsernameWoW/netherway
 go 1.26.4
 
 require (
+	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/fatedier/frp v0.71.0
 	github.com/fatedier/golib v0.8.2
+	github.com/mochi-mqtt/server/v2 v2.7.9
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/samber/lo v1.53.0
 	github.com/threatexpert/gonc/v2 v2.6.9
@@ -18,7 +20,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/coreos/go-oidc/v3 v3.18.0 // indirect
 	github.com/creack/pty v1.1.24 // indirect
-	github.com/eclipse/paho.mqtt.golang v1.5.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
@@ -27,7 +28,6 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/klauspost/reedsolomon v1.12.6 // indirect
-	github.com/kr/text v0.2.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.0 // indirect
 	github.com/pion/dtls/v3 v3.1.5 // indirect
 	github.com/pion/logging v0.2.4 // indirect
@@ -39,6 +39,7 @@ require (
 	github.com/prometheus/common v0.48.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
 	github.com/quic-go/quic-go v0.60.0 // indirect
+	github.com/rs/xid v1.4.0 // indirect
 	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8 // indirect
 	github.com/spf13/cobra v1.8.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect

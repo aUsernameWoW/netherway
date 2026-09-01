@@ -82,13 +82,15 @@ core 与适配层同样零改动。
 
 ## 验证状态
 
-`SelfTest` 共 558 项，覆盖平台识别（含转译兜底）、二进制释放与旧版残留清理、
+`SelfTest` 共 605 项，覆盖平台识别（含转译兜底）、二进制释放与旧版残留清理、
 遥测维度（backend/NAT 归一化、serve 生命周期、基础模式抹除）、
 JSON 转义、事件解析容错、凭证往返（含中文与
 任意 backend）、v1 兼容与前向兼容、命令行构造、时间参数回填、状态机去重与
 复位竞态（shutdown 后过期 worker 不得覆写状态）、凭证缓存（往返/最近优先/
 损坏清理/上限/旧键迁移）、多服务预取、并存预热隧道的复用与采认、每玩家令牌
-（含与 Go 侧 authplugin 的跨语言已知答案向量）、预认证帧的编解码与嗅探。
+（含与 Go 侧 authplugin 的跨语言已知答案向量）、预认证帧的编解码与嗅探、
+会合点信令的首字节判定（frp 的 TLS 记录与 gonc 的 MQTT CONNECT）及 gonc
+凭证的 `brokers=origin` 占位补齐。
 刻意不依赖 JUnit，一条 javac + java 就能跑：
 
 ```bash
@@ -98,7 +100,7 @@ $JAVA8/bin/java -cp build/classes cn.ripplecraft.netherway.core.SelfTest
 ```
 
 **兼容性已实测**：用 Java 8 编译的字节码曾在 **Java 8 / 17 / 21 / 25**
-上全部通过（早期 87 项）；当前 432 项由 CI 在 8/17/21/25
+上全部通过（早期 87 项）；当前 605 项由 CI 在 8/17/21/25
 四个 JVM 上跑。Forge 1.7.10 客户端无论仍使用 Java 8，还是借助兼容工具链运行在
 现代 JVM 上，都只会经过这些公共稳定 API。
 代码只用 `ProcessBuilder`、`java.nio.file`、`java.net` 这类公共稳定 API，

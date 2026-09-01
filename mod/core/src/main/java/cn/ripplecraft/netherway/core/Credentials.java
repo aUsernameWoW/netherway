@@ -58,6 +58,27 @@ public final class Credentials {
     public static final String PARAM_USER = "user";
     public static final String PARAM_USER_TOKEN = "userToken";
 
+    /**
+     * gonc-p2p parameter: comma-separated MQTT broker URLs (gonc syntax).
+     * Mirrors Go {@code goncp2p.ParamBrokers}.
+     */
+    public static final String PARAM_BROKERS = "brokers";
+
+    /**
+     * Placeholder entry inside {@link #PARAM_BROKERS} meaning "the Minecraft
+     * entry this credential came from". Mirrors Go {@code goncp2p.BrokerOrigin}
+     * byte for byte (pinned by tests on both sides).
+     *
+     * <p>Under the embedded rendezvous the signaling broker lives on the
+     * server's loopback behind the Minecraft port, exactly like frp's
+     * embedded frps: the client resolves the token to
+     * {@code tcp://<host>:<port>} of the entry it connected to
+     * ({@link #rendezvousAt}), while the server-side serve resolves the same
+     * token to its own loopback broker. An unresolved token reaching the
+     * agent is an error, never silently dropped.
+     */
+    public static final String BROKER_ORIGIN = "origin";
+
     private final String backendId;
     /** 保序（下发顺序），使 encode 与命令行输出确定、可测。 */
     private final Map<String, String> params;
@@ -168,11 +189,15 @@ public final class Credentials {
      * 构造 gonc P2P 打洞的凭证。
      *
      * <p>信令走 MQTT broker，凭证因此<b>不含任何服务器地址</b>——broker 就是
-     * 会合点，{@link #rendezvousAt} 对这种凭证是无操作。sessionKey 一身三职：
-     * 派生 MQTT topic、加密信令、派生 TLS/DTLS 双向认证证书。
-     * 键名与 Go 侧 internal/backend/goncp2p 的参数契约一致。
+     * 会合点。sessionKey 一身三职：派生 MQTT topic、加密信令、派生 TLS/DTLS
+     * 双向认证证书。键名与 Go 侧 internal/backend/goncp2p 的参数契约一致。
      *
-     * @param brokers     可选（null/空 = agent 内置默认），逗号分隔的 broker URL
+     * <p>Under the embedded rendezvous the broker list carries the
+     * {@link #BROKER_ORIGIN} placeholder and {@link #rendezvousAt} resolves it
+     * on the client; a list of explicit URLs is left alone.
+     *
+     * @param brokers     可选（null/空 = agent 内置默认），逗号分隔的 broker URL，
+     *                    可含 {@link #BROKER_ORIGIN} 占位
      * @param stunServers 可选，逗号分隔的 STUN 地址（gonc 语法，非 frp 的单地址）
      * @param network     可选，钉死打洞网络（any/tcp4/udp4/…）
      */
@@ -183,7 +208,7 @@ public final class Credentials {
         p.put("sessionKey", require(sessionKey, "sessionKey"));
         p.put(PARAM_ROOM, require(roomName, "roomName"));
         if (brokers != null && !brokers.isEmpty()) {
-            p.put("brokers", brokers);
+            p.put(PARAM_BROKERS, brokers);
         }
         if (stunServers != null && !stunServers.isEmpty()) {
             p.put("stunServers", stunServers);
@@ -366,36 +391,106 @@ public final class Credentials {
     }
 
     /**
-     * 把「会合点在哪」补进凭证：缺 {@code server}/{@code serverPort} 时填成
-     * 给定地址，服务端已经指定的一律不动。
+     * Fills in "where the rendezvous is" from the Minecraft entry the client
+     * actually connected to. Returns a new credential; the original is
+     * untouched. Invalid host/port leaves the credential as it is.
      *
-     * <p>只对 {@link #BACKEND_FRP_XTCP} 有意义；其它 backend 的地址键名由
-     * 它们自己的契约决定，这里不猜。
+     * <p>{@link #BACKEND_FRP_XTCP}: missing {@code server}/{@code serverPort}
+     * are set to the given address; anything the server already specified
+     * stays (that is {@link #withDefaultParams} semantics: the server may
+     * deliberately point at a different entry).
+     *
+     * <p>{@link #BACKEND_GONC_P2P}: every {@link #BROKER_ORIGIN} entry inside
+     * {@link #PARAM_BROKERS} is replaced with {@code tcp://host:port} (IPv6
+     * literals bracketed). This is a substitution, not a default, so it does
+     * not go through {@link #withDefaultParams}: the server said "the broker
+     * is at the entry you came in through", and only the client knows that
+     * entry. The server-side serve resolves the same token to its embedded
+     * loopback broker. No-op when the list carries no placeholder (the
+     * operator named explicit brokers).
+     *
+     * <p>Other backends: their address keys are their own contract, nothing
+     * is guessed here.
      */
     public Credentials rendezvousAt(String host, int port) {
-        if (!BACKEND_FRP_XTCP.equals(backendId)) {
-            return this;
-        }
         if (host == null || host.isEmpty() || port <= 0 || port > 65535) {
             return this;
         }
-        Map<String, String> d = new LinkedHashMap<String, String>();
-        d.put("server", host);
-        d.put("serverPort", Integer.toString(port));
-        return withDefaultParams(d);
+        if (BACKEND_FRP_XTCP.equals(backendId)) {
+            Map<String, String> d = new LinkedHashMap<String, String>();
+            d.put("server", host);
+            d.put("serverPort", Integer.toString(port));
+            return withDefaultParams(d);
+        }
+        if (BACKEND_GONC_P2P.equals(backendId) && hasOriginBroker()) {
+            String url = brokerUrl(host, port);
+            StringBuilder sb = new StringBuilder();
+            for (String entry : params.get(PARAM_BROKERS).split(",")) {
+                String e = entry.trim();
+                if (e.isEmpty()) {
+                    continue;
+                }
+                if (sb.length() > 0) {
+                    sb.append(',');
+                }
+                sb.append(BROKER_ORIGIN.equals(e) ? url : e);
+            }
+            Map<String, String> copy = new LinkedHashMap<String, String>(params);
+            copy.put(PARAM_BROKERS, sb.toString());
+            return new Credentials(backendId, copy, punchTimeoutMs, originHost, originPort);
+        }
+        return this;
     }
 
     /**
-     * 凭证是否还缺会合点地址——缺就必须由调用方用 {@link #rendezvousAt}
-     * 补上，否则 agent 会落回构建期注入的默认值（mod 分发的二进制里是空的），
-     * 表现为「未指定 frps 地址」。
+     * Whether the credential still lacks its rendezvous address, in which
+     * case the caller must complete it with {@link #rendezvousAt}.
+     *
+     * <p>frp-xtcp: {@code server} is missing (the agent would fall back to the
+     * build-time default, empty in the distributed binary, and fail with
+     * "frps address not specified"). gonc-p2p: {@link #PARAM_BROKERS} still
+     * carries a {@link #BROKER_ORIGIN} placeholder (the agent rejects an
+     * unresolved one). Other backends never need an address here.
      */
     public boolean needsRendezvousAddress() {
-        if (!BACKEND_FRP_XTCP.equals(backendId)) {
+        if (BACKEND_FRP_XTCP.equals(backendId)) {
+            String s = params.get("server");
+            return s == null || s.isEmpty();
+        }
+        if (BACKEND_GONC_P2P.equals(backendId)) {
+            return hasOriginBroker();
+        }
+        return false;
+    }
+
+    /** True if the gonc broker list contains the {@link #BROKER_ORIGIN} placeholder. */
+    private boolean hasOriginBroker() {
+        return containsOriginBroker(params.get(PARAM_BROKERS));
+    }
+
+    /**
+     * True if a {@link #PARAM_BROKERS} value (comma-separated, entries trimmed)
+     * contains the {@link #BROKER_ORIGIN} placeholder as a whole entry. Shared
+     * with the server-side config so it can warn about a placeholder that
+     * nothing will resolve (embedded rendezvous off); mirrors Go
+     * {@code goncp2p.HasOriginBroker}.
+     */
+    public static boolean containsOriginBroker(String brokers) {
+        if (brokers == null || brokers.isEmpty()) {
             return false;
         }
-        String s = params.get("server");
-        return s == null || s.isEmpty();
+        for (String entry : brokers.split(",")) {
+            if (BROKER_ORIGIN.equals(entry.trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** gonc broker URL for a Minecraft entry; IPv6 literals need brackets before the port. */
+    private static String brokerUrl(String host, int port) {
+        String h = host.indexOf(':') >= 0 ? "[" + host + "]" : host;
+        return "tcp://" + h + ":" + port;
     }
 
     /** backend 标识，决定 agent 用哪种隧道方案。 */

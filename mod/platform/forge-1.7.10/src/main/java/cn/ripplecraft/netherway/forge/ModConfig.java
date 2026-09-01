@@ -152,12 +152,9 @@ public final class ModConfig {
             LOG.warn(L10n.tr("config.rendezvousNeedsRunAgent"));
         }
         boolean frpBackend = Credentials.BACKEND_FRP_XTCP.equals(backendId);
-        if (rendezvousWanted && serverRunAgent && !frpBackend) {
-            // rendezvous=true 是默认值，gonc-p2p 服主大概率只改了 backend 一项，
-            // 这里按关闭处理并说明原因（info 级，不是配置错误）。
-            LOG.info(L10n.tr("config.rendezvousFrpOnly", backendId));
-        }
-        serverRendezvous = rendezvousWanted && serverRunAgent && frpBackend;
+        // Both backends embed their rendezvous (frp-xtcp: frps; gonc-p2p: the
+        // MQTT signaling broker) on loopback behind the Minecraft port.
+        serverRendezvous = rendezvousWanted && serverRunAgent;
 
         Map<String, String> params = parseParams(cfg.getStringList("params", "server",
                 defaultRendezvousParams(),
@@ -200,6 +197,16 @@ public final class ModConfig {
             }
         }
         serverParams = params;
+        if (Credentials.BACKEND_GONC_P2P.equals(backendId) && !serverRendezvous
+                && Credentials.containsOriginBroker(params.get(Credentials.PARAM_BROKERS))) {
+            // The placeholder only means something while the embedded broker
+            // exists; handed out without it, nobody resolves it (the client
+            // would point its signaling at a Minecraft port that relays
+            // nothing) and the built-in serve refuses to start. Warn loudly;
+            // the list is left as written so the operator sees exactly what
+            // is wrong.
+            LOG.warn(L10n.tr("config.goncOriginNeedsRendezvous", Credentials.BROKER_ORIGIN));
+        }
         serverPunchTimeoutSeconds = cfg.getInt("punchTimeoutSeconds", "server", 0, 0, 3600,
                 L10n.tr("cfg.server.punchTimeoutSeconds"));
         // 每玩家鉴权是高级功能。默认配置不生成这三项，避免它们与
@@ -388,8 +395,19 @@ public final class ModConfig {
                 // 自己的公网入口（NAT 后、多入口、域名与实际入口不一致都常见），
                 // 把配置里可能陈旧的地址发下去只会让客户端连错地方。
                 p = new java.util.LinkedHashMap<String, String>(p);
-                p.remove("server");
-                p.remove("serverPort");
+                if (Credentials.BACKEND_FRP_XTCP.equals(backendId)) {
+                    p.remove("server");
+                    p.remove("serverPort");
+                } else if (Credentials.BACKEND_GONC_P2P.equals(backendId)) {
+                    // Same idea for gonc: the broker list gets the "origin"
+                    // placeholder that the client resolves to the entry it
+                    // came in through. An explicit operator-supplied list is
+                    // left untouched (external brokers are their choice).
+                    String brokers = p.get(Credentials.PARAM_BROKERS);
+                    if (brokers == null || brokers.trim().isEmpty()) {
+                        p.put(Credentials.PARAM_BROKERS, Credentials.BROKER_ORIGIN);
+                    }
+                }
             }
             return new Credentials(backendId, p, serverPunchTimeoutSeconds * 1000);
         } catch (IllegalArgumentException e) {
@@ -421,8 +439,11 @@ public final class ModConfig {
     }
 
     /**
-     * 是否启用内嵌会合点。开启后 agent 不连公网 frps，会合点起在本机回环上，
-     * 玩家的控制连接由 {@link ConnectionSniffer} 从 Minecraft 端口转发进去。
+     * Whether the embedded rendezvous is on. The agent then runs the
+     * rendezvous on loopback (frp-xtcp: frps; gonc-p2p: the MQTT signaling
+     * broker) instead of dialing public infrastructure, and players'
+     * signaling connections are relayed in from the Minecraft port by
+     * {@link ConnectionSniffer}.
      */
     public boolean serverRendezvous() {
         return serverRendezvous;

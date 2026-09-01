@@ -1,6 +1,7 @@
 package cn.ripplecraft.netherway.modern;
 
 import cn.ripplecraft.netherway.core.L10n;
+import cn.ripplecraft.netherway.core.MqttConnect;
 import cn.ripplecraft.netherway.core.PreauthProtocol;
 import cn.ripplecraft.netherway.core.PreauthService;
 import cn.ripplecraft.netherway.core.TlsRecord;
@@ -157,7 +158,7 @@ public final class SnifferCore {
         UNDECIDED,
         /** 预认证帧：连接由我们独占，进入时下游 handler 已全部摘掉。 */
         PREAUTH,
-        /** frp 控制通道：字节原样转发给内嵌会合点（同样已独占）。 */
+        /** frp control channel or gonc MQTT signaling: bytes relayed as-is to the embedded rendezvous (also exclusive). */
         RELAY,
     }
 
@@ -230,17 +231,21 @@ public final class SnifferCore {
                 pump(c);
                 return;
             }
-            // frp 控制通道：TLS ClientHello 打头，转发给内嵌会合点。
+            // Signaling connections for the embedded rendezvous, relayed as-is
+            // to the loopback port: frp's control channel opens with a TLS
+            // ClientHello (0x16 0x03), gonc-p2p's with an MQTT CONNECT (0x10 +
+            // remaining length + protocol name).
             if (ctx.rendezvousPort > 0) {
                 Boolean tls = TlsRecord.looksLikeHandshake(peek, peek.length);
-                if (tls == null) {
-                    return;
-                }
-                if (Boolean.TRUE.equals(tls)) {
+                Boolean mqtt = MqttConnect.looksLikeConnect(peek, peek.length);
+                if (Boolean.TRUE.equals(tls) || Boolean.TRUE.equals(mqtt)) {
                     mode = Mode.RELAY;
                     takeover(c);
                     connectRendezvous(c);
                     return;
+                }
+                if (tls == null || mqtt == null) {
+                    return; // one detector still undecided, keep buffering
                 }
             }
             handleProxyProtocol(c);

@@ -710,10 +710,10 @@ public final class L10n {
                         + "(set server.localPort explicitly)",
                 "无法确定 Minecraft 监听端口，内置 serve 未启动（可用 server.localPort 显式指定）");
         def("fserver.rendezvousPort",
-                "The embedded rendezvous will listen on 127.0.0.1:{0}: players' frp control connections are "
+                "The embedded rendezvous will listen on 127.0.0.1:{0}: players' signaling connections are "
                         + "forwarded in from the Minecraft port, so the public side only needs a TCP tunnel "
                         + "to the Minecraft port",
-                "内嵌会合点将监听 127.0.0.1:{0}：玩家的 frp 控制连接会从 Minecraft "
+                "内嵌会合点将监听 127.0.0.1:{0}：玩家的信令连接会从 Minecraft "
                         + "端口转发进去，公网侧只需要一条能到 Minecraft 端口的 TCP 隧道");
         def("fserver.rendezvousPortFailed",
                 "Failed to pick a rendezvous port; the embedded rendezvous is disabled",
@@ -834,16 +834,20 @@ public final class L10n {
                 "sessionKey=auto: a random session key was generated for this run; it rotates on every server "
                         + "restart and players need to do nothing",
                 "sessionKey=auto：本次启动已生成随机会话密钥，服务端每次重启轮换，玩家侧无需任何操作");
-        def("config.rendezvousFrpOnly",
-                "server.rendezvous only applies to the frp-xtcp backend; backend \"{0}\" needs no rendezvous "
-                        + "(MQTT signaling), treated as off",
-                "server.rendezvous 只适用于 frp-xtcp backend；backend \"{0}\" 不需要会合点"
-                        + "（MQTT 信令），已按关闭处理");
         def("config.tokenSigningFrpOnly",
                 "tokenSigningKey only applies to the frp-xtcp backend (there is no login gate to verify "
                         + "per-player tokens under backend \"{0}\"); per-player tokens disabled",
                 "tokenSigningKey 只适用于 frp-xtcp backend（backend \"{0}\" 下没有校验每玩家令牌"
                         + "的登录关卡）；已停用每玩家令牌");
+        def("config.goncOriginNeedsRendezvous",
+                "server.params brokers contains the \"{0}\" placeholder but the embedded rendezvous is off "
+                        + "(server.rendezvous=false or server.runAgent=false): nothing resolves it, the "
+                        + "built-in serve refuses to start and players' signaling connections to this "
+                        + "server's Minecraft port are dropped. Turn the rendezvous on or list explicit "
+                        + "broker URLs",
+                "server.params 的 brokers 含占位符 \"{0}\"，但内嵌会合点未开启（server.rendezvous=false "
+                        + "或 server.runAgent=false）：没有谁来解析它，内置 serve 会拒绝启动，玩家发往本服 "
+                        + "Minecraft 端口的信令连接也会被丢弃。请开启会合点或改写成显式 broker URL");
         def("config.badProxyProtocol",
                 "server.proxyProtocol only accepts v1 or v2 (current value \"{0}\"); treated as off",
                 "server.proxyProtocol 只接受 v1 或 v2（当前值 \"{0}\"），已按关闭处理");
@@ -897,21 +901,24 @@ public final class L10n {
                         + "listens on",
                 "内置 serve 发布的 Minecraft 本地端口，0 表示使用服务器实际监听的端口");
         def("cfg.server.backend",
-                "Tunnel backend identifier: frp-xtcp (default; embedded rendezvous, per-player tokens) or "
-                        + "gonc-p2p (MQTT signaling, no rendezvous; params take sessionKey=auto plus room)",
-                "隧道方案标识：frp-xtcp（默认；内嵌会合点、每玩家令牌）或 "
-                        + "gonc-p2p（MQTT 信令、无会合点；params 填 sessionKey=auto 与 room 即可）");
+                "Tunnel backend identifier: frp-xtcp (default; embedded rendezvous = frps, per-player tokens) or "
+                        + "gonc-p2p (MQTT signaling; embedded rendezvous = loopback broker; params take "
+                        + "sessionKey=auto plus room)",
+                "隧道方案标识：frp-xtcp（默认；内嵌会合点即 frps、每玩家令牌）或 "
+                        + "gonc-p2p（MQTT 信令；内嵌会合点即回环 broker；params 填 sessionKey=auto 与 room 即可）");
         def("cfg.server.rendezvous",
-                "Recommended and default mode: run the rendezvous inside the server process.\n"
-                        + "Players' control connections come in through the public Minecraft entry; "
-                        + "no self-hosted frps or authplugin needed.\n"
+                "Recommended and default mode: run the rendezvous inside the server process "
+                        + "(frp-xtcp: an embedded frps; gonc-p2p: an embedded MQTT signaling broker).\n"
+                        + "Players' signaling connections come in through the public Minecraft entry; "
+                        + "no self-hosted frps/authplugin and no public MQTT broker needed.\n"
                         + "Keep runAgent=true; server.params already carries working out-of-the-box values.\n"
-                        + "Set to false only when switching to a self-hosted frps, and replace the whole "
-                        + "params list as the README describes",
-                "推荐且默认模式：在服务端进程内运行会合点。\n"
-                        + "玩家的控制连接从 Minecraft 公网入口进入，无需自建 frps 或部署 authplugin。\n"
+                        + "Set to false only when switching to a self-hosted frps or to external MQTT brokers, "
+                        + "and replace the whole params list as the README describes",
+                "推荐且默认模式：在服务端进程内运行会合点"
+                        + "（frp-xtcp：内嵌 frps；gonc-p2p：内嵌 MQTT 信令 broker）。\n"
+                        + "玩家的信令连接从 Minecraft 公网入口进入，无需自建 frps/authplugin，也无需公共 MQTT broker。\n"
                         + "保持 runAgent=true；server.params 已带齐开箱即用的参数。\n"
-                        + "只有改用自建 frps 时才设为 false，并按 README 替换整个 params 列表");
+                        + "只有改用自建 frps 或外部 MQTT broker 时才设为 false，并按 README 替换整个 params 列表");
         def("cfg.server.params",
                 "Tunnel parameters, one key=value per line. The three defaults already work.\n"
                         + "Replace the whole list per the README only when self-hosting frps; "

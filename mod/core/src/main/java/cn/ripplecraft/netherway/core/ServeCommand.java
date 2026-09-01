@@ -63,9 +63,13 @@ public final class ServeCommand {
         }
 
         /**
-         * 内嵌会合点的回环端口（{@code -rendezvous}）。非零即启用：agent 不再
-         * 连公网 frps，改在本机起会合点，玩家的控制连接由嗅探器从 Minecraft
-         * 端口转发进来。端口由平台层挑选并同时告诉嗅探器，两边必须是同一个数。
+         * Loopback port of the embedded rendezvous ({@code -rendezvous}).
+         * Non-zero enables it for either backend: under frp-xtcp the agent
+         * embeds frps instead of dialing a public one, under gonc-p2p it
+         * embeds the MQTT signaling broker instead of using public brokers.
+         * Players' signaling connections are relayed in from the Minecraft
+         * port by the sniffer. The platform layer picks the port and tells
+         * the sniffer the same number; the two must agree.
          */
         public Options rendezvousPort(int v) {
             this.rendezvousPort = v;
@@ -84,8 +88,8 @@ public final class ServeCommand {
      * gonc-p2p 走通用的 {@code -backend}+{@code -O}，参数表原样透传——
      * 与凭证同源这条纪律对两种 backend 同样成立。
      *
-     * <p>{@link Options} 里的 frp 专属项（meta token、会合点、签发密钥）
-     * 对 gonc-p2p 无意义，静默忽略；PROXY protocol 两种 backend 都转发。
+     * <p>{@link Options} 里的 frp 专属项（meta token、签发密钥）对 gonc-p2p
+     * 无意义，静默忽略；会合点端口与 PROXY protocol 两种 backend 都转发。
      * 平台层不必按 backend 分支组装。
      */
     public static List<String> build(Path exe, String backendId, Map<String, String> params,
@@ -108,6 +112,12 @@ public final class ServeCommand {
             if (opts.proxyProtocol != null && !opts.proxyProtocol.isEmpty()) {
                 cmd.add("-proxy-protocol");
                 cmd.add(opts.proxyProtocol);
+            }
+            if (opts.rendezvousPort > 0) {
+                // Embedded signaling broker on loopback; serve resolves the
+                // credential's brokers=origin placeholder to it.
+                cmd.add("-rendezvous");
+                cmd.add(Integer.toString(opts.rendezvousPort));
             }
             return cmd;
         }

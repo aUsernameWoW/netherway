@@ -53,8 +53,10 @@ public final class SelfTest {
         testDescribeCommandMasksValues();
         testServeCommand();
         testCredentialsRendezvousAddress();
+        testCredentialsBrokerOrigin();
         testServeCommandRendezvous();
         testTlsRecordDetection();
+        testMqttConnectDetection();
         testTimingsNormalization();
         testCredAwareWaitWindows();
         testUpgradeGivesUpWithoutBinary();
@@ -739,15 +741,21 @@ public final class SelfTest {
         int port = cmd.indexOf("-port");
         check("gonc serve 本地端口", port >= 0 && "25570".equals(cmd.get(port + 1)));
         // frp-exclusive options are meaningless under gonc-p2p and must be
-        // dropped as a group; proxy protocol is NOT one of them — gonc serve
-        // injects the punched peer address itself, so the flag goes through.
-        check("gonc serve 忽略 frp 专属旗标", !cmd.contains("-rendezvous")
-                && !cmd.contains("-meta-token") && !cmd.contains("-signing-key"));
+        // dropped as a group; proxy protocol and the rendezvous port are NOT
+        // among them — gonc serve injects the punched peer address itself, and
+        // -rendezvous starts its embedded loopback MQTT broker.
+        check("gonc serve 忽略 frp 专属旗标",
+                !cmd.contains("-meta-token") && !cmd.contains("-signing-key"));
+        int rz = cmd.indexOf("-rendezvous");
+        check("gonc serve 转发会合点端口", rz >= 0 && "63333".equals(cmd.get(rz + 1)));
         int pp = cmd.indexOf("-proxy-protocol");
         check("gonc serve 转发 proxy protocol", pp >= 0 && "v1".equals(cmd.get(pp + 1)));
         List<String> noPp = ServeCommand.build(Paths.get("/srv/netherway"),
                 Credentials.BACKEND_GONC_P2P, params, 25570, new ServeCommand.Options());
         check("gonc serve 未开 proxy protocol 不带旗标", !noPp.contains("-proxy-protocol"));
+        check("gonc serve 未开会合点不带 -rendezvous", !noPp.contains("-rendezvous"));
+        check("gonc serve 描述保留会合点端口",
+                ServeCommand.describe(cmd).contains("-rendezvous 63333"));
 
         String desc = ServeCommand.describe(cmd);
         check("gonc serve 描述不含 sessionKey 值", !desc.contains("SUPER_SESSION_KEY"));
@@ -897,6 +905,79 @@ public final class SelfTest {
         check("withDefaultParams 补上缺失键", "新值".equals(merged.params().get("新键")));
     }
 
+    private static void testCredentialsBrokerOrigin() throws Exception {
+        // Cross-language pin: mirrors Go goncp2p.BrokerOrigin / ParamBrokers.
+        check("BROKER_ORIGIN 字面量为 origin", "origin".equals(Credentials.BROKER_ORIGIN));
+        check("PARAM_BROKERS 字面量为 brokers", "brokers".equals(Credentials.PARAM_BROKERS));
+        check("gonc 契约键含 brokers",
+                Credentials.goncP2pParamKeys().contains(Credentials.PARAM_BROKERS));
+
+        Credentials viaRz = Credentials.goncP2p("KEY", "survival",
+                Credentials.BROKER_ORIGIN, null, null, 15000);
+        check("gonc origin 占位自报缺地址", viaRz.needsRendezvousAddress());
+        Credentials filled = viaRz.rendezvousAt("mc.example.com", 25565);
+        check("gonc origin 被替换为入口 broker URL",
+                "tcp://mc.example.com:25565".equals(filled.param(Credentials.PARAM_BROKERS)));
+        check("gonc 补齐后不再缺地址", !filled.needsRendezvousAddress());
+        check("gonc 补齐不影响其它参数", "KEY".equals(filled.param("sessionKey")));
+        check("gonc 原对象不变（缺地址）", viaRz.needsRendezvousAddress());
+
+        // Mixed list: placeholder resolved in place, order preserved.
+        Credentials mixed = Credentials.goncP2p("KEY", "survival",
+                "origin, tcp://broker.example.com:1883", null, null, 15000);
+        check("gonc 混合列表自报缺地址", mixed.needsRendezvousAddress());
+        check("gonc 混合列表保序替换",
+                "tcp://mc.example.com:25565,tcp://broker.example.com:1883".equals(
+                        mixed.rendezvousAt("mc.example.com", 25565)
+                                .param(Credentials.PARAM_BROKERS)));
+
+        // IPv6 literal hosts must be bracketed before the port.
+        check("gonc IPv6 入口加方括号",
+                "tcp://[::1]:25565".equals(
+                        viaRz.rendezvousAt("::1", 25565).param(Credentials.PARAM_BROKERS)));
+
+        // No placeholder: nothing to do, the operator named explicit brokers.
+        Credentials explicit = Credentials.goncP2p("KEY", "survival",
+                "tcp://broker.example.com:1883", null, null, 15000);
+        check("gonc 显式 broker 不缺地址", !explicit.needsRendezvousAddress());
+        check("gonc 显式 broker 不被改写",
+                explicit.rendezvousAt("mc.example.com", 25565).params().equals(explicit.params()));
+        // "origin" must match a whole entry, not a substring of a URL.
+        Credentials lookalike = Credentials.goncP2p("KEY", "survival",
+                "tcp://origin.example.com:1883", null, null, 15000);
+        check("gonc 含 origin 子串的 URL 不算占位", !lookalike.needsRendezvousAddress());
+        // Static helper shared with the server-side config (same split/trim rules).
+        check("containsOriginBroker 识别整条目占位",
+                Credentials.containsOriginBroker(" origin ,tcp://broker.example.com:1883"));
+        check("containsOriginBroker 不认子串", !Credentials.containsOriginBroker("tcp://origin.example.com:1883"));
+        check("containsOriginBroker 空值为假",
+                !Credentials.containsOriginBroker(null) && !Credentials.containsOriginBroker(""));
+
+        // Invalid addresses leave the credential untouched.
+        check("gonc 空主机名不改动凭证", viaRz.rendezvousAt("", 25565).needsRendezvousAddress());
+        check("gonc 越界端口不改动凭证",
+                viaRz.rendezvousAt("mc.example.com", 70000).needsRendezvousAddress());
+
+        // frp is unaffected by the gonc placeholder logic.
+        Credentials frp = Credentials.frpXtcp("frps.example.com", 7000, "T",
+                "stun.example.com:3478", "survival", "S", 15000)
+                .withExtraParams(java.util.Collections.singletonMap(
+                        Credentials.PARAM_BROKERS, Credentials.BROKER_ORIGIN));
+        check("frp 凭证不看 brokers", !frp.needsRendezvousAddress());
+        check("frp 凭证的 brokers 不被 rendezvousAt 改写",
+                Credentials.BROKER_ORIGIN.equals(frp.rendezvousAt("mc.example.com", 25565)
+                        .param(Credentials.PARAM_BROKERS)));
+
+        // Encode/decode keeps the placeholder verbatim (server → client wire).
+        Credentials back = Credentials.decode(viaRz.encode());
+        check("gonc origin 占位编解码往返", back.needsRendezvousAddress()
+                && Credentials.BROKER_ORIGIN.equals(back.param(Credentials.PARAM_BROKERS)));
+        Credentials backFilled = Credentials.decode(
+                filled.withOrigin("mc.example.com", 25565).encode());
+        check("gonc 补齐后编解码往返", !backFilled.needsRendezvousAddress()
+                && "tcp://mc.example.com:25565".equals(backFilled.param(Credentials.PARAM_BROKERS)));
+    }
+
     private static void testServeCommandRendezvous() {
         java.util.Map<String, String> params = new java.util.LinkedHashMap<String, String>();
         params.put("server", "frps.example.com");
@@ -970,6 +1051,70 @@ public final class SelfTest {
         byte[] over = new byte[16];
         over[0] = 0x16;
         check("只看 len 以内的字节", TlsRecord.looksLikeHandshake(over, 1) == null);
+    }
+
+    private static void testMqttConnectDetection() {
+        // A paho-style CONNECT prefix: 10 <len> 00 04 'M' 'Q' 'T' 'T' 04 02 ...
+        byte[] connect = {0x10, 0x1a, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0x02, 0x00, 0x3c};
+        check("MQTT CONNECT 被认出",
+                Boolean.TRUE.equals(MqttConnect.looksLikeConnect(connect, connect.length)));
+        byte[] mqisdp = {0x10, 0x1c, 0x00, 0x06, 'M', 'Q', 'I', 's', 'd', 'p', 0x03, 0x02};
+        check("MQTT 3.1 (MQIsdp) CONNECT 被认出",
+                Boolean.TRUE.equals(MqttConnect.looksLikeConnect(mqisdp, mqisdp.length)));
+        // Multi-byte remaining length (continuation bit set on the first byte).
+        byte[] longLen = {0x10, (byte) 0x80, 0x01, 0x00, 0x04, 'M', 'Q', 'T', 'T'};
+        check("多字节剩余长度的 CONNECT 被认出",
+                Boolean.TRUE.equals(MqttConnect.looksLikeConnect(longLen, longLen.length)));
+
+        // Tri-state: too few bytes must yield null, never a guess.
+        check("零字节时不下定论", MqttConnect.looksLikeConnect(new byte[0], 0) == null);
+        byte[] one = {0x10};
+        check("只有首字节时不下定论", MqttConnect.looksLikeConnect(one, 1) == null);
+        byte[] partialName = {0x10, 0x1a, 0x00, 0x04, 'M', 'Q'};
+        check("协议名未到齐时不下定论",
+                MqttConnect.looksLikeConnect(partialName, partialName.length) == null);
+        check("协议名到齐后立刻认出",
+                Boolean.TRUE.equals(MqttConnect.looksLikeConnect(connect, 8)));
+        byte[] partialLen = {0x10, (byte) 0x80};
+        check("剩余长度未到齐时不下定论",
+                MqttConnect.looksLikeConnect(partialLen, partialLen.length) == null);
+        check("只看 len 以内的字节", MqttConnect.looksLikeConnect(connect, 1) == null);
+        check("最多 13 字节必能下定论", MqttConnect.PEEK_BYTES == 13);
+
+        // Everything else on the Minecraft port must be rejected.
+        byte[] zeroLen = {0x10, 0x00};
+        check("剩余长度为 0 时否定（MC 握手 10 00）",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(zeroLen, zeroLen.length)));
+        byte[] mcModern = {0x10, 0x00, 0x2f, 0x09, 'l', 'o', 'c', 'a', 'l'};
+        check("MC 现代握手不被误判",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(mcModern, mcModern.length)));
+        byte[] tls = {0x16, 0x03, 0x01};
+        check("TLS 握手不被误判",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(tls, tls.length)));
+        byte[] nway = {'N', 'W', 'A', 'Y'};
+        check("预认证帧不被误判",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(nway, nway.length)));
+        byte[] legacy = {(byte) 0xFE, 0x01};
+        check("MC legacy ping 不被误判",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(legacy, legacy.length)));
+        byte[] proxyV1 = {'P', 'R', 'O', 'X', 'Y'};
+        check("PROXY v1 头不被误判",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(proxyV1, proxyV1.length)));
+        byte[] proxyV2 = {0x0D, 0x0A, 0x0D, 0x0A};
+        check("PROXY v2 头不被误判",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(proxyV2, proxyV2.length)));
+        byte[] wrongName = {0x10, 0x1a, 0x00, 0x04, 'M', 'Q', 'X', 'X'};
+        check("协议名不对时否定",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(wrongName, wrongName.length)));
+        byte[] wrongNameEarly = {0x10, 0x1a, 0x01};
+        check("协议名首字节就不对时立刻否定",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(wrongNameEarly, 3)));
+        byte[] flags = {0x11, 0x1a, 0x00, 0x04, 'M', 'Q', 'T', 'T'};
+        check("CONNECT 旗标非零时否定",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(flags, flags.length)));
+        byte[] overflow = {0x10, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 0x00};
+        check("4 字节续位溢出时否定",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(overflow, overflow.length)));
     }
 
     private static void testTimingsNormalization() {

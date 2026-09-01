@@ -157,21 +157,21 @@ jobs:
           fi
       # gonc-p2p 冒烟：真实二进制跑 serve 的 wait 侧，钉住 serve 状态标记
       # 契约（cmd/netherway/serve_gonc.go 的 [serve-ready]/[serve-warn] ↔
-      # Java ServeTelemetry 的常量）。正路：本机 mosquitto 当信令 broker，
-      # broker 探测通过即打 [serve-ready]；反路：broker 指向无人监听的端口，
-      # 只能看到 [serve-warn]、绝不能出现 [serve-ready]。全程不出网：
-      # 打洞只在玩家 hello 后才开始，STUN 不会被联系。
+      # Java ServeTelemetry 的常量）。正路：-rendezvous 起内嵌信令 broker
+      # （internal/signalbroker，只绑回环），broker 探测打到回环即打
+      # [serve-ready]，顺带钉住「内嵌信令 broker」那行文案；反路：broker
+      # 指向无人监听的端口，只能看到 [serve-warn]、绝不能出现 [serve-ready]；
+      # 第三条：brokers=origin 占位符没有 -rendezvous 可解析时必须立即
+      # 非零退出并说明原因。全程不出网、不装任何软件：打洞只在玩家 hello
+      # 后才开始，STUN 不会被联系。库层同样的契约由 internal/signalbroker
+      # 的 easyp2p interop 测试钉住，这里额外覆盖 main/serveGonc 的旗标装配。
       - name: serve gonc-p2p 冒烟
         env:
           NETHERWAY_LANG: zh
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq mosquitto >/dev/null
-          printf 'listener 18830 127.0.0.1\nallow_anonymous true\n' >mosquitto-ci.conf
-          mosquitto -c mosquitto-ci.conf -d
           bin/netherway-linux-amd64 serve -backend gonc-p2p \
+            -rendezvous 17322 \
             -O sessionKey=ci-smoke -O room=ci-smoke \
-            -O brokers=tcp://127.0.0.1:18830 \
             -port 25565 >gonc-serve.out 2>gonc-serve.err &
           pid=$!
           ok=""
@@ -189,14 +189,26 @@ jobs:
             echo "gonc serve 进程提前退出（exit $status）"
             exit 1
           fi
+          grep -q "内嵌信令 broker" gonc-serve.out || { echo "内嵌信令 broker 未启动"; exit 1; }
           if [ -z "$ok" ]; then
-            echo "gonc serve 20 秒内未打出 [serve-ready]（broker 探测失败？标记字样变了？）"
+            echo "gonc serve 20 秒内未打出 [serve-ready]（内嵌 broker 探测失败？标记字样变了？）"
             exit 1
           fi
           if [ "$status" -ne 0 ]; then
             echo "SIGTERM 后未干净退出（exit $status）"
             exit 1
           fi
+          # 第三条：占位符无处解析 → 立即报错退出
+          status=0
+          bin/netherway-linux-amd64 serve -backend gonc-p2p \
+            -O sessionKey=ci-smoke -O room=ci-smoke -O brokers=origin \
+            -port 25565 >gonc-origin.out 2>gonc-origin.err || status=$?
+          cat gonc-origin.out; cat gonc-origin.err >&2
+          if [ "$status" -eq 0 ]; then
+            echo "brokers=origin 无 -rendezvous 竟然没有报错退出"
+            exit 1
+          fi
+          grep -q "占位符" gonc-origin.err gonc-origin.out || { echo "报错未说明占位符"; exit 1; }
           # 反路：无 broker 可达时只有告警标记，绝无就绪标记
           bin/netherway-linux-amd64 serve -backend gonc-p2p \
             -O sessionKey=ci-smoke -O room=ci-smoke \

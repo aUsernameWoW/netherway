@@ -1,6 +1,7 @@
 package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.L10n;
+import cn.ripplecraft.netherway.core.MqttConnect;
 import cn.ripplecraft.netherway.core.PreauthProtocol;
 import cn.ripplecraft.netherway.core.PreauthService;
 import cn.ripplecraft.netherway.core.TlsRecord;
@@ -196,7 +197,7 @@ final class ConnectionSniffer {
         UNDECIDED,
         /** 是预认证帧，本连接由我们独占，永远不会交给 MC（进入时下游 handler 已全部摘掉）。 */
         PREAUTH,
-        /** 是 frp 控制通道，字节原样转发给内嵌会合点（同样已独占）。 */
+        /** frp control channel or gonc MQTT signaling: bytes relayed as-is to the embedded rendezvous (also exclusive). */
         RELAY,
     }
 
@@ -280,19 +281,23 @@ final class ConnectionSniffer {
                 pump(c);
                 return;
             }
-            // frp 的控制通道：TLS ClientHello 打头，转发给内嵌会合点。
-            // 排在 PROXY 剥头之前——两者首字节不冲突（0x16 vs 'P'/0x0D），
-            // 但先判它可以让不开会合点的部署完全不受影响。
+            // Signaling connections for the embedded rendezvous, relayed as-is
+            // to the loopback port: frp's control channel opens with a TLS
+            // ClientHello (0x16 0x03), gonc-p2p's with an MQTT CONNECT (0x10 +
+            // remaining length + protocol name). Checked before PROXY stripping:
+            // the first bytes never collide (vs 'P'/0x0D), and deployments
+            // without a rendezvous stay entirely unaffected.
             if (ctx.rendezvousPort > 0) {
                 Boolean tls = TlsRecord.looksLikeHandshake(peek, peek.length);
-                if (tls == null) {
-                    return; // 还不能确定，继续攒
-                }
-                if (Boolean.TRUE.equals(tls)) {
+                Boolean mqtt = MqttConnect.looksLikeConnect(peek, peek.length);
+                if (Boolean.TRUE.equals(tls) || Boolean.TRUE.equals(mqtt)) {
                     mode = Mode.RELAY;
                     takeover(c);
                     connectRendezvous(c);
                     return;
+                }
+                if (tls == null || mqtt == null) {
+                    return; // one detector still undecided, keep buffering
                 }
             }
             // 不是预认证帧也不是控制通道：交给 PROXY 剥头逻辑，或直接放行给 MC

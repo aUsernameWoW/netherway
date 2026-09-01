@@ -79,7 +79,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.nethe
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 558 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 605 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -133,6 +133,12 @@ keepTunnelOpenWorker 自检在窗口内连续失败时发出（典型原因是�
 `Credentials` 的对应工厂方法（如 `Credentials.frpXtcp`）。以及每玩家令牌的
 格式：Go 侧 `internal/authplugin`（校验）↔ Java 侧 `TokenIssuer`（签发）
 必须逐字节一致——两侧各有一个用同一组常量的已知答案测试钉住这一点。
+内嵌会合点（gonc）再添两处：`brokers` 占位符字面量 `origin`（Go
+`goncp2p.BrokerOrigin` ↔ Java `Credentials.BROKER_ORIGIN`，两侧测试各钉
+一次），以及嗅探器识别 MQTT CONNECT 的字节（core `MqttConnect` 认的
+`0x10` + 剩余长度 + 协议名 `MQTT`/`MQIsdp` ↔ `internal/signalbroker` 接受
+的协议版本 3.1/3.1.1/5——嗅探器不认的连接到不了 broker，broker 不认的
+版本嗅探器也别放行）。
 
 agent 的 stderr 是诊断通道：backend 的参数快照、被忽略的未知键、frp 自身
 info 及以上的日志都会回显到这里，mod 逐行转进游戏日志（`bridge.debug`）。
@@ -198,17 +204,28 @@ cs=tls 路径），其上跑 smux——每条 MC 连接一个 stream，两端都
 二进制，stream 层零自有协议。实现在 `internal/backend/goncp2p`（客户端
 `Run` = hello 侧；服务端 `Serve` = wait 侧，打洞串行、已建会话并发）。
 
-- **凭证不含任何服务器地址**：broker 即会合点，`rendezvousAt`/
-  `needsRendezvousAddress` 对它是无操作/false。参数键 `sessionKey`（一身
-  三职：派生 topic、加密信令、派生证书）、`room`（仅展示/去重，Java 侧
-  全 backend 必填）、可选 `brokers`/`stunServers`（gonc 语法逗号列表；
-  `stunServers` 刻意不叫 `stun`——那个键喂给 modbridge 的 NAT 遥测探测，
-  格式不同）、`network`。同步点：Go `goncp2p` 常量 ↔ Java
-  `Credentials.goncP2p`。
+- **凭证不含任何服务器地址，会合点地址由客户端补**：broker 即会合点。
+  `server.rendezvous`（默认开）下 ModConfig 给凭证注入 `brokers=origin`
+  （服主已显式写 `brokers` 则不动），`origin` 是占位符：客户端
+  `Credentials.rendezvousAt` 把它换成这份凭证来源的 Minecraft 入口
+  `tcp://<host>:<port>`（IPv6 字面量加方括号），玩家的 MQTT CONNECT 于是
+  经 Minecraft 端口进嗅探器转发到服务端进程内嵌的回环 broker；服务端
+  serve 则把同一个占位符换成自己的 `tcp://127.0.0.1:<rendezvousPort>`
+  （`goncp2p.ResolveOriginBroker`）。`needsRendezvousAddress` 对 gonc =
+  「brokers 含 origin」。未解析的 `origin` 到达 backend 是错误
+  （`parseParams` 拒绝，`goncp2p.originUnresolved`），绝不静默丢弃。
+  公共 broker 从此是显式选择：关掉 rendezvous 或自己写 `brokers`。参数键
+  `sessionKey`（一身三职：派生 topic、加密信令、派生证书）、`room`
+  （仅展示/去重，Java 侧全 backend 必填）、可选 `brokers`/`stunServers`
+  （gonc 语法逗号列表；`stunServers` 刻意不叫 `stun`——那个键喂给
+  modbridge 的 NAT 遥测探测，格式不同）、`network`。同步点：Go `goncp2p`
+  常量 ↔ Java `Credentials.goncP2p`；占位符字面量 Go `goncp2p.BrokerOrigin`
+  ↔ Java `Credentials.BROKER_ORIGIN`（两侧测试各钉一次）。
 - 服务端跑 `serve -backend gonc-p2p -O k=v … -port <MC端口>`；
   `ServeCommand.build` 按 backendId 分岔，frp 专属选项（meta-token/
-  rendezvous/signing-key）静默忽略，`-proxy-protocol` 两种 backend 都
-  转发。`sessionKey=auto` 与 `secret=auto` 同构（ModConfig 生成、重启
+  signing-key）静默忽略，`-proxy-protocol` 与 `-rendezvous <端口>` 两种
+  backend 都转发（gonc 下后者 = 在该回环端口起内嵌信令 broker，见
+  「内嵌会合点」）。`sessionKey=auto` 与 `secret=auto` 同构（ModConfig 生成、重启
   轮换）。服务端 mod 的三个内置启动器（forge ServerAgent ×2、modern
   `ServerAgentHost`，bukkit 复用后者）经 `ServeCommand.supportsBackend`
   放行 frp-xtcp 与 gonc-p2p，未知 id 才报 `serve.backendUnsupported`。
@@ -221,25 +238,42 @@ cs=tls 路径），其上跑 smux——每条 MC 连接一个 stream，两端都
   `ServeTelemetry.GONC_READY_MARKER` / `GONC_WARN_MARKER`：前者翻
   TUNNEL_READY，后者由三个启动器的 `pumpOutput` 升到 WARN。**同步点**：
   Go 常量 ↔ Java 常量逐字一致，由 Go `TestServeMarkers` 与 SelfTest 各
-  钉一次；build.yml 的「serve gonc-p2p 冒烟」用本机 mosquitto 跑真实
-  二进制断言正反两路。就绪定义 = 至少一个信令 broker 可达：`Serve` 在
+  钉一次；build.yml 的「serve gonc-p2p 冒烟」用 `-rendezvous` 的内嵌
+  broker 跑真实二进制断言正路（不出网、不装软件）、反路（死端口只见
+  `[serve-warn]`）与「`brokers=origin` 无 `-rendezvous` 立即报错退出」。
+  `-rendezvous` 配上不含 `origin` 的显式 `brokers` 列表 = 服主选了外部
+  broker：内嵌 broker **不启动**（`embeddedBrokerWanted`，info 行
+  `serve.goncExternalBrokers` 说明），否则 `[serve-ready]` 会描述一个没人
+  被告知的 broker。反向的错配（会合点关着却手写了 `origin`）由 ModConfig
+  告警（`config.goncOriginNeedsRendezvous`），列表原样下发不改写。
+  就绪定义 = 至少一个信令 broker 可达：`Serve` 在
   wait 循环前用 `easyp2p.NewMQTTSignalSession` 探测（`probeBrokers`，
   探测有自己的 deadline `brokerProbeTimeout`——paho 的 ConnectRetry 让
   构造函数对不可达 broker 永不自行失败），失败经 Warnf 报
   `serve.goncBrokerUnreachable` 并 2 秒后重试，首次成功调 `OnReady`
-  恰好一次（ctx 已取消时不再宣告）。探测只在启动时做一次：就绪之后
-  broker 全部失联，wait 循环会卡在 easyp2p 的 connect 重试里不出声、
-  mod 侧遥测仍是 READY——已知缺口，留待后续。wait 一轮 30 分钟无人
+  恰好一次（ctx 已取消时不再宣告）。`-rendezvous` 下探测打的是本进程的
+  回环 broker，`[serve-ready]` 即「内嵌 broker 已起」，Java 侧无需新标记。
+  探测只在启动时做一次：就绪之后 broker 全部失联，wait 循环会卡在
+  easyp2p 的 connect 重试里不出声、mod 侧遥测仍是 READY——对内嵌回环
+  broker 这不成立（它与 serve 同生共死），对服主自配的外部 broker 仍是
+  已知缺口，留待后续。wait 一轮 30 分钟无人
   hello 的例行重武装走 info（`serve.goncWaitIdle`，靠
   `context.WithTimeoutCause` 的 `errWaitIdle` 哨兵识别，easyp2p 会把
   调用方 ctx 的 cause 原样返回），只有真实失败才带 `[serve-warn]`；
-  空服过夜不该刷告警。`-rendezvous` 在 gonc 下预留给计划中的内嵌
-  MQTT broker，目前仍直接拒绝（`serve.goncRendezvous`）。
-- **frp 专属机制整组不适用**，ModConfig 强制关闭并告警/提示：
-  `rendezvous` 按关闭处理（info）、`tokenSigningKey` 置空（warn，两条
-  下发路径都不再附 user/userToken）；嗅探器的 TLS 转发分支自然不触发。
+  空服过夜不该刷告警。
+- **每玩家令牌层不适用**，ModConfig 强制关闭并告警：`tokenSigningKey`
+  置空（warn，两条下发路径都不再附 user/userToken）。`rendezvous` 则
+  两种 backend 都生效（gonc 下 = 内嵌信令 broker + `brokers=origin`）；
+  嗅探器按首字节分派——frp 的 TLS 分支对 gonc 不触发，MQTT CONNECT
+  分支（core `MqttConnect`）接管，转发机制共用。
   没有 `degraded` 事件（那是 frp 日志文本的翻译）：会话死亡 = `Run`
   返回错误 = agent 退出，mod 走既有的「agent 没了就重建」路径。
+- **已知上游缺口：gonc 的 `decryptAES` 不校验 nonce 长度**，收到畸形
+  nonce 直接在 paho 路由 goroutine 里 panic、无 recover——凡能往会话
+  topic 发布的人都能让 serve 进程（以及订阅同一 topic 的玩家侧 agent）
+  整个退出。内嵌 broker 的 ACL 把「能发布」收敛到「知道 topic = 持有
+  会话密钥」，即持有凭证的玩家；公共 broker 下则任何人都行。尚未向
+  threatexpert/gonc 报告，bump gonc 时核对该处是否已修。
 - **gonc 无跨版本协议兼容承诺**（对比 frp ±8 小版本窗口）：bump go.mod
   里的 gonc 必须客户端/服务端两侧一起发布，并重跑 `goncp2p` 包的
   glue 测试（`TestMuxGlue` 钉住我们自有的 smux 层）加一次真机冒烟。
@@ -260,7 +294,7 @@ cs=tls 路径），其上跑 smux——每条 MC 连接一个 stream，两端都
 
 | 子命令 | 用途 | 关键差异 |
 |---|---|---|
-| `serve` | 服务器宿主机 | 默认注册 xtcp 代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand`；`-meta-token` 向 authplugin 表明身份；`-rendezvous` 启用内嵌会合点（见下节）；`-backend gonc-p2p` 时改跑 gonc 的 wait 循环（`goncp2p.Serve`），frp 旗标不适用（`-proxy-protocol` 例外，两种 backend 都支持） |
+| `serve` | 服务器宿主机 | 默认注册 xtcp 代理；通常由服务端 mod 内置启动（`server.runAgent`），参数与下发凭证同源，Java 侧命令组装在 `ServeCommand`；`-meta-token` 向 authplugin 表明身份；`-rendezvous` 启用内嵌会合点（见下节）；`-backend gonc-p2p` 时改跑 gonc 的 wait 循环（`goncp2p.Serve`），frp 专属旗标（`-meta-token`/`-signing-key`）不适用；`-proxy-protocol` 与 `-rendezvous`（gonc 下 = 内嵌信令 broker）两种 backend 都支持 |
 | `tunnel` | 供 mod 调用 | **经 backend 抽象、无兜底**，超时即退出，stdout 输出 JSON |
 | `authplugin` | frps 宿主机 | frps 的 HTTP server plugin：Login 校验每玩家令牌，NewProxy 只放行静态令牌（serve）；`-allow-legacy` 是迁移开关。内嵌会合点模式下不必独立部署，`internal/rendezvous` 会在回环上自带一份 |
 
@@ -276,30 +310,51 @@ cs=tls 路径），其上跑 smux——每条 MC 连接一个 stream，两端都
 
 ### 内嵌会合点（`server.rendezvous`，默认开）
 
-xtcp 打洞里 frps 只负责在两条控制连接之间转发信令：地址发现靠外部 STUN
-（`internal/stunpick`），打通后的数据流根本不经过它。既然会合点只需要收发
-TCP，就没有理由必须待在公网——`internal/rendezvous` 把 frps 作为库嵌进
-serve 进程，**只监听回环**，玩家的控制连接由平台层的 `ConnectionSniffer`
-从 Minecraft 端口转发进去（frp 控制通道是 TLS，首字节 `0x16 0x03`，判定在
-core 的 `TlsRecord`）。
+打洞里会合点只负责在两端之间转发信令：地址发现靠 STUN，打通后的数据流
+根本不经过它。既然会合点只需要收发 TCP，就没有理由必须待在公网——两种
+backend 都把自己的会合点作为库嵌进 serve 进程，**只监听回环**，玩家的
+控制连接由平台层的 `ConnectionSniffer` 从 Minecraft 端口转发进去
+（转发/背压机制共用，只是首字节判定不同）：
+
+| backend | 内嵌的会合点 | 玩家控制连接的首字节 |
+|---|---|---|
+| frp-xtcp | frps（`internal/rendezvous`） | TLS `0x16 0x03`，core `TlsRecord` |
+| gonc-p2p | MQTT broker（`internal/signalbroker`，mochi-mqtt） | MQTT CONNECT `0x10` + 剩余长度 + 协议名 `MQTT`/`MQIsdp`，core `MqttConnect` |
 
 公网侧因此对本项目再无任何要求：不装插件、不必支持 xtcp、不必同版本，
 只要能把 TCP 转到 Minecraft 端口。租来的隧道服务、nginx stream、一条 NAT
-规则都可以，服主不必自建 frps。
+规则都可以，服主不必自建 frps；gonc 下也不必依赖任何公共 MQTT broker
+（gonc 默认的公共 broker 会破坏「会合点归服务端进程、凭证密钥只对它有
+意义」这个形状，所以公共 broker 只作显式选择）。
 
-整节机制专属于 frp-xtcp backend：嗅探识别的是 frp 的 TLS 控制通道、
-内嵌的是 frps。信令模型不同的未来 backend 未必需要会合点，届时另行
-设计，不要往这套嗅探/转发上硬套。
+信令模型完全不同的未来 backend 未必需要会合点，届时另行设计，不要往这套
+嗅探/转发上硬套；但只要会合点是「收发 TCP」，就照这两个先例：回环 +
+首字节分派。
 
 几条必须记住的约束：
 
-- **会合点只能绑回环**（`Options.Validate` 强制）。绑到别的地址就等于多开一个
-  公网口，而「服务器对外只剩那一个映射端口」是整个设计的立足点。这种回归从
-  功能上察觉不到，所以 `rendezvous_test.go` 用「同一端口在各非回环地址上还能
-  否被自己绑上」来钉住——**不要改成拨号探测**，开发机上的透明代理会接受任意
-  地址端口的连接，让这条测试假通过（第一版就是这么误报的）。
-- **监听面显式归零**：kcp/quic/vhost/dashboard/ssh 全部写成 0。零值本来就不开
-  监听，写出来是防 frp 改默认值。
+- **会合点只能绑回环**（frp：`rendezvous.Options.Validate` 强制；gonc：
+  `signalbroker.Options` 干脆没有绑定地址字段，回环写死）。绑到别的地址就
+  等于多开一个公网口，而「服务器对外只剩那一个映射端口」是整个设计的
+  立足点。这种回归从功能上察觉不到，所以 `rendezvous_test.go` 与
+  `signalbroker_test.go` 都用「同一端口在各非回环地址上还能否被自己绑上」
+  来钉住——**不要改成拨号探测**，开发机上的透明代理会接受任意地址端口的
+  连接，让这条测试假通过（第一版就是这么误报的）。
+- **监听面显式归零**（frp）：kcp/quic/vhost/dashboard/ssh 全部写成 0。零值
+  本来就不开监听，写出来是防 frp 改默认值。gonc 侧同理收紧 broker 能力：
+  retain/共享订阅关、QoS 上限 1、包上限 64 KiB——easyp2p 只用 QoS 1 非
+  retain 的精确 topic（钉在 `TestGoncSignalingInterop`：gonc 的 hello/wait
+  真跑在我们的 broker 上，bump gonc 或改 broker 能力都得过它）。
+- **broker 匿名准入，但 ACL 只放精确 topic**（`signalbroker.aclHook`）：
+  topic 是会话密钥的哈希、载荷由 easyp2p 加密，broker 拿到的全是不透明
+  字节——前提是外人猜不到、也列不出 topic。嗅探器会把任何人发到 Minecraft
+  端口的 MQTT CONNECT 都转进来，而 mochi 的 `WildcardSubAvailable` 只是
+  CONNACK 里的广告、并不强制，订阅 `#` 就能看到所有在谈会话的 topic，进而
+  往里塞垃圾中断交换（畸形 nonce 甚至让 gonc 的解密路径 panic）。所以
+  ACL 双向拒绝通配符（`#`/`+`）与 `$SYS` 树，钉在
+  `TestStrangerCannotDiscoverTopics`（真 paho 客户端订 `#` 拿到 SUBACK
+  0x80，且一次真实 hello/wait 期间收不到任何消息）。匿名可接受仅因为此。
+  broker 自身的告警走 `[serve-warn]` 通道。
 - **端口由平台层统一挑**（`Netherway.resolveRendezvousPort`），再分别传给嗅探器
   与 `ServeCommand`，两边必须是同一个数。
 - **开了每玩家令牌校验时 serve 自己也得过这一关**：它未指定静态令牌时会本机
@@ -311,14 +366,19 @@ core 的 `TlsRecord`）。
   `token=auto`、`room=minecraft`、`secret=auto`，无需服主手工补。
   serve 自己那句「未指定即随机生成」只在手工跑 `netherway serve -rendezvous`
   时才够得着。
-- 凭证因此**不带 `server`/`serverPort`**，见下节。
+- 凭证因此**不带 `server`/`serverPort`**（frp）/ **带 `brokers=origin`
+  占位符**（gonc），见下节。
 
 ### 凭证的服务入口与会合点地址由客户端补
 
 内嵌会合点就在这台服务器的 Minecraft 端口后面，客户端知道自己连的是哪；
 服务端反而未必知道自己的公网入口（NAT 后、多入口、域名与实际入口不一致）。
-所以 `rendezvous=true` 时 `ModConfig.serverCredentials` 会摘掉这两个键，
-由客端在交给 agent 之前用 `Credentials.rendezvousAt` 补齐。不论是否
+所以 `rendezvous=true` 时 `ModConfig.serverCredentials` 会摘掉这两个键
+（frp）或注入 `brokers=origin` 占位符（gonc），由客端在交给 agent 之前
+用 `Credentials.rendezvousAt` 补齐/替换：frp 补 `server`/`serverPort`，
+gonc 把每个 `origin` 换成 `tcp://<host>:<port>`（IPv6 加方括号）。注意
+gonc 的这一步是**替换不是补缺**，`withDefaultParams` 的「只补空缺」语义
+对它不适用，`rendezvousAt` 直接改写。不论是否
 使用内嵌会合点，客户端还会用 `Credentials.withOrigin` 附上这份凭证
 来自的 Minecraft 入口。该 origin 不传给 backend，只用于在本地分隔多服务缓存。
 
@@ -447,9 +507,14 @@ MC 端口请求一份凭证。
 **整个交换在 Minecraft 那一个端口上完成，服务器不多开任何监听端口。**
 帧靠首字节与 MC 流量分叉：预认证帧以 `NWAY` 开头，而 MC 现代握手第 2 字节
 是包 id `0x00`、legacy ping 以 `0xFE` 开头、PROXY protocol 以 `'P'` 或 `0x0D`
-开头、frp 控制通道以 TLS 的 `0x16 0x03` 开头，最迟第 2 字节就分得开。
-平台层的 `ConnectionSniffer` 是唯一的嗅探 handler——预认证、frp 控制通道转发
-（内嵌会合点）与 PROXY 剥头**必须合成一个**，三者抢的是同一批首字节。
+开头、frp 控制通道以 TLS 的 `0x16 0x03` 开头、gonc 信令的 MQTT CONNECT 以
+`0x10`（CONNECT，flags 0）开头、随后是 1–4 字节的 MQTT 剩余长度（永不为
+0，故与 MC 握手的包 id `0x00` 分得开）与协议名 `00 04 'M' 'Q' 'T' 'T'`
+（3.1.1/5）或 `00 06 'M' 'Q' 'I' 's' 'd' 'p'`（3.1），最多 13 字节判定
+（core `MqttConnect`，与 `TlsRecord` 同为三态）。最迟第 2 字节就分得开。
+平台层的 `ConnectionSniffer` 是唯一的嗅探 handler——预认证、会合点控制通道
+转发（frp TLS / gonc MQTT CONNECT，共用一条转发路径）与 PROXY 剥头**必须
+合成一个**，三者抢的是同一批首字节。
 
 - 协议：core 的 `PreauthProtocol`（裸字节、版本化、有界），
   服务端 `PreauthService` ↔ 客户端 `PreauthClient`，两侧都是 Java。

@@ -205,8 +205,8 @@ authplugin 专有:
 		"send a PROXY protocol header (v1 or v2) before dialing the local MC port; the MC side must strip it; empty disables",
 		"连本地 MC 端口前先发 PROXY protocol 头（v1 或 v2），MC 侧需能剥头；留空关闭"},
 	"flag.serve.rendezvous": {
-		"embedded rendezvous port (loopback); when non-zero, do not dial a public frps but run the rendezvous locally — the MC server forwards players' control connections in from the Minecraft port",
-		"内嵌会合点端口（回环）；非零时不连公网 frps，改在本机起会合点，玩家的控制连接由 MC 服务端从 Minecraft 端口转发进来"},
+		"embedded rendezvous port (loopback); when non-zero, run the rendezvous locally instead of using a public one (frp-xtcp: an embedded frps; gonc-p2p: an embedded MQTT signaling broker, resolving the \"origin\" broker placeholder) — the MC server forwards players' control connections in from the Minecraft port",
+		"内嵌会合点端口（回环）；非零时不用公网会合点，改在本机起（frp-xtcp：内嵌 frps；gonc-p2p：内嵌 MQTT 信令 broker，并解析 brokers 里的 \"origin\" 占位符），玩家的控制连接由 MC 服务端从 Minecraft 端口转发进来"},
 	"flag.serve.signingKey": {
 		"per-player token signing key; only meaningful in embedded-rendezvous mode (same value as the server mod's tokenSigningKey)",
 		"每玩家令牌签发密钥，仅内嵌会合点模式下有意义（与服务端 mod 的 tokenSigningKey 同值）"},
@@ -219,9 +219,15 @@ authplugin 专有:
 	"serve.goncPublish": {
 		"publishing local Minecraft port %d over gonc-p2p (MQTT signaling, no rendezvous server)",
 		"经 gonc-p2p 发布本机 Minecraft 端口 %d（MQTT 信令，无会合点服务器）"},
-	"serve.goncRendezvous": {
-		"-rendezvous only applies to the frp-xtcp backend",
-		"-rendezvous 只适用于 frp-xtcp backend"},
+	"serve.goncEmbeddedBroker": {
+		"publishing local Minecraft port %d over gonc-p2p (embedded signaling broker at 127.0.0.1:%d, loopback only; players' MQTT connections are forwarded in from the Minecraft port)",
+		"经 gonc-p2p 发布本机 Minecraft 端口 %d（内嵌信令 broker 127.0.0.1:%d，仅回环；玩家的 MQTT 连接经 Minecraft 端口转发进来）"},
+	"serve.goncExternalBrokers": {
+		"-rendezvous %d given, but parameter %s names explicit brokers without the %q placeholder: using those brokers, the embedded signaling broker is not started (list %q among them to use it)",
+		"给了 -rendezvous %d，但参数 %s 写了显式 broker 且没有 %q 占位符：按这些 broker 运行，不启动内嵌信令 broker（想用它就把 %q 写进列表）"},
+	"serve.goncOriginNeedsRendezvous": {
+		"parameter %s contains the %q placeholder but -rendezvous is not set: it stands for the embedded signaling broker, which only exists under -rendezvous <port>",
+		"参数 %s 含占位符 %q 但未设置 -rendezvous：它代表内嵌信令 broker，只在 -rendezvous <端口> 下存在"},
 	"serve.goncProxyProtocolOn": {
 		"PROXY protocol %s enabled: each player session's punched peer address is passed to the MC server in the header; the MC side must strip it, or players cannot connect",
 		"PROXY protocol %s 已启用：每个玩家会话的打洞对端地址将随头透传给 MC 服务端；确保 MC 侧装有剥头组件，否则玩家会连不上"},
@@ -444,6 +450,23 @@ authplugin 专有:
 		"rendezvous stopped",
 		"会合点已停止"},
 
+	// ---- 内嵌信令 broker（gonc-p2p 会合点） ----
+	"sb.badPort": {
+		"invalid signaling broker port: %d",
+		"信令 broker 端口非法: %d"},
+	"sb.listen": {
+		"listen for the embedded signaling broker on 127.0.0.1:%d: %w",
+		"内嵌信令 broker 监听 127.0.0.1:%d: %w"},
+	"sb.start": {
+		"start embedded signaling broker: %w",
+		"启动内嵌信令 broker: %w"},
+	"sb.stopped": {
+		"embedded signaling broker stopped",
+		"内嵌信令 broker 已停止"},
+	"sb.log": {
+		"signaling broker: %s",
+		"信令 broker: %s"},
+
 	// ---- mcping ----
 	"mcping.varintTooLong": {
 		"varint too long",
@@ -499,6 +522,9 @@ authplugin 专有:
 	"goncp2p.badNetwork": {
 		"invalid parameter %s: %q (allowed: %s)",
 		"参数 %s 非法: %q（允许: %s）"},
+	"goncp2p.originUnresolved": {
+		"parameter %s still contains the %q placeholder: the client mod replaces it with the Minecraft entry the credential came from, and serve -rendezvous with its embedded broker; it must not reach the backend unresolved",
+		"参数 %s 仍含占位符 %q：客户端 mod 应把它换成凭证来源的 Minecraft 入口，serve -rendezvous 应换成内嵌 broker；未解析的占位符不能进 backend"},
 	"goncp2p.effective": {
 		"effective parameters: %s=%s %s=%s %s=%s %s=%s",
 		"生效参数: %s=%s %s=%s %s=%s %s=%s"},

@@ -55,7 +55,7 @@ public final class ServerAgentHost {
     /**
      * 启动 serve。失败只记日志——直连是增强功能，绝不能拖垮服务端启动。
      *
-     * @param rendezvousPort 内嵌会合点端口（回环）；0 表示不启用，连公网 frps。
+     * @param rendezvousPort loopback port of the embedded rendezvous (frps or MQTT broker); 0 = off, use public infrastructure.
      *                       非零时必须与 {@link ConnectionSniffer} 收到的是同一个数。
      */
     public void start(Path cacheDir, int localPort, int rendezvousPort) {

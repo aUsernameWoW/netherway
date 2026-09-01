@@ -130,12 +130,9 @@ public final class ModConfig {
             LOG.warn(L10n.tr("config.rendezvousNeedsRunAgent"));
         }
         boolean frpBackend = Credentials.BACKEND_FRP_XTCP.equals(backendId);
-        if (rendezvousWanted && serverRunAgent && !frpBackend) {
-            // rendezvous=true 是默认值，gonc-p2p 服主大概率只改了 backend 一项，
-            // 这里按关闭处理并说明原因（info 级，不是配置错误）。
-            LOG.info(L10n.tr("config.rendezvousFrpOnly", backendId));
-        }
-        serverRendezvous = rendezvousWanted && serverRunAgent && frpBackend;
+        // Both backends embed their rendezvous (frp-xtcp: frps; gonc-p2p: the
+        // MQTT signaling broker) on loopback behind the Minecraft port.
+        serverRendezvous = rendezvousWanted && serverRunAgent;
 
         Map<String, String> params = parseParams(cfg.getStringList("params", "server",
                 defaultRendezvousParams(),
@@ -172,6 +169,16 @@ public final class ModConfig {
             }
         }
         serverParams = params;
+        if (Credentials.BACKEND_GONC_P2P.equals(backendId) && !serverRendezvous
+                && Credentials.containsOriginBroker(params.get(Credentials.PARAM_BROKERS))) {
+            // The placeholder only means something while the embedded broker
+            // exists; handed out without it, nobody resolves it (the client
+            // would point its signaling at a Minecraft port that relays
+            // nothing) and the built-in serve refuses to start. Warn loudly;
+            // the list is left as written so the operator sees exactly what
+            // is wrong.
+            LOG.warn(L10n.tr("config.goncOriginNeedsRendezvous", Credentials.BROKER_ORIGIN));
+        }
         serverPunchTimeoutSeconds = cfg.getInt("punchTimeoutSeconds", "server", 0, 0, 3600,
                 L10n.tr("cfg.server.punchTimeoutSeconds"));
         boolean advancedAuthConfigured = cfg.hasKey("server", "tokenSigningKey")
@@ -331,8 +338,17 @@ public final class ModConfig {
             if (serverRendezvous) {
                 // 内嵌会合点模式下地址由客户端自己补，见 CLAUDE.md 对应一节
                 p = new LinkedHashMap<String, String>(p);
-                p.remove("server");
-                p.remove("serverPort");
+                if (Credentials.BACKEND_FRP_XTCP.equals(backendId)) {
+                    p.remove("server");
+                    p.remove("serverPort");
+                } else if (Credentials.BACKEND_GONC_P2P.equals(backendId)) {
+                    // gonc: inject the "origin" broker placeholder the client
+                    // resolves to its entry; an explicit list stays untouched.
+                    String brokers = p.get(Credentials.PARAM_BROKERS);
+                    if (brokers == null || brokers.trim().isEmpty()) {
+                        p.put(Credentials.PARAM_BROKERS, Credentials.BROKER_ORIGIN);
+                    }
+                }
             }
             return new Credentials(backendId, p, serverPunchTimeoutSeconds * 1000);
         } catch (IllegalArgumentException e) {
