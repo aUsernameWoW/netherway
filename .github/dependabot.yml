@@ -25,6 +25,16 @@ updates:
       golang-x:
         patterns:
           - golang.org/x/*
+    # gonc and smux ARE the wire between two copies of our own binary
+    # (punch signaling, DTLS/TLS negotiation, the mux framing). gonc gives no
+    # cross-version compatibility promise and smux's major bump (1.5 -> 2.0)
+    # was auto-merged on 2026-09-02 before anyone looked. Bumping either must
+    # ship client and server mods together with the goncp2p glue tests and a
+    # real-machine smoke (CLAUDE.md, "gonc-p2p backend"), so they are bumped
+    # by hand, never by this bot.
+    ignore:
+      - dependency-name: github.com/threatexpert/gonc/v2
+      - dependency-name: github.com/xtaci/smux
   - package-ecosystem: github-actions
     directory: /
     schedule:
