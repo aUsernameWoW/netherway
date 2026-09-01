@@ -1,20 +1,45 @@
 package cn.ripplecraft.netherway.core.telemetry;
 
 /**
- * serve 进程生命周期的遥测状态机（专用服务器侧，path = serve）。
+ * Telemetry state machine for the serve process lifecycle (dedicated server
+ * side, path = serve).
  *
- * <p>serve 没有 stdout JSON 契约，可观察时刻只有四个：尝试启动、注册成功、
- * 启动失败、进程退出。注册成功靠 frp 的日志原文 {@code start proxy success}
- * 识别——CI 冒烟已把这行钉为 frp bump 的绊线（见 build.yml），这里与之同源，
- * frp 若改字样两处一起改。
+ * <p>serve has no stdout JSON contract, so there are only four observable
+ * moments: start attempt, ready, start failure, process exit. "Ready" is
+ * recognised from the process output and differs per backend:
+ * <ul>
+ *   <li>frp-xtcp: frp's own log text {@code start proxy success}, which the
+ *       CI smoke (build.yml) pins as the frp-bump tripwire; keep the two in
+ *       sync if frp ever rewords it.</li>
+ *   <li>gonc-p2p: the {@code [serve-ready]} marker that
+ *       {@code cmd/netherway/serve_gonc.go} prefixes to its ready line once a
+ *       signaling broker has been reached. The marker is language-independent
+ *       (the rest of the line is localised); the same file also prefixes
+ *       warning-level lines with {@code [serve-warn]}, which the platform log
+ *       pump escalates to WARN. Both literals are pinned on the Go side by
+ *       {@code TestServeMarkers} and here by SelfTest.</li>
+ * </ul>
  *
- * <p>本类不做 I/O、不依赖平台类型，平台层（ServerAgent）只负责把时刻喂进来；
- * 摘要经 {@link QualityObserver} 出去。方法同步：启动线程与日志泵线程会并发到达。
+ * <p>No I/O and no platform types: the platform layer (ServerAgent) feeds the
+ * moments in and summaries leave through {@link QualityObserver}. Methods are
+ * synchronized because the start thread and the log pump thread race.
  */
 public final class ServeTelemetry {
 
-    /** frp 注册成功的日志原文；与 build.yml 冒烟的绊线保持同一字符串。 */
+    /** frp's proxy-registered log text; the same string the build.yml smoke pins. */
     private static final String PROXY_SUCCESS_MARKER = "start proxy success";
+
+    /**
+     * Prefix of the gonc serve "ready" line. Mirrors Go
+     * {@code cmd/netherway/serve_gonc.go} {@code ServeReadyMarker} byte for byte.
+     */
+    public static final String GONC_READY_MARKER = "[serve-ready]";
+
+    /**
+     * Prefix of gonc serve warning-level lines. Mirrors Go
+     * {@code cmd/netherway/serve_gonc.go} {@code ServeWarnMarker} byte for byte.
+     */
+    public static final String GONC_WARN_MARKER = "[serve-warn]";
 
     private enum State { IDLE, STARTING, READY, DONE }
 
@@ -52,10 +77,10 @@ public final class ServeTelemetry {
                 .withFailure(failureStage, failureCode));
     }
 
-    /** serve 输出的每一行日志；识别到注册成功即记 TUNNEL_READY。 */
+    /** Every serve output line; the first ready signal of either backend records TUNNEL_READY. */
     public synchronized void onLogLine(String line) {
         if (state != State.STARTING || line == null
-                || !line.contains(PROXY_SUCCESS_MARKER)) {
+                || !(line.contains(PROXY_SUCCESS_MARKER) || line.contains(GONC_READY_MARKER))) {
             return;
         }
         state = State.READY;

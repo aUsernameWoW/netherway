@@ -28,6 +28,7 @@ public final class ModConfigSelfTest {
             replacementCanBeDisabled(root);
             cfgCommentsFollowLanguage(root);
             commentOnlyChangesDoNotRewriteCfg(root);
+            goncBackendForcesFrpOnlyMechanismsOff(root);
             runtimeRoutesExistOnlyWhileReady();
             eventSubscriberIsExternallyAccessible();
             System.out.println("ModConfigSelfTest passed");
@@ -120,6 +121,42 @@ public final class ModConfigSelfTest {
         new ModConfig(file.toFile());
         String reloaded = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
         check(reloaded.equals(tampered), "注释差异不得触发回写，手改内容必须原样保留");
+    }
+
+    /**
+     * backend=gonc-p2p: the frp-only mechanisms are forced off (rendezvous,
+     * per-player token signing), sessionKey=auto is generated like secret=auto,
+     * and the credentials carry no server address (brokers are the rendezvous).
+     */
+    private static void goncBackendForcesFrpOnlyMechanismsOff(Path root) throws Exception {
+        Path file = root.resolve("gonc-backend.cfg");
+        Files.write(file, (
+                "server {\n"
+                + "    S:backend=gonc-p2p\n"
+                + "    B:rendezvous=true\n"
+                + "    S:tokenSigningKey=ci-signing-key\n"
+                + "    S:params <\n"
+                + "        sessionKey=auto\n"
+                + "        room=minecraft\n"
+                + "     >\n"
+                + "}\n").getBytes(StandardCharsets.UTF_8));
+
+        ModConfig config = new ModConfig(file.toFile());
+        check(Credentials.BACKEND_GONC_P2P.equals(config.serverBackendId()),
+                "backend 应按文件读取为 gonc-p2p");
+        check(!config.serverRendezvous(), "gonc-p2p 下 rendezvous 必须按关闭处理");
+        check(config.tokenSigningKey().isEmpty(), "gonc-p2p 下 tokenSigningKey 必须置空");
+        String sessionKey = config.serverParams().get("sessionKey");
+        check(sessionKey != null && !sessionKey.isEmpty() && !"auto".equals(sessionKey),
+                "sessionKey=auto 应生成随机密钥");
+        Credentials cred = config.serverCredentials();
+        check(cred != null, "gonc-p2p 配置应能组装凭证");
+        check(Credentials.BACKEND_GONC_P2P.equals(cred.backendId()),
+                "凭证 backendId 应为 gonc-p2p");
+        check(cred.param("server") == null && cred.param("serverPort") == null,
+                "gonc-p2p 凭证不得带 server/serverPort");
+        check(sessionKey.equals(cred.param("sessionKey")),
+                "serve 与下发凭证的 sessionKey 必须同源");
     }
 
     private static void runtimeRoutesExistOnlyWhileReady() {

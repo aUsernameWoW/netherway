@@ -19,6 +19,18 @@ public final class ServeCommand {
     private ServeCommand() {
     }
 
+    /**
+     * Whether the built-in serve can publish the given backend. Single source
+     * of truth for the platform launchers' gate; {@link #build(Path, String,
+     * Map, int, Options)} branches on the same ids. Unknown ids must be
+     * refused up front: the agent would reject them anyway, but only after the
+     * binary has been extracted and a process spawned.
+     */
+    public static boolean supportsBackend(String backendId) {
+        return Credentials.BACKEND_FRP_XTCP.equals(backendId)
+                || Credentials.BACKEND_GONC_P2P.equals(backendId);
+    }
+
     /** serve 的可选项。逐个加旗标参数会让签名膨胀，集中在这里。 */
     public static final class Options {
 

@@ -155,6 +155,71 @@ jobs:
             echo "SIGTERM 后未干净退出（exit $status）"
             exit 1
           fi
+      # gonc-p2p 冒烟：真实二进制跑 serve 的 wait 侧，钉住 serve 状态标记
+      # 契约（cmd/netherway/serve_gonc.go 的 [serve-ready]/[serve-warn] ↔
+      # Java ServeTelemetry 的常量）。正路：本机 mosquitto 当信令 broker，
+      # broker 探测通过即打 [serve-ready]；反路：broker 指向无人监听的端口，
+      # 只能看到 [serve-warn]、绝不能出现 [serve-ready]。全程不出网：
+      # 打洞只在玩家 hello 后才开始，STUN 不会被联系。
+      - name: serve gonc-p2p 冒烟
+        env:
+          NETHERWAY_LANG: zh
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mosquitto >/dev/null
+          printf 'listener 18830 127.0.0.1\nallow_anonymous true\n' >mosquitto-ci.conf
+          mosquitto -c mosquitto-ci.conf -d
+          bin/netherway-linux-amd64 serve -backend gonc-p2p \
+            -O sessionKey=ci-smoke -O room=ci-smoke \
+            -O brokers=tcp://127.0.0.1:18830 \
+            -port 25565 >gonc-serve.out 2>gonc-serve.err &
+          pid=$!
+          ok=""
+          for i in $(seq 1 40); do
+            if grep -q "\[serve-ready\]" gonc-serve.out 2>/dev/null; then ok=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          alive=""; kill -0 "$pid" 2>/dev/null && alive=1
+          kill "$pid" 2>/dev/null || true
+          status=0; wait "$pid" || status=$?
+          cat gonc-serve.out
+          cat gonc-serve.err >&2
+          if [ -z "$alive" ]; then
+            echo "gonc serve 进程提前退出（exit $status）"
+            exit 1
+          fi
+          if [ -z "$ok" ]; then
+            echo "gonc serve 20 秒内未打出 [serve-ready]（broker 探测失败？标记字样变了？）"
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "SIGTERM 后未干净退出（exit $status）"
+            exit 1
+          fi
+          # 反路：无 broker 可达时只有告警标记，绝无就绪标记
+          bin/netherway-linux-amd64 serve -backend gonc-p2p \
+            -O sessionKey=ci-smoke -O room=ci-smoke \
+            -O brokers=tcp://127.0.0.1:1 \
+            -port 25565 >gonc-nobroker.out 2>gonc-nobroker.err &
+          pid=$!
+          warn=""
+          for i in $(seq 1 30); do
+            if grep -q "\[serve-warn\]" gonc-nobroker.out 2>/dev/null; then warn=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" || true
+          cat gonc-nobroker.out
+          if [ -z "$warn" ]; then
+            echo "broker 不可达时 15 秒内未打出 [serve-warn]"
+            exit 1
+          fi
+          if grep -q "\[serve-ready\]" gonc-nobroker.out; then
+            echo "broker 不可达却打出了 [serve-ready]"
+            exit 1
+          fi
 
   core:
     name: Java core SelfTest (JDK ${{ matrix.java }})

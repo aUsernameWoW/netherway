@@ -79,7 +79,7 @@ $JAVA8/bin/java -Dfile.encoding=UTF-8 -cp mod/build/classes cn.ripplecraft.nethe
 
 源码含中文，`-encoding UTF-8` 与 `-Dfile.encoding=UTF-8` 都不能省。
 
-`SelfTest` 是自包含的断言集（当前 552 项），无需任何依赖。跑单项测试的方式是在
+`SelfTest` 是自包含的断言集（当前 558 项），无需任何依赖。跑单项测试的方式是在
 `SelfTest.main` 里注释掉其余调用——刻意保持简单，没有测试框架的筛选机制。
 
 端到端测试需要真实的 frps 与服务端 agent 在运行，且 classpath 里要有
@@ -209,7 +209,32 @@ cs=tls 路径），其上跑 smux——每条 MC 连接一个 stream，两端都
   `ServeCommand.build` 按 backendId 分岔，frp 专属选项（meta-token/
   rendezvous/signing-key）静默忽略，`-proxy-protocol` 两种 backend 都
   转发。`sessionKey=auto` 与 `secret=auto` 同构（ModConfig 生成、重启
-  轮换）。
+  轮换）。服务端 mod 的三个内置启动器（forge ServerAgent ×2、modern
+  `ServerAgentHost`，bukkit 复用后者）经 `ServeCommand.supportsBackend`
+  放行 frp-xtcp 与 gonc-p2p，未知 id 才报 `serve.backendUnsupported`。
+- **serve 状态标记契约**（2026-09-02 起）：gonc serve 的输出是本地化
+  文本，mod 无法像 frp 那样靠 `start proxy success` / ` [W] ` 识别，所以
+  `cmd/netherway/serve_gonc.go` 给状态行加语言无关前缀：就绪行
+  `[serve-ready]`（`ServeReadyMarker`），告警行 `[serve-warn]`
+  （`ServeWarnMarker`，`goncp2p.ServeOptions.Warnf` 路由的 retry/
+  PROXY 头降级等），普通 info 行不带前缀。Java 侧镜像在 core
+  `ServeTelemetry.GONC_READY_MARKER` / `GONC_WARN_MARKER`：前者翻
+  TUNNEL_READY，后者由三个启动器的 `pumpOutput` 升到 WARN。**同步点**：
+  Go 常量 ↔ Java 常量逐字一致，由 Go `TestServeMarkers` 与 SelfTest 各
+  钉一次；build.yml 的「serve gonc-p2p 冒烟」用本机 mosquitto 跑真实
+  二进制断言正反两路。就绪定义 = 至少一个信令 broker 可达：`Serve` 在
+  wait 循环前用 `easyp2p.NewMQTTSignalSession` 探测（`probeBrokers`，
+  探测有自己的 deadline `brokerProbeTimeout`——paho 的 ConnectRetry 让
+  构造函数对不可达 broker 永不自行失败），失败经 Warnf 报
+  `serve.goncBrokerUnreachable` 并 2 秒后重试，首次成功调 `OnReady`
+  恰好一次（ctx 已取消时不再宣告）。探测只在启动时做一次：就绪之后
+  broker 全部失联，wait 循环会卡在 easyp2p 的 connect 重试里不出声、
+  mod 侧遥测仍是 READY——已知缺口，留待后续。wait 一轮 30 分钟无人
+  hello 的例行重武装走 info（`serve.goncWaitIdle`，靠
+  `context.WithTimeoutCause` 的 `errWaitIdle` 哨兵识别，easyp2p 会把
+  调用方 ctx 的 cause 原样返回），只有真实失败才带 `[serve-warn]`；
+  空服过夜不该刷告警。`-rendezvous` 在 gonc 下预留给计划中的内嵌
+  MQTT broker，目前仍直接拒绝（`serve.goncRendezvous`）。
 - **frp 专属机制整组不适用**，ModConfig 强制关闭并告警/提示：
   `rendezvous` 按关闭处理（info）、`tokenSigningKey` 置空（warn，两条
   下发路径都不再附 user/userToken）；嗅探器的 TLS 转发分支自然不触发。

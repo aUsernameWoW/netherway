@@ -231,6 +231,15 @@ authplugin 专有:
 	"serve.goncRetry": {
 		"wait/punch cycle failed: %v; re-arming",
 		"等待/打洞一轮失败: %v；重新武装"},
+	"serve.goncWaitIdle": {
+		"no player hello in this wait cycle; re-arming",
+		"本轮等待没有玩家 hello；重新武装"},
+	"serve.goncBrokerUnreachable": {
+		"no signaling broker reachable: %v; retrying",
+		"没有可达的信令 broker: %v；重试中"},
+	"serve.goncReady": {
+		"gonc-p2p serve ready: a signaling broker is reachable, local Minecraft port %d is published",
+		"gonc-p2p serve 就绪：信令 broker 可达，本机 Minecraft 端口 %d 已发布"},
 	"serve.goncSession": {
 		"player session established (peer %s via %s)",
 		"玩家会话已建立（对端 %s，经 %s）"},

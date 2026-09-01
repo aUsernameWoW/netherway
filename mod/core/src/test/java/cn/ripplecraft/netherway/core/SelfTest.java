@@ -2756,6 +2756,35 @@ public final class SelfTest {
         check("serve 就绪后异常退出记 tunnel_lost", payload.contains("\"stage\":\"tunnel_lost\"")
                 && payload.contains("\"failureCode\":\"backend_exited\""));
         check("serve 摘要带 backend", payload.contains("\"backend\":\"frp_xtcp\""));
+        // gonc-p2p：就绪靠 Go 侧 serve_gonc.go 前缀的 [serve-ready] 标记，
+        // 告警行前缀 [serve-warn]；标记与语言无关，其余文本本地化
+        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend gonc =
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.GONC_P2P;
+        cn.ripplecraft.netherway.core.telemetry.TelemetryCollector goncFull = serveCollector();
+        cn.ripplecraft.netherway.core.telemetry.ServeTelemetry goncServe =
+                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(goncFull, gonc);
+        goncServe.onStartAttempt();
+        goncServe.onLogLine(cn.ripplecraft.netherway.core.telemetry.ServeTelemetry.GONC_WARN_MARKER
+                + " 没有可达的信令 broker: dial tcp: connection refused；重试中");
+        check("gonc serve 告警行不算就绪",
+                !goncFull.previewPayload().contains("tunnel_ready"));
+        goncServe.onLogLine(cn.ripplecraft.netherway.core.telemetry.ServeTelemetry.GONC_READY_MARKER
+                + " gonc-p2p serve 就绪：信令 broker 可达，本机 Minecraft 端口 25565 已发布");
+        String goncPayload = goncFull.previewPayload();
+        check("gonc serve 就绪标记记 tunnel_ready",
+                goncPayload.contains("\"stage\":\"tunnel_ready\""));
+        check("gonc serve 摘要带 backend gonc_p2p",
+                goncPayload.contains("\"backend\":\"gonc_p2p\""));
+        // 跨语言钉住：与 Go 侧 cmd/netherway/serve_gonc.go 的常量逐字一致
+        check("gonc 就绪标记字面量与 Go 侧一致", "[serve-ready]".equals(
+                cn.ripplecraft.netherway.core.telemetry.ServeTelemetry.GONC_READY_MARKER));
+        check("gonc 告警标记字面量与 Go 侧一致", "[serve-warn]".equals(
+                cn.ripplecraft.netherway.core.telemetry.ServeTelemetry.GONC_WARN_MARKER));
+        check("ServeCommand 支持两种 backend",
+                ServeCommand.supportsBackend(Credentials.BACKEND_FRP_XTCP)
+                && ServeCommand.supportsBackend(Credentials.BACKEND_GONC_P2P)
+                && !ServeCommand.supportsBackend("wireguard")
+                && !ServeCommand.supportsBackend(null));
 
         // 早退：进程活了但没等到注册成功
         cn.ripplecraft.netherway.core.telemetry.TelemetryCollector early = serveCollector();

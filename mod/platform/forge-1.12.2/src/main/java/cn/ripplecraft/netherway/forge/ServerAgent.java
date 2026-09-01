@@ -28,6 +28,11 @@ import org.apache.logging.log4j.Logger;
  *
  * <p>frp 掉线会自己重连（LoginFailExit=false），所以这里不做自动重启：
  * 进程退出通常意味着配置错误，重启只会无限刷同一个错。
+ *
+ * <p>The same no-auto-restart policy holds for gonc-p2p: goncp2p.Serve
+ * retries broker probing and wait/punch cycles internally and only returns
+ * on cancellation, so an exit there is a configuration error as well, never
+ * a transient network failure worth restarting over.
  */
 public final class ServerAgent {
 
@@ -58,7 +63,7 @@ public final class ServerAgent {
             return;
         }
         telemetry.onStartAttempt();
-        if (!Credentials.BACKEND_FRP_XTCP.equals(config.serverBackendId())) {
+        if (!ServeCommand.supportsBackend(config.serverBackendId())) {
             LOG.warn(L10n.tr("serve.backendUnsupported", config.serverBackendId()));
             telemetry.onStartFailure(QualitySummary.FailureStage.START,
                     QualitySummary.FailureCode.BACKEND_UNKNOWN);
@@ -126,7 +131,10 @@ public final class ServerAgent {
         }
     }
 
-    /** 把 serve 的输出逐行转进服务端日志；frp 的 warn/error 行保持醒目。 */
+    /**
+     * Forwards serve output line by line into the server log. frp's warn/error
+     * lines and gonc's {@code [serve-warn]}-prefixed lines stay prominent at WARN.
+     */
     private void pumpOutput(Process proc) {
         BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream(), UTF8));
         try {
@@ -137,7 +145,8 @@ public final class ServerAgent {
                     continue;
                 }
                 telemetry.onLogLine(t);
-                if (t.contains(" [W] ") || t.contains(" [E] ")) {
+                if (t.startsWith(ServeTelemetry.GONC_WARN_MARKER)
+                        || t.contains(" [W] ") || t.contains(" [E] ")) {
                     LOG.warn("[serve] {}", t);
                 } else {
                     LOG.info("[serve] {}", t);

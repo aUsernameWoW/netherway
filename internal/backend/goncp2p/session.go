@@ -13,11 +13,13 @@ package goncp2p
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"log"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aUsernameWoW/netherway/internal/backend"
 	"github.com/aUsernameWoW/netherway/internal/i18n"
@@ -33,6 +35,14 @@ const (
 	roleWait              // server: waits for hellos, then accepts mux streams
 )
 
+// errWaitIdle is what establish returns on the wait side when a whole
+// waitTimeout passed without a hello: the routine re-arm, not a failure.
+// Serve logs it at info; every other error is a warning. easyp2p has no
+// sentinel of its own for the expiry (it formats a fresh error string), so
+// the wait context carries this one as its cancellation cause — easyp2p
+// hands context.Cause of the caller's context back verbatim.
+var errWaitIdle = errors.New("wait cycle expired without a hello")
+
 // establish performs one signaling + punch + negotiation cycle and returns
 // the secured connection. The smux role is fixed by our application role,
 // NOT by the punch role: easyp2p elects punch client/server arbitrarily,
@@ -46,7 +56,18 @@ func establish(ctx context.Context, cfg runConfig, r role, logw io.Writer) (net.
 		hp.SetControlValue("cs", "tls")
 		salt, signal, err = easyp2p.MQTTHelloSession(ctx, cfg.key, "", hp, helloTimeout, logw)
 	} else {
-		salt, signal, err = easyp2p.MqttWaitSession(ctx, cfg.key, "", waitTimeout, logw)
+		// Our deadline (with errWaitIdle as cause) must fire before
+		// easyp2p's own exchange timeout, hence the slack on the latter;
+		// otherwise easyp2p reports the expiry as a generic error. The
+		// signal session inherits this context, and the punch below
+		// still uses it for signaling: a hello landing in the last
+		// seconds of the window can therefore fail its punch with
+		// errWaitIdle — harmless (the player retries, the loop re-arms
+		// either way), only the log level differs. The punched data
+		// connection itself is not tied to this context.
+		wctx, cancel := context.WithTimeoutCause(ctx, waitTimeout, errWaitIdle)
+		defer cancel()
+		salt, signal, err = easyp2p.MqttWaitSession(wctx, cfg.key, "", waitTimeout+time.Minute, logw)
 	}
 	if err != nil {
 		return nil, nil, err

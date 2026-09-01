@@ -737,11 +737,11 @@ public final class L10n {
                 "Per-player token issuing enabled (valid for {0} days), signing key fingerprint {1}",
                 "每玩家令牌签发已启用（有效期 {0} 天），签发密钥指纹 {1}");
         def("fserver.willRunServe",
-                "The built-in serve starts with the server and registers room \"{0}\" with frps "
-                        + "(if a standalone netherway serve also runs on this host, stop one of them: "
-                        + "same-name proxies conflict on registration)",
-                "将随服务端启动内置 serve，把房间 \"{0}\" 注册到 frps"
-                        + "（若宿主机还单独跑着 netherway serve，请停掉其一，同名代理会注册冲突）");
+                "The built-in serve starts with the server and publishes room \"{0}\" through the "
+                        + "tunnel backend (if a standalone netherway serve also runs on this host, stop one "
+                        + "of them: two serves for the same room conflict)",
+                "将随服务端启动内置 serve，经隧道 backend 发布房间 \"{0}\""
+                        + "（若宿主机还单独跑着 netherway serve，请停掉其一，同一房间的两个 serve 会冲突）");
         def("fserver.noRunAgent",
                 "Note: server.runAgent is off, so the mod only delivers credentials; the proxy for room \"{0}\" "
                         + "must be registered with frps by a standalone netherway serve on the host "
@@ -762,9 +762,9 @@ public final class L10n {
                 "{0} failed to go direct (room {1}): {2}",
                 "{0} 直连失败（房间 {1}）：{2}");
         def("serve.backendUnsupported",
-                "The built-in serve currently supports only frp-xtcp (configured backend: {0}); "
+                "The built-in serve does not support backend {0}; "
                         + "run the matching tunnel service on the host yourself",
-                "内置 serve 目前仅支持 frp-xtcp（当前 backend: {0}），请在宿主机上自行运行对应的隧道服务");
+                "内置 serve 不支持 backend {0}，请在宿主机上自行运行对应的隧道服务");
         def("serve.noBinary",
                 "No bundled agent binary for this system; cannot start serve: {0}",
                 "当前系统没有内置的 agent 二进制，无法启动 serve: {0}");
@@ -778,12 +778,13 @@ public final class L10n {
                 "Failed to start the built-in serve",
                 "内置 serve 启动失败");
         def("serve.exited",
-                "The built-in serve exited (code {0}). frp reconnects on its own after network drops, so an "
-                        + "outright exit usually means a configuration error (frps address/token/secret); see the "
+                "The built-in serve exited (code {0}). The tunnel backend reconnects on its own after network "
+                        + "drops, so an outright exit usually means a configuration error (server.backend / "
+                        + "server.params, e.g. frps address/token/secret or the gonc session key); see the "
                         + "[serve] log above for the cause, fix the configuration and restart the server",
-                "内置 serve 进程退出（码 {0}）。frp 掉线会自动重连，进程直接退出"
-                        + "通常是配置错误（frps 地址/令牌/密钥），原因见上方 [serve] 日志；"
-                        + "修正配置后重启服务端生效");
+                "内置 serve 进程退出（码 {0}）。隧道 backend 掉线会自动重连，进程直接退出"
+                        + "通常是配置错误（server.backend / server.params，如 frps 地址/令牌/密钥或 gonc 的 "
+                        + "sessionKey），原因见上方 [serve] 日志；修正配置后重启服务端生效");
         def("serve.stopped",
                 "The built-in serve has stopped",
                 "内置 serve 已停止");
