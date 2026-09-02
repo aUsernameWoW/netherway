@@ -314,7 +314,7 @@ public final class AgentProcess implements Closeable {
 
     /**
      * 阻塞到进程退出。预热的重试循环用它守望就绪隧道：进程一死
-     * （网络断、frps 重启、被杀）立即醒来进入下一轮重打。
+     * （网络断、会话死亡、被杀）立即醒来进入下一轮重打。
      */
     public void awaitExit() throws InterruptedException {
         process.waitFor();

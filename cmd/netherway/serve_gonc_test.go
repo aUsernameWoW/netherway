@@ -1,5 +1,3 @@
-//go:build !nogonc
-
 package main
 
 import "testing"

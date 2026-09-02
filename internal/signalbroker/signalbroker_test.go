@@ -152,9 +152,8 @@ func TestCloseIsIdempotentAndContextCloses(t *testing.T) {
 }
 
 // TestGoncSignalingInterop is the behavior-level guard: gonc's own
-// hello/wait signaling (easyp2p) must complete over OUR broker — the
-// analogue of internal/rendezvous's frpc-against-embedded-frps interop
-// test. Compiling is not enough: a broker capability we switch off, or a
+// hello/wait signaling (easyp2p) must complete over OUR broker.
+// Compiling is not enough: a broker capability we switch off, or a
 // gonc bump that starts relying on one (retain, shared subscriptions, a
 // larger packet, a wildcard), would only show up here. All loopback, no
 // network: STUN and punching only begin after the hello, which is where

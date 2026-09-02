@@ -1,16 +1,17 @@
-# 依赖自动更新。配套 workflows/dependabot-automerge.yml：CI 全绿即自动合入。
+# Dependency updates. Paired with workflows/dependabot-automerge.yml: a
+# bump whose CI comes back green is merged automatically.
 #
-# frp 也在自动合入范围内，不做特殊处理：frp 自 v0.69 起承诺 frpc↔frps
-# 前后各 8 个小版本的协议兼容窗口（见 v0.69.0 release notes），frps 只需
-# 保持在窗口内跟进（按 frp 发版节奏约一年升一次）。库 API 层的破坏表现
-# 为编译失败，由 CI 拦下——PR 不绿就不会合；「编译过但行为变」的风险面
-# 由三道行为级防线兜底：frp 日志漏进 stdout 污染 JSON 契约 → build.yml
-# 的 tunnel stdout 契约冒烟；内嵌会合点的登录/注册放行规则 →
-# internal/rendezvous 的 interop 测试（go test 里跑）；serve 内嵌模式的
-# 全链路装配 → build.yml 的 serve 内嵌会合点冒烟。
+# Auto-merge is safe for the dependencies below because a library API
+# break surfaces as a compile failure, which CI catches before the PR can
+# merge, and the "compiles but behaves differently" surface is fenced by
+# behavior-level tests: build.yml's tunnel stdout smoke (a library log line
+# leaking into stdout would break the mod's JSON contract) and its serve
+# smoke (embedded signaling broker up → [serve-ready]), plus the
+# internal/signalbroker interop test that runs gonc's real hello/wait
+# against our broker.
 #
-# Gradle（mod/platform/forge-1.7.10）刻意不纳入：RetroFuturaGradle 与
-# 1.7.10 生态版本钉死，自动 bump 只会添乱。
+# Gradle (mod/platform/*) is deliberately excluded: RetroFuturaGradle and
+# the 1.7.10 ecosystem are pinned, automatic bumps only cause churn.
 version: 2
 updates:
   - package-ecosystem: gomod
@@ -18,10 +19,6 @@ updates:
     schedule:
       interval: weekly
     groups:
-      # frp 与 fatedier/golib 必须一起动，拆开 bump 会出现编译不过的中间态
-      frp:
-        patterns:
-          - github.com/fatedier/*
       golang-x:
         patterns:
           - golang.org/x/*

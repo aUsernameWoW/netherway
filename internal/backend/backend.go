@@ -1,13 +1,15 @@
-// Package backend 定义隧道 backend 的统一接口与注册表。
+// Package backend defines the tunnel backend interface and registry.
 //
-// 一个 backend 把某种隧道方案抽象成一件事：在本机指定地址上开一个
-// TCP 端口，通向 Minecraft 服务器。frp xtcp 打洞是第一个实现；将来的
-// 方案（headscale、Hysteria 之类）只要能归约到「本地端口」这个形状，
-// 就能在不动 mod 侧与 tunnel 子命令的前提下接进来。
+// A backend reduces one tunnel scheme to a single promise: open a TCP port
+// on this machine at the requested address that leads to the Minecraft
+// server. gonc-p2p is the implementation shipped today; any future scheme
+// that can be squeezed into the "local port" shape plugs in without
+// touching the mod side or the tunnel subcommand.
 //
-// 就绪与否刻意不由 backend 自己上报，而是由调用方用 Minecraft 握手
-// （Server List Ping）探测判定——这条判据对任何隧道方案都成立，
-// 还顺带确认了服务端进程在响应，而不只是端口被监听着。
+// Readiness is deliberately not reported by the backend itself: the caller
+// probes with a Minecraft handshake (Server List Ping), a criterion that
+// holds for every scheme and additionally proves the server process is
+// answering, not merely that a port is listening.
 package backend
 
 import (
@@ -18,57 +20,67 @@ import (
 	"github.com/aUsernameWoW/netherway/internal/config"
 )
 
-// Options 是调用方传给 backend 的通用运行参数，与具体隧道方案无关。
+// Options are the scheme-independent run parameters the caller hands to a
+// backend.
 type Options struct {
-	// BindAddr/BindPort 是 backend 必须在本机开出的 TCP 监听，
-	// 连上它就等于连上了 Minecraft 服务器。
+	// BindAddr/BindPort is the local TCP listener the backend must open;
+	// connecting to it is connecting to the Minecraft server.
 	BindAddr string
 	BindPort int
-	// Timings 由调用方归一化后传入。
+	// Timings, normalized by the caller.
 	Timings config.Timings
-	// LogLevel/LogTo 控制 backend 自身日志的去向。tunnel 模式下
-	// stdout 留给逐行 JSON 状态契约，backend 日志必须写文件。
+	// LogLevel/LogTo direct the backend's own log output. In tunnel mode
+	// stdout carries the line-delimited JSON status contract, so the
+	// backend log must go to a file. Backends without log levels ignore
+	// LogLevel.
 	LogLevel string
 	LogTo    string
-	// Logf 接收 backend 的诊断日志：生效的参数、被忽略的键、STUN 选择
-	// 这类「为什么走到这一步」的信息，与 LogTo 指向的 frp 内部日志互补。
-	// tunnel 模式把它指向 stderr，由 mod 收集写进游戏日志；nil 表示丢弃。
-	// 契约：绝不能经它输出 token、密钥等参数值本身。
+	// Logf receives the backend's diagnostics — effective parameters,
+	// ignored keys, server selection: the "why did it end up here"
+	// information that complements the raw log in LogTo. tunnel mode points
+	// it at stderr, which the mod collects into the game log; nil discards.
+	// Contract: never print parameter values such as keys or tokens.
 	Logf func(format string, args ...any)
-	// LogEcho 非 nil 时，backend 内部组件（如 frp）info 及以上级别的日志
-	// 额外回显一份到这里，LogTo 的文件仍保留完整内容。tunnel 模式指向
-	// stderr，让「隧道方案自己报的错」也能进游戏日志。
+	// LogEcho, when non-nil, receives a copy of the backend library's own
+	// log lines in addition to the LogTo file. tunnel mode points it at
+	// stderr so a failure only the tunnel library can explain still reaches
+	// the game log.
 	LogEcho io.Writer
 }
 
-// Diagf 经 Logf 输出诊断日志，Logf 为 nil 时安静地丢弃。
+// Diagf writes a diagnostic line through Logf, quietly dropping it when
+// Logf is nil.
 func (o Options) Diagf(format string, args ...any) {
 	if o.Logf != nil {
 		o.Logf(format, args...)
 	}
 }
 
-// Backend 是一种隧道方案的实现。
+// Backend is one tunnel scheme.
 //
-// 契约：
-//   - Run 阻塞运行直到 ctx 取消或隧道不可恢复地失败；返回前必须
-//     释放所有资源。参数校验也在 Run 里做，失败尽早返回错误。
-//   - 实现不得自带中转兜底。tunnel 模式靠「探测通 = 打通」判断结果，
-//     兜底通道会让探测永远成功，分不清隧道到底建没建成。
-//   - params 里无法识别的键必须忽略：服务端可能比 agent 先更新，
-//     多下发的参数不该让老 agent 直接失败。
+// Contract:
+//   - Run blocks until ctx is canceled or the tunnel fails unrecoverably,
+//     and releases every resource before returning. Parameter validation
+//     happens inside Run too, failing as early as possible.
+//   - No relay fallback. tunnel mode decides "probe succeeded = punched";
+//     a fallback channel would make the probe succeed unconditionally and
+//     hide whether the tunnel was ever established.
+//   - Unknown keys in params must be ignored: the server may be updated
+//     before the agent, and extra parameters must not fail an older agent.
 type Backend interface {
-	// Name 是凭证与命令行中使用的标识，如 "frp-xtcp"。
+	// Name is the identifier used in credentials and on the command line,
+	// e.g. "gonc-p2p".
 	Name() string
-	// Run 建立隧道并保持，直到 ctx 取消。params 的键名是各实现
-	// 自己的契约，与 Java 侧 Credentials 的对应工厂方法保持一致。
+	// Run establishes the tunnel and keeps it up until ctx is canceled. The
+	// param keys are each implementation's own contract, mirrored by the
+	// corresponding Java-side Credentials factory.
 	Run(ctx context.Context, params map[string]string, opts Options) error
 }
 
 var registry = map[string]Backend{}
 
-// Register 注册一个 backend，通常在 cmd 侧的注册点统一调用。
-// 名字冲突说明构建配置出错，直接 panic 让问题在启动时暴露。
+// Register adds a backend; the cmd side calls it from its registration
+// point. A duplicate name is a build mistake and panics at startup.
 func Register(b Backend) {
 	name := b.Name()
 	if _, dup := registry[name]; dup {
@@ -77,13 +89,14 @@ func Register(b Backend) {
 	registry[name] = b
 }
 
-// Lookup 按名字查找已注册的 backend。
+// Lookup finds a registered backend by name.
 func Lookup(name string) (Backend, bool) {
 	b, ok := registry[name]
 	return b, ok
 }
 
-// Names 返回所有已注册的 backend 名，按字典序，用于错误提示。
+// Names lists the registered backend names in lexical order, for error
+// messages.
 func Names() []string {
 	out := make([]string, 0, len(registry))
 	for name := range registry {

@@ -6,19 +6,13 @@ package cn.ripplecraft.netherway.core.telemetry;
  *
  * <p>serve has no stdout JSON contract, so there are only four observable
  * moments: start attempt, ready, start failure, process exit. "Ready" is
- * recognised from the process output and differs per backend:
- * <ul>
- *   <li>frp-xtcp: frp's own log text {@code start proxy success}, which the
- *       CI smoke (build.yml) pins as the frp-bump tripwire; keep the two in
- *       sync if frp ever rewords it.</li>
- *   <li>gonc-p2p: the {@code [serve-ready]} marker that
- *       {@code cmd/netherway/serve_gonc.go} prefixes to its ready line once a
- *       signaling broker has been reached. The marker is language-independent
- *       (the rest of the line is localised); the same file also prefixes
- *       warning-level lines with {@code [serve-warn]}, which the platform log
- *       pump escalates to WARN. Both literals are pinned on the Go side by
- *       {@code TestServeMarkers} and here by SelfTest.</li>
- * </ul>
+ * recognised from the process output through a language-independent marker
+ * contract: {@code cmd/netherway/serve_gonc.go} prefixes its ready line with
+ * {@code [serve-ready]} once a signaling broker has been reached, and
+ * warning-level lines with {@code [serve-warn]} (the platform log pump
+ * escalates those to WARN). The rest of each line is localised and must not
+ * be matched. Both literals are pinned on the Go side by
+ * {@code TestServeMarkers} and here by SelfTest.
  *
  * <p>No I/O and no platform types: the platform layer (ServerAgent) feeds the
  * moments in and summaries leave through {@link QualityObserver}. Methods are
@@ -26,17 +20,14 @@ package cn.ripplecraft.netherway.core.telemetry;
  */
 public final class ServeTelemetry {
 
-    /** frp's proxy-registered log text; the same string the build.yml smoke pins. */
-    private static final String PROXY_SUCCESS_MARKER = "start proxy success";
-
     /**
-     * Prefix of the gonc serve "ready" line. Mirrors Go
+     * Prefix of the serve "ready" line. Mirrors Go
      * {@code cmd/netherway/serve_gonc.go} {@code ServeReadyMarker} byte for byte.
      */
     public static final String GONC_READY_MARKER = "[serve-ready]";
 
     /**
-     * Prefix of gonc serve warning-level lines. Mirrors Go
+     * Prefix of serve warning-level lines. Mirrors Go
      * {@code cmd/netherway/serve_gonc.go} {@code ServeWarnMarker} byte for byte.
      */
     public static final String GONC_WARN_MARKER = "[serve-warn]";
@@ -77,10 +68,9 @@ public final class ServeTelemetry {
                 .withFailure(failureStage, failureCode));
     }
 
-    /** Every serve output line; the first ready signal of either backend records TUNNEL_READY. */
+    /** Every serve output line; the first {@link #GONC_READY_MARKER} line records TUNNEL_READY. */
     public synchronized void onLogLine(String line) {
-        if (state != State.STARTING || line == null
-                || !(line.contains(PROXY_SUCCESS_MARKER) || line.contains(GONC_READY_MARKER))) {
+        if (state != State.STARTING || line == null || !line.contains(GONC_READY_MARKER)) {
             return;
         }
         state = State.READY;
@@ -101,13 +91,13 @@ public final class ServeTelemetry {
             return;
         }
         if (was == State.READY) {
-            // 注册成功后死掉：代理已经没了，玩家的打洞会开始失败
+            // 就绪后死掉：房间已经没人发布，玩家的打洞会开始失败
             observe(QualitySummary.of(QualitySummary.Path.SERVE,
                     QualitySummary.Stage.TUNNEL_LOST, QualitySummary.Outcome.FAILED)
                     .withFailure(QualitySummary.FailureStage.BACKEND,
                             QualitySummary.FailureCode.BACKEND_EXITED));
         } else if (was == State.STARTING) {
-            // 进程起来了但没等到注册成功就退了，通常是配置错误
+            // 进程起来了但没等到就绪就退了，通常是配置错误
             observe(QualitySummary.of(QualitySummary.Path.SERVE,
                     QualitySummary.Stage.ROUND_FINISHED, QualitySummary.Outcome.FAILED)
                     .withFailure(QualitySummary.FailureStage.START,

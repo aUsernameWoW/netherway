@@ -142,7 +142,7 @@ public final class Timings {
      * 预热第 {@code attempt} 次失败后的重试等待（attempt 从 0 起）：
      * 指数退避，封顶 {@link #warmupRetryMaxMs}。「打不通就一直打」的
      * 节流全在这里——失败的打洞本身要花十几秒，叠加退避后稳态大约
-     * 每两三分钟一轮，对 frps/STUN/服务器都只是零星流量。
+     * 每两三分钟一轮，对会合点/STUN/服务器都只是零星流量。
      */
     public long warmupRetryDelayMs(int attempt) {
         long d = warmupRetryInitialMs;
@@ -158,9 +158,9 @@ public final class Timings {
     }
 
     /**
-     * 隧道就绪后的稳态凭证对账间隔。轮换发现的主路径是 agent 的
-     * degraded 事件（隧道自检失败即时上报），这个周期只兜「事件没来」
-     * 的底——比如 frp 升级后健康探测匹配不上日志文本。
+     * 隧道就绪后的稳态凭证对账间隔。轮换的主要发现路径是隧道进程
+     * 退出（会话死亡即 agent 退出，预热侧立刻重建并预取）或保留的
+     * degraded 事件，这个周期只兜「隧道还活着但密钥已经换了」的底。
      */
     public long prefetchRefreshMs() {
         return prefetchRefreshMs;

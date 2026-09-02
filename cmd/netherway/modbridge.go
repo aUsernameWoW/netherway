@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,41 +16,59 @@ import (
 	"github.com/aUsernameWoW/netherway/internal/mcping"
 )
 
-// tunnel 子命令供 Minecraft mod 作为子进程调用。
+// The tunnel subcommand is what the Minecraft mod runs as a child process.
 //
-// 与 join 的区别：
-//   - 不做局域网广播，mod 直接把连接指向本地端口
-//   - 不带兜底通道：玩家此刻已经通过既有中转隧道连着服务器，
-//     建链失败就该留在那条连接上，而不是再开一条中转
-//   - stdout 输出逐行 JSON 状态，供 mod 解析；backend 自身日志改写到文件
-//   - 建链超时未就绪则退出并返回非零码，mod 据此放弃升级
+//   - No relay fallback: the player is already on the server through the
+//     existing relayed connection; a failed punch means staying there, not
+//     opening another relay. A fallback would also make the readiness probe
+//     succeed unconditionally, hiding whether the punch worked at all.
+//   - stdout carries line-delimited JSON status for the mod to parse; the
+//     backend's own logs go to a file (and are echoed to stderr).
+//   - Not ready within the punch timeout: exit non-zero, the mod gives up.
 //
-// 具体隧道方案经 internal/backend 抽象：这里只负责选端口、起 backend、
-// 用 Minecraft 握手探测就绪、输出状态 JSON，四件事都与方案无关。
-// 注册新 backend 见 backends.go。
+// The tunnel scheme sits behind internal/backend. This file only picks a
+// port, starts the backend, probes readiness with a Minecraft handshake and
+// prints status JSON — none of which depends on the scheme. Backends are
+// registered in backends.go.
 
 type event struct {
 	Event string `json:"event"`
-	// Backend 仅 starting 携带，标明本次用的隧道方案，便于日志排查。
+	// Backend rides on "starting" only: which tunnel scheme this run uses,
+	// for log forensics.
 	Backend string `json:"backend,omitempty"`
 	Port    int    `json:"port,omitempty"`
-	// ElapsedMs 是从进程启动到隧道可用的总耗时，含建链前置工作，
-	// mod 用它决定要不要在界面上提示玩家「正在建立直连」。
+	// ElapsedMs is process start to tunnel usable, including setup before the
+	// punch; the mod uses it to decide whether to tell the player a direct
+	// connection is being established.
 	ElapsedMs int64 `json:"elapsedMs,omitempty"`
-	// RTTMs 是隧道就绪后单独测得的往返延迟，不含建链开销，
-	// 可直接拿来和中转线路比较。
+	// RTTMs is measured separately after readiness, without setup cost, so
+	// it compares directly against the relayed route.
 	RTTMs   int64  `json:"rttMs,omitempty"`
 	Version string `json:"version,omitempty"`
 	Online  int    `json:"online,omitempty"`
-	// FailureStage/FailureCode 是供统计使用的稳定、低基数字段；Reason 只供
-	// 本地诊断日志展示，不能作为遥测维度或上传内容。
+	// FailureStage/FailureCode are stable, low-cardinality fields for
+	// statistics; Reason is free text for local diagnostics only and must
+	// never become a telemetry dimension or be uploaded.
 	FailureStage string `json:"failureStage,omitempty"`
 	FailureCode  string `json:"failureCode,omitempty"`
-	// Nat 是 STUN 探得的本机 NAT 形态（easy/hard），随终态事件携带；
-	// 未探得则省略。见 natprobe.go。
+	// Nat is the NAT shape (easy/hard) classified via STUN, attached to the
+	// terminal event when known and omitted otherwise. See natprobe.go.
 	Nat    string `json:"nat,omitempty"`
 	Reason string `json:"reason,omitempty"`
 }
+
+// Event names on the wire. Besides these, "degraded" (with Port) is a
+// reserved advisory event: a backend able to report that a READY tunnel has
+// stopped working without exiting may emit it after "ready", and the mod
+// keeps handling it (tear down and rebuild the warmup tunnel). No backend
+// in this build emits it; a backend that cannot tell simply exits, which
+// the mod treats the same way via "stopped".
+const (
+	eventStarting = "starting"
+	eventReady    = "ready"
+	eventFailed   = "failed"
+	eventStopped  = "stopped"
+)
 
 const (
 	failureStageStart   = "start"
@@ -66,21 +83,23 @@ const (
 
 func failedEvent(stage, code, reason string) event {
 	return event{
-		Event:        "failed",
+		Event:        eventFailed,
 		FailureStage: stage,
 		FailureCode:  code,
 		Reason:       reason,
 	}
 }
 
-// measureRTT 连测几次取最小值。隧道刚建立时首条连接会带上协商开销，
-// 单次测量会严重高估延迟，最小值更接近稳定后的真实往返。
-// 全部失败返回 0，由 mod 按「未知」处理。
+// measureRTT pings a few times and keeps the minimum: the first connection
+// through a fresh tunnel carries negotiation overhead and would badly
+// overestimate latency. Returns 0 when every sample fails ("unknown" to
+// the mod).
 //
-// 采样必须挤在 deadline 之前：mod 只等 punchTimeout+startupGrace，慢路径
-// 打洞在临期才就绪时，再花 3×probeTimeout 采样会把 ready 事件推出等待
-// 窗口——一条刚建成的隧道反而被 mod 判成超时。宁可少测或不测（rtt=0
-// 即「未知」），也不能耽误 ready 的发出。
+// Sampling must finish before the deadline: the mod only waits
+// punchTimeout+startupGrace, and a slow punch that becomes ready near the
+// end would push the ready event out of that window if we then spent
+// 3×probeTimeout sampling. Fewer or no samples (rtt=0) beats delaying
+// ready.
 func measureRTT(port int, timeout time.Duration, deadline time.Time) int64 {
 	const samples = 3
 	best := int64(0)
@@ -112,7 +131,7 @@ func emit(e event) {
 	fmt.Fprintln(os.Stdout, string(b))
 }
 
-// paramFlags 收集可重复的 -O key=value。
+// paramFlags collects repeatable -O key=value.
 type paramFlags map[string]string
 
 func (p paramFlags) String() string {
@@ -137,35 +156,20 @@ func sortedKeys(m map[string]string) []string {
 	return out
 }
 
-// natProbeSTUNKey 是 NAT 遥测探测读取的参数键。它就是 frpxtcp.ParamSTUN
-// （TestBackendNameMirrors 钉住相等），这里用字面量是因为 gonc-only 变体
-// 不链接 frpxtcp 包；gonc 凭证的 STUN 列表刻意叫 stunServers 不占这个键。
-const natProbeSTUNKey = "stun"
-
-// mergedParams 组装传给 backend 的参数表。
-//
-// frp 的老旗标（-server/-token/…）作为糖保留（legacySugarParams，随变体
-// 裁剪）：手工调试和旧调用方都还能用。只并入显式传了的，未传的留给
-// backend 用构建期注入的默认值补齐；-O 是新契约，写了就覆盖同名的糖。
-func mergedParams(fs *flag.FlagSet, backendName string, explicit map[string]string) map[string]string {
-	merged := legacySugarParams(fs, backendName)
-	maps.Copy(merged, explicit)
-	return merged
-}
-
 func cmdTunnel(args []string) error {
 	fs := flag.NewFlagSet("tunnel", flag.ExitOnError)
 	backendName := fs.String("backend", defaultBackendName, i18n.T("flag.tunnel.backend"))
 	params := paramFlags{}
 	fs.Var(params, "O", i18n.T("flag.tunnel.param"))
-	_, _, verbose := endpointFlags(fs)
+	verbose := fs.Bool("v", false, i18n.T("flag.verbose"))
 	wantPort := fs.Int("port", 0, i18n.T("flag.tunnel.port"))
-	// 实测顺利时约 4.8s 就绪（含 STUN 探测与打洞），但重新打洞的慢路径
-	// 会明显更久，12s 都可能擦边。玩家此刻已经在中转连接上正常游戏，
-	// 这段等待是后台进行的，放宽比误判失败更划算。
+	// Measured: a smooth punch is ready in a few seconds, but the slow path
+	// (re-punch) is much longer and 12 s can be borderline. The player is
+	// playing over the relay meanwhile and this wait is in the background,
+	// so erring long is cheaper than a false failure.
 	//
-	// 这些时间参数全部可覆盖：不同玩家网络差异很大，
-	// mod 侧的配置文件会把玩家设定的值经这里传进来。
+	// All timings are overridable: player networks differ widely, and the
+	// mod passes its configured values through these flags.
 	d := config.DefaultTimings()
 	timeout := fs.Float64("timeout", d.PunchTimeout.Seconds(), i18n.T("flag.tunnel.timeout"))
 	probeInterval := fs.Float64("probe-interval", d.ProbeInterval.Seconds(), i18n.T("flag.tunnel.probeInterval"))
@@ -184,10 +188,11 @@ func cmdTunnel(args []string) error {
 		emit(failedEvent(failureStageStart, failureCodeBackendUnknown, err.Error()))
 		return err
 	}
-	merged := mergedParams(fs, *backendName, params)
+	merged := map[string]string(params)
 
-	// 默认自动分配端口：玩家本机可能自己开着 25565，
-	// 固定端口会撞车，而 mod 是从状态输出里读端口的，用哪个都无所谓。
+	// Default to an automatically assigned port: the player's machine may
+	// well have its own 25565 open, and the mod reads the port from the
+	// status output anyway.
 	port, err := pickPort(*wantPort)
 	if err != nil {
 		emit(failedEvent(failureStageStart, failureCodeBindPortFailed, err.Error()))
@@ -198,8 +203,9 @@ func cmdTunnel(args []string) error {
 		*logPath = filepath.Join(os.TempDir(), "netherway-tunnel.log")
 	}
 
-	// 诊断信息走 stderr：stdout 是 JSON 契约的专用通道，
-	// 而 mod 会消费 stderr 并把内容转进游戏日志，这里多说无害。
+	// Diagnostics go to stderr: stdout is reserved for the JSON contract,
+	// and the mod forwards stderr into the game log, so being chatty here
+	// is harmless.
 	diagf := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, format+"\n", args...)
 	}
@@ -212,14 +218,17 @@ func cmdTunnel(args []string) error {
 	defer stop()
 
 	started := time.Now()
-	emit(event{Event: "starting", Backend: b.Name(), Port: port})
+	emit(event{Event: eventStarting, Backend: b.Name(), Port: port})
 
-	// NAT 分类在后台进行，谁都不等它：终态事件发出时已探得就带上，
-	// 没探得就省略。stun 参数与 backend 用的是同一份（缺省同样回落到
-	// 构建期默认值），分类结果只作遥测维度。
+	// NAT classification runs in the background and nobody waits for it:
+	// the terminal event carries the result if it is in by then, otherwise
+	// the field is omitted. Telemetry only, never a punch decision. The
+	// probe is prepared (STUN list applied) before either goroutine starts,
+	// see newNatProbe.
+	nat := newNatProbe(merged)
 	natCh := make(chan string, 1)
 	go func() {
-		natCh <- probeNat(merged[natProbeSTUNKey], diagf)
+		natCh <- nat.run(ctx, diagf)
 	}()
 	takeNat := func() string {
 		select {
@@ -239,11 +248,6 @@ func cmdTunnel(args []string) error {
 		MaxRetriesAnHour: *maxRetries,
 	}.Normalize()
 
-	// stderr 回显外再包一层健康扫描：READY 之后 frp 自检持续失败时
-	// 经 degradedCh 通知主循环发 degraded 事件（见 health.go）。
-	degradedCh := make(chan struct{}, 1)
-	health := newTunnelHealthScanner(os.Stderr, degradedCh)
-
 	tunnelErr := make(chan error, 1)
 	go func() {
 		tunnelErr <- b.Run(ctx, merged, backend.Options{
@@ -253,14 +257,15 @@ func cmdTunnel(args []string) error {
 			LogLevel: logLevelOf(*verbose),
 			LogTo:    *logPath,
 			Logf:     diagf,
-			// frp info 及以上的日志回显到 stderr，经 mod 进游戏日志——
-			// 「xtcp server 不存在」这类只有 frp 知道的失败原因不再只躺在文件里
-			LogEcho: health,
+			// The backend's own log lines are echoed to stderr and reach
+			// the game log through the mod: a failure only the tunnel
+			// library can explain no longer lives in a file alone.
+			LogEcho: os.Stderr,
 		})
 	}()
 
-	// 没有兜底通道，所以探测成功就一定意味着隧道真的建成了——
-	// 这正是 backend 接口禁止自带 fallback 的原因。
+	// With no fallback channel, a successful probe means the tunnel really
+	// is up — the reason the backend interface forbids fallbacks.
 	deadline := time.Now().Add(timings.PunchTimeout)
 	ready := make(chan *mcping.Status, 1)
 	rttCh := make(chan time.Duration, 1)
@@ -295,9 +300,9 @@ func cmdTunnel(args []string) error {
 		return i18n.Errorf("tunnel.notReadyIn", *timeout)
 
 	case st := <-ready:
-		<-rttCh // 首次探测含建链耗时，对比延迟没有意义，丢弃
+		<-rttCh // the first probe includes setup time; useless as latency
 		e := event{
-			Event:     "ready",
+			Event:     eventReady,
 			Port:      port,
 			ElapsedMs: time.Since(started).Milliseconds(),
 		}
@@ -305,29 +310,23 @@ func cmdTunnel(args []string) error {
 			e.Version = st.Version.Name
 			e.Online = st.Players.Online
 		}
-		// 隧道刚打通时的第一条连接会明显偏慢（实测能到 2.4s），
-		// 多测几次取最小值才反映真实往返延迟。
+		// The first connection through a fresh tunnel is markedly slower
+		// (2.4 s measured); several samples with the minimum kept reflect
+		// the real round trip.
 		e.RTTMs = measureRTT(port, timings.ProbeTimeout, deadline)
 		e.Nat = takeNat()
 		emit(e)
-		health.arm()
 	}
 
-	// 就绪后保持运行，直到 mod 结束这个进程（玩家断开或退出游戏）。
-	// 期间 frp 自检连续报告隧道已断（典型原因：服务端重启、密钥轮换，
-	// frp 只会拿旧凭证无限重试）时发 degraded。事件是建议性的，进程
-	// 不退出：frp 仍可能自愈，mod 正承载连接时也会选择不动。
-	for {
-		select {
-		case <-ctx.Done():
-			emit(event{Event: "stopped"})
-			return nil
-		case err := <-tunnelErr:
-			emit(event{Event: "stopped", Reason: fmt.Sprint(err)})
-			return err
-		case <-degradedCh:
-			diagf("%s", i18n.T("tunnel.degraded"))
-			emit(event{Event: "degraded", Port: port})
-		}
+	// Stay up after readiness until the mod ends the process (player
+	// disconnects or quits). A dead session makes the backend return, which
+	// is reported as "stopped" with the reason; the mod then rebuilds.
+	select {
+	case <-ctx.Done():
+		emit(event{Event: eventStopped})
+		return nil
+	case err := <-tunnelErr:
+		emit(event{Event: eventStopped, Reason: fmt.Sprint(err)})
+		return err
 	}
 }

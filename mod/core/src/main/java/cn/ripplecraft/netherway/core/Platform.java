@@ -10,7 +10,7 @@ import java.util.Locale;
  */
 public final class Platform {
 
-    /** 与 build.sh 产出的文件名保持一致。 */
+    /** Must match the directory names mod/build-natives.sh produces. */
     public enum Os {
         WINDOWS("windows", ".exe"),
         MACOS("macos", ""),

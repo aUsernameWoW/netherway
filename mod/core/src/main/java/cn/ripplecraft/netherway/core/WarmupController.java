@@ -208,9 +208,9 @@ public final class WarmupController {
                 }
                 if (prefetcher != null && now >= nextPrefetchAt) {
                     // 无凭证时快些重试；已有服务时只慢速对账。轮换发现的
-                    // 主路径是 agent 的 degraded 事件（经 teardownDegraded
-                    // 立即触发对账），这里只兜「事件没来」的底——比如
-                    // frp 升级后健康探测匹配不上日志文本。
+                    // 主路径是隧道进程退出（会话死亡即 agent 退出，下一环
+                    // 重建）或保留的 degraded 事件（经 teardownDegraded 立即
+                    // 触发对账），这里只兜「隧道还活着但密钥换了」的底。
                     nextPrefetchAt = System.currentTimeMillis()
                             + (empty ? timings.warmupRetryDelayMs(0)
                                      : timings.prefetchRefreshMs());
@@ -519,6 +519,9 @@ public final class WarmupController {
             String why = outcome == null ? L10n.tr("reason.warmupOutcomeTimeout")
                     : (outcome.reason() == null ? L10n.tr("reason.punchFailed") : outcome.reason());
             bridge.info(L10n.tr("warmup.notReady", cred.room(), why));
+            if (outcome != null) {
+                evictUnsupported(room, cred, outcome);
+            }
             if (outcome == null) {
                 observe(cred, room.qualityWindow.failed(QualitySummary.Stage.ROUND_FINISHED,
                         QualitySummary.FailureStage.PROBE,
@@ -533,6 +536,48 @@ public final class WarmupController {
             if (!retained && proc != null) {
                 proc.close();
             }
+        }
+    }
+
+    /**
+     * A credential the agent cannot serve at all ({@code backend_unknown})
+     * is dropped from the cache and from the room table on the spot: it would
+     * otherwise be re-read from disk every round and keep taking a punch slot
+     * away from credentials that can succeed. Typical case: a cache file left
+     * behind by a build that shipped a backend this one no longer has.
+     * Package-private so the self-test can drive it without an agent.
+     *
+     * @return true if the credential was evicted
+     */
+    boolean evictUnsupported(RoomState room, Credentials cred, AgentEvent outcome) {
+        if (outcome == null || !outcome.isUnsupportedBackend()) {
+            return false;
+        }
+        synchronized (roomsLock) {
+            if (room != null && rooms.get(cred.dedupKey()) == room) {
+                rooms.remove(cred.dedupKey());
+            }
+        }
+        if (cache != null) {
+            cache.evict(cred);
+        }
+        bridge.info(L10n.tr("warmup.evictUnsupported", cred.room(), cred.backendId()));
+        return true;
+    }
+
+    /** Test seam for {@link #evictUnsupported(RoomState, Credentials, AgentEvent)}. */
+    boolean evictUnsupportedForTest(Credentials cred, AgentEvent outcome) {
+        RoomState room;
+        synchronized (roomsLock) {
+            room = rooms.get(cred.dedupKey());
+        }
+        return evictUnsupported(room, cred, outcome);
+    }
+
+    /** Test seam: whether the room table currently tracks the credential. */
+    boolean tracksForTest(Credentials cred) {
+        synchronized (roomsLock) {
+            return rooms.containsKey(cred.dedupKey());
         }
     }
 

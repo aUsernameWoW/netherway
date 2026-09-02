@@ -108,6 +108,26 @@ public final class CredentialCache {
         return out;
     }
 
+    /**
+     * Removes the cached copy of a credential (both its current file name and,
+     * for a credential carrying an origin, the pre-v1.0 legacy name).
+     *
+     * <p>Used when the agent reports {@code failed/start/backend_unknown}
+     * for it: a credential whose backend this build's agent no longer ships
+     * (an frp-era cache file, say) would otherwise be retried forever and
+     * occupy a punch slot on every warm-up round. Deleting a file that is
+     * already gone is not an error.
+     *
+     * @return true if a file was actually removed
+     */
+    public synchronized boolean evict(Credentials cred) {
+        boolean removed = deleteQuietly(dir.resolve(fileNameOf(cred.dedupKey())));
+        if (cred.hasOrigin()) {
+            removed |= deleteQuietly(dir.resolve(fileNameOf(cred.legacyDedupKey())));
+        }
+        return removed;
+    }
+
     /** 按修改时间从新到旧列出缓存文件。 */
     private List<Path> listNewestFirst() throws IOException {
         List<Path> files = new ArrayList<Path>();
@@ -157,11 +177,12 @@ public final class CredentialCache {
         }
     }
 
-    private static void deleteQuietly(Path p) {
+    private static boolean deleteQuietly(Path p) {
         try {
-            Files.deleteIfExists(p);
+            return Files.deleteIfExists(p);
         } catch (IOException ignored) {
             // 删不掉就留着，下次再试
+            return false;
         }
     }
 

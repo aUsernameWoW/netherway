@@ -51,8 +51,8 @@ type ServeOptions struct {
 	// ProxyProtocol ("v1"/"v2", empty = off) prefixes every loopback
 	// connection to the MC port with a PROXY protocol header whose source
 	// is the punched peer's public address — one session is one player, so
-	// the MC server's login logs and bans see the real player IP (something
-	// frp xtcp cannot deliver at all, fatedier/frp#2748). The MC side must
+	// the MC server's login logs and bans see the real player IP (which a
+	// relayed setup could never show them). The MC side must
 	// strip the header; the mod's sniffer does, and it is sniffing-based,
 	// so headerless sessions stay safe either way.
 	ProxyProtocol string
@@ -60,7 +60,7 @@ type ServeOptions struct {
 	// at least one signaling broker has been reached (probeBrokers), so a
 	// player's hello can be heard. nil means no callback. The server mod
 	// keys its "tunnel ready" telemetry off the line the caller prints
-	// here, the same way frp's "start proxy success" is used.
+	// here (the [serve-ready] marker, cmd/netherway/serve_gonc.go).
 	OnReady func()
 	// Warnf receives warning-level diagnostics (retry loops, degraded
 	// sessions); nil falls back to the plain diagf argument of Serve. The

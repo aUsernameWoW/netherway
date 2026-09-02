@@ -8,19 +8,18 @@ import java.nio.charset.StandardCharsets;
 /**
  * PROXY protocol（HAProxy 定义的连接头）的嗅探式解析器，v1 与 v2 都认。
  *
- * <p>serve 侧的 frp 配了 {@code -proxy-protocol} 后，会在连本地 MC 端口前
- * 先发一个头，把来访连接的真实源地址带给 MC 服务端。手写的原因与
- * {@link Json} 相同：core 零依赖；而且 1.7.10 自带的 Netty 4.0.x 根本
- * 没有 haproxy codec（4.1 才加入），想借也没得借。
+ * <p>serve 配了 {@code -proxy-protocol} 后，会在每条拨向本地 MC 端口的
+ * 回环连接前先发一个头，把打洞对端（即玩家）的真实地址带给 MC 服务端。
+ * 手写的原因与 {@link Json} 相同：core 零依赖；而且 1.7.10 自带的
+ * Netty 4.0.x 根本没有 haproxy codec（4.1 才加入），想借也没得借。
  *
- * <p><b>必须嗅探、绝不能要求头一定存在</b>：当前 frp（v0.70.0）只有 stcp
- * 中转路径真的带头，xtcp 的 P2P 流要等上游支持（fatedier/frp#2748）；
- * 预热直连、老版本 agent 的流量也永远无头。好在无歧义——MC 现代握手的
- * 第二个字节是包 id 0x00，legacy ping 以 0xFE 开头，与 v1 前缀
+ * <p><b>必须嗅探、绝不能要求头一定存在</b>：serve 未开该选项、对端地址
+ * 解析失败时降级、老版本 agent 的流量都永远无头。好在无歧义——MC 现代
+ * 握手的第二个字节是包 id 0x00，legacy ping 以 0xFE 开头，与 v1 前缀
  * {@code "PROXY "} 及 v2 的 12 字节签名最迟在第 2 字节就分叉。
  *
  * <p>只做字节判定，不做信任判定：<b>头是谁都能伪造的，调用方必须自己
- * 把关来源</b>（本项目只对来自回环地址的连接嗅探，因为 frp 从本机拨入）。
+ * 把关来源</b>（本项目只对来自回环地址的连接嗅探，因为 serve 从本机拨入）。
  */
 public final class ProxyProtocol {
 
@@ -29,7 +28,7 @@ public final class ProxyProtocol {
 
     /**
      * v2 头 16 字节之后附加数据（地址块 + TLV）的接受上限。规格允许到
-     * 65535，但 frp（go-proxyproto）只发裸地址块（IPv4 是 12 字节）；
+     * 65535，但 serve（go-proxyproto）只发裸地址块（IPv4 是 12 字节）；
      * 上限管住的是解析定论前调用方需要缓冲的量。
      */
     public static final int V2_MAX_PAYLOAD = 4096;

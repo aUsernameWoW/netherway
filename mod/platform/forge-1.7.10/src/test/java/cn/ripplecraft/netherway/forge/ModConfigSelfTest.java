@@ -28,6 +28,7 @@ public final class ModConfigSelfTest {
             replacementCanBeDisabled(root);
             cfgCommentsFollowLanguage(root);
             commentOnlyChangesDoNotRewriteCfg(root);
+            freshConfigDefaultsToGonc(root);
             goncBackendEmbedsRendezvousBroker(root);
             goncBackendKeepsExplicitBrokers(root);
             goncOriginWithoutRendezvousIsPassedThroughAndWarned(root);
@@ -126,11 +127,49 @@ public final class ModConfigSelfTest {
     }
 
     /**
+     * A freshly generated config (nothing but the language set) must come out
+     * as the recommended mode without any editing: backend gonc-p2p, the
+     * embedded rendezvous on, sessionKey=auto already resolved to a random
+     * key, room=minecraft, and no trace of the removed frp-era keys.
+     */
+    private static void freshConfigDefaultsToGonc(Path root) throws Exception {
+        Path file = root.resolve("fresh-defaults.cfg");
+        Files.write(file, "general {\n    S:language=en\n}\n".getBytes(StandardCharsets.UTF_8));
+
+        ModConfig config = new ModConfig(file.toFile());
+        check(config.serverEnabled(), "新配置默认启用服务端直连");
+        check(Credentials.BACKEND_GONC_P2P.equals(config.serverBackendId()),
+                "新配置默认 backend 为 gonc-p2p");
+        check(config.serverRendezvous(), "新配置默认开启内嵌会合点");
+        check(config.serverRunAgent(), "新配置默认 runAgent=true");
+        String sessionKey = config.serverParams().get("sessionKey");
+        check(sessionKey != null && sessionKey.matches("[0-9a-f]{32}"),
+                "新配置的 sessionKey=auto 应已生成随机密钥");
+        check("minecraft".equals(config.serverParams().get("room")), "新配置默认房间为 minecraft");
+        check(!config.serverParams().containsKey("token")
+                        && !config.serverParams().containsKey("secret"),
+                "新配置的 params 不得含 frp 时代的 token/secret");
+        Credentials cred = config.serverCredentials();
+        check(cred != null && Credentials.BACKEND_GONC_P2P.equals(cred.backendId()),
+                "新配置应能组装 gonc-p2p 凭证");
+        check(Credentials.BROKER_ORIGIN.equals(cred.param(Credentials.PARAM_BROKERS)),
+                "新配置的凭证应带 brokers=origin 占位");
+        check(cred.needsRendezvousAddress(), "新配置的凭证应自报缺地址（由客户端补）");
+
+        String saved = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+        check(saved.contains("S:backend=gonc-p2p"), "回写的 cfg 应记录 backend=gonc-p2p");
+        check(saved.contains("sessionKey=auto") && saved.contains("room=minecraft"),
+                "回写的 cfg 应保留 sessionKey=auto 与 room=minecraft 原文");
+        check(!saved.contains("tokenSigningKey") && !saved.contains("serveAuthToken")
+                        && !saved.contains("tokenTtlDays"),
+                "回写的 cfg 不得生成已删除的鉴权键");
+    }
+
+    /**
      * backend=gonc-p2p with the default rendezvous=true: the embedded
      * rendezvous stays on (it is the loopback MQTT broker), the credentials
-     * get the brokers=origin placeholder for the client to resolve, per-player
-     * token signing is still forced off, and sessionKey=auto is generated
-     * like secret=auto.
+     * get the brokers=origin placeholder for the client to resolve, and
+     * sessionKey=auto is generated once for serve and credentials alike.
      */
     private static void goncBackendEmbedsRendezvousBroker(Path root) throws Exception {
         Path file = root.resolve("gonc-backend.cfg");
@@ -138,7 +177,6 @@ public final class ModConfigSelfTest {
                 "server {\n"
                 + "    S:backend=gonc-p2p\n"
                 + "    B:rendezvous=true\n"
-                + "    S:tokenSigningKey=ci-signing-key\n"
                 + "    S:params <\n"
                 + "        sessionKey=auto\n"
                 + "        room=minecraft\n"
@@ -149,7 +187,6 @@ public final class ModConfigSelfTest {
         check(Credentials.BACKEND_GONC_P2P.equals(config.serverBackendId()),
                 "backend 应按文件读取为 gonc-p2p");
         check(config.serverRendezvous(), "gonc-p2p 下 rendezvous 应保持开启（内嵌 broker）");
-        check(config.tokenSigningKey().isEmpty(), "gonc-p2p 下 tokenSigningKey 必须置空");
         String sessionKey = config.serverParams().get("sessionKey");
         check(sessionKey != null && !sessionKey.isEmpty() && !"auto".equals(sessionKey),
                 "sessionKey=auto 应生成随机密钥");
@@ -166,8 +203,8 @@ public final class ModConfigSelfTest {
         check(cred.needsRendezvousAddress(), "brokers=origin 的凭证应自报缺地址");
         check(sessionKey.equals(cred.param("sessionKey")),
                 "serve 与下发凭证的 sessionKey 必须同源");
-        check(cred.param(Credentials.PARAM_USER_TOKEN) == null,
-                "gonc-p2p 凭证不得附每玩家令牌");
+        check(cred.params().size() == 3,
+                "gonc-p2p 凭证只含 sessionKey/room/brokers，不附任何身份参数");
     }
 
     /** An operator-supplied broker list is the operator's choice: no origin injection. */
@@ -223,8 +260,8 @@ public final class ModConfigSelfTest {
 
     private static void runtimeRoutesExistOnlyWhileReady() {
         WarmupEntryRouter router = new WarmupEntryRouter(true, null, null);
-        Credentials cred = Credentials.frpXtcp("203.0.113.10", 7000, "token",
-                "stun.example:3478", "room", "secret", 1000)
+        Credentials cred = Credentials.goncP2p("secret", "room", "tcp://203.0.113.10:1883",
+                null, null, 1000)
                 .withOrigin("Play.Example.COM", 25565);
         AgentEvent ready = AgentEvent.parse(
                 "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31}");

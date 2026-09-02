@@ -1,5 +1,3 @@
-//go:build !nogonc
-
 package main
 
 import (
@@ -12,31 +10,29 @@ import (
 	"github.com/aUsernameWoW/netherway/internal/signalbroker"
 )
 
-// Status markers prefixed to gonc serve output so the server mod can
-// classify lines without parsing localized text (frp's output carries
-// "start proxy success" and " [W] " / " [E] " for the same purpose). Both
-// literals are mirrored on the Java side in ServeTelemetry
-// (GONC_READY_MARKER / GONC_WARN_MARKER); TestServeMarkers here and the
-// Java SelfTest pin them, change both together.
+// Status markers prefixed to serve output so the server mod can classify
+// lines without parsing localized text; they are the only contract the
+// mod has on serve output. Both literals are mirrored on the Java side in
+// ServeTelemetry (GONC_READY_MARKER / GONC_WARN_MARKER); TestServeMarkers
+// here and the Java SelfTest pin them, change both together.
 const (
 	// ServeReadyMarker starts the one line that means "a signaling broker
-	// answered, players can be heard" — the gonc analogue of frp's
-	// "start proxy success".
+	// answered, players can be heard".
 	ServeReadyMarker = "[serve-ready]"
 	// ServeWarnMarker starts every warning-level line (retry loops,
 	// degraded sessions); the mod logs those at WARN.
 	ServeWarnMarker = "[serve-warn]"
 )
 
-// serveGonc is the gonc-p2p publish path: no frps, no per-player token
-// layer — the MQTT brokers are the rendezvous and the session key is the
-// whole admission story (same params the server hands out in credentials;
-// Java side composes them in ServeCommand).
+// serveGonc is the gonc-p2p publish path: no rendezvous server of its own,
+// no per-player token layer — the MQTT brokers are the rendezvous and the
+// session key is the whole admission story (same params the server hands
+// out in credentials; Java side composes them in ServeCommand).
 //
-// -rendezvous <port> means the same thing it means for frp: the rendezvous
-// (here a signaling broker, internal/signalbroker) runs inside this
-// process on loopback, and players reach it through the Minecraft port via
-// the mod's sniffer relay. The credential's brokers list then carries the
+// -rendezvous <port> embeds the rendezvous: the signaling broker
+// (internal/signalbroker) runs inside this process on loopback, and players
+// reach it through the Minecraft port via the mod's sniffer relay. The
+// credential's brokers list then carries the
 // "origin" placeholder, which the client resolves to the Minecraft entry
 // and this side resolves to its own loopback broker. Without -rendezvous
 // the brokers are whatever the params say (public ones by default), and an

@@ -4,7 +4,6 @@ import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.MqttConnect;
 import cn.ripplecraft.netherway.core.PreauthProtocol;
 import cn.ripplecraft.netherway.core.PreauthService;
-import cn.ripplecraft.netherway.core.TlsRecord;
 import net.minecraftforge.fml.relauncher.ReflectionHelper;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -31,16 +30,16 @@ import org.apache.logging.log4j.Logger;
 
 /**
  * 把首字节嗅探挂进服务端的 Netty 接入链，一个 handler 同时管三件事：
- * 预认证帧（{@link PreauthProtocol}）、frp 控制通道转发（{@link TlsRecord}）
+ * 预认证帧（{@link PreauthProtocol}）、会合点信令转发（{@link MqttConnect}）
  * 与 PROXY protocol 剥头（{@link cn.ripplecraft.netherway.core.ProxyProtocol}）。
  *
  * <p>三者必须合成一个 handler：它们抢的是同一批「连接最初的字节」，
  * 各挂各的会互相把对方的数据吃掉。
  *
- * <p>其中 frp 控制通道那一路是「会合点内嵌」的落地点：内嵌 frps 只监听回环，
- * 玩家的控制连接靠这里从 Minecraft 端口转发进去。公网那台机器因此对本项目
- * 再无任何要求——不装插件、不必支持 xtcp、不必同版本，能把 TCP 转到
- * Minecraft 端口即可，于是租用他人的隧道服务成为可能。
+ * <p>其中信令转发那一路是「会合点内嵌」的落地点：内嵌信令 broker 只监听回环，
+ * 玩家的信令连接靠这里从 Minecraft 端口转发进去。公网那台机器因此对本项目
+ * 再无任何要求——不装插件、不必同版本，能把 TCP 转到 Minecraft 端口即可，
+ * 于是租用他人的隧道服务成为可能。
  *
  * <p>挂载点是监听端点的 server channel：accept 出来的每个连接会以
  * {@link Channel} 消息的形式流过它的 pipeline（这正是 Netty 自己的
@@ -52,7 +51,7 @@ import org.apache.logging.log4j.Logger;
  * {@code NetworkSystem.endpoints} = {@code field_151274_e}，
  * {@code NetworkManager.socketAddress} = {@code field_150743_l}。
  *
- * <p>信任边界的两条线不同：<b>PROXY 头只信回环</b>（frp 从本机拨入，
+ * <p>信任边界的两条线不同：<b>PROXY 头只信回环</b>（serve 从本机拨入，
  * 而头是谁都能伪造的，局域网邻居能借它冒充任意来源地址）；<b>预认证帧接受
  * 任何来源</b>——预下发不做身份验证，准入交给 MC 服务端自己的白名单与正版验证。
  */
@@ -80,8 +79,8 @@ final class ConnectionSniffer {
     /**
      * RELAY 模式下、会合点还没接上时允许攒的字节上限。
      *
-     * <p>判定为 frp 控制通道后会立刻停读并去拨会合点，这期间只可能再收到
-     * 已经排队的那一两批读事件，正常量级是一个 TLS ClientHello（几百字节）。
+     * <p>判定为信令连接后会立刻停读并去拨会合点，这期间只可能再收到
+     * 已经排队的那一两批读事件，正常量级是一个 MQTT CONNECT（几十字节）。
      * 给到 64 KB 是为了拨号卡住时也不会无界增长，而不是流控——真正的背压
      * 在接上之后由对端可写性驱动。
      */
@@ -94,7 +93,7 @@ final class ConnectionSniffer {
     static final class Context {
         final PreauthService preauth;
         final boolean proxyProtocol;
-        /** 内嵌会合点的回环端口；0 表示不启用，TLS 分叉整条路径都不生效。 */
+        /** 内嵌会合点的回环端口；0 表示不启用，信令转发整条路径都不生效。 */
         final int rendezvousPort;
         final ExecutorService worker;
 
@@ -196,7 +195,7 @@ final class ConnectionSniffer {
         UNDECIDED,
         /** 是预认证帧，本连接由我们独占，永远不会交给 MC（进入时下游 handler 已全部摘掉）。 */
         PREAUTH,
-        /** frp control channel or gonc MQTT signaling: bytes relayed as-is to the embedded rendezvous (also exclusive). */
+        /** gonc MQTT signaling: bytes relayed as-is to the embedded rendezvous broker (also exclusive). */
         RELAY,
     }
 
@@ -232,7 +231,7 @@ final class ConnectionSniffer {
             }
             ByteBuf in = (ByteBuf) msg;
 
-            // 中继模式下字节量不设上限（它承载的是整条 frp 控制通道），
+            // 中继模式下字节量不设上限（它承载的是整条信令连接），
             // 背压交给对端可写性，见 pumpToRendezvous
             if (mode == Mode.RELAY && upstream != null) {
                 pumpToRendezvous(c, in);
@@ -281,22 +280,20 @@ final class ConnectionSniffer {
                 return;
             }
             // Signaling connections for the embedded rendezvous, relayed as-is
-            // to the loopback port: frp's control channel opens with a TLS
-            // ClientHello (0x16 0x03), gonc-p2p's with an MQTT CONNECT (0x10 +
+            // to the loopback broker: gonc-p2p opens with an MQTT CONNECT (0x10 +
             // remaining length + protocol name). Checked before PROXY stripping:
             // the first bytes never collide (vs 'P'/0x0D), and deployments
             // without a rendezvous stay entirely unaffected.
             if (ctx.rendezvousPort > 0) {
-                Boolean tls = TlsRecord.looksLikeHandshake(peek, peek.length);
                 Boolean mqtt = MqttConnect.looksLikeConnect(peek, peek.length);
-                if (Boolean.TRUE.equals(tls) || Boolean.TRUE.equals(mqtt)) {
+                if (mqtt == null) {
+                    return; // not enough bytes to decide, keep buffering
+                }
+                if (mqtt.booleanValue()) {
                     mode = Mode.RELAY;
                     takeover(c);
                     connectRendezvous(c);
                     return;
-                }
-                if (tls == null || mqtt == null) {
-                    return; // one detector still undecided, keep buffering
                 }
             }
             // 不是预认证帧也不是控制通道：交给 PROXY 剥头逻辑，或直接放行给 MC
@@ -338,7 +335,7 @@ final class ConnectionSniffer {
                     ByteBuf head = pending;
                     pending = null;
                     if (head != null && head.isReadable()) {
-                        // 嗅探期间吃掉的字节必须原样补回去，否则 frp 的握手就断了头
+                        // 嗅探期间吃掉的字节必须原样补回去，否则 MQTT CONNECT 就断了头
                         upstream.writeAndFlush(head);
                     } else if (head != null) {
                         head.release();

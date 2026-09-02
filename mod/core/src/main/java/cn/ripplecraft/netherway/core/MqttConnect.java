@@ -5,8 +5,8 @@ package cn.ripplecraft.netherway.core;
  * signaling connections on the Minecraft port.
  *
  * <p>With the embedded rendezvous the gonc-p2p backend runs its MQTT signaling
- * broker on the server's loopback, exactly like frp's embedded frps. A
- * player's signaling connection therefore arrives on the Minecraft port and
+ * broker on the server's loopback behind the Minecraft port. A player's
+ * signaling connection therefore arrives on the Minecraft port and
  * the sniffer must relay it to the broker. An MQTT session always opens with
  * a CONNECT packet: fixed header byte {@code 0x10} (packet type 1, flags 0),
  * the variable-length "remaining length" (1-4 bytes, continuation bit
@@ -21,10 +21,9 @@ package cn.ripplecraft.netherway.core;
  *   <li>MC legacy ping: first byte {@code 0xFE}</li>
  *   <li>PROXY protocol: first byte {@code 'P'} or {@code 0x0D}</li>
  *   <li>Pre-auth frame: starts with {@code NWAY} (see {@link PreauthProtocol})</li>
- *   <li>frp control channel: TLS record {@code 0x16 0x03} (see {@link TlsRecord})</li>
  * </ul>
  *
- * <p>Same tri-state convention as {@link TlsRecord#looksLikeHandshake} and
+ * <p>Same tri-state convention as {@link PreauthProtocol#looksLikeFrame} and
  * deliberately minimal parsing: the sniffer only needs to know which side
  * owns the connection, the bytes are then forwarded untouched and the broker
  * parses them for real. The Go-side broker accepts exactly these protocol

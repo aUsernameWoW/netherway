@@ -4,7 +4,6 @@ import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.MqttConnect;
 import cn.ripplecraft.netherway.core.PreauthProtocol;
 import cn.ripplecraft.netherway.core.PreauthService;
-import cn.ripplecraft.netherway.core.TlsRecord;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
@@ -25,8 +24,8 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
- * 首字节嗅探 handler（modern 版）：一个 handler 同时管预认证帧、frp 控制
- * 通道转发与 PROXY protocol 剥头三件事，语义与 forge-1.7.10 的
+ * 首字节嗅探 handler（modern 版）：一个 handler 同时管预认证帧、会合点
+ * 信令转发与 PROXY protocol 剥头三件事，语义与 forge-1.7.10 的
  * ConnectionSniffer 完全一致（三者抢同一批「连接最初的字节」，必须合一）。
  *
  * <p>与 1.7.10 版的两点差异：
@@ -158,7 +157,7 @@ public final class SnifferCore {
         UNDECIDED,
         /** 预认证帧：连接由我们独占，进入时下游 handler 已全部摘掉。 */
         PREAUTH,
-        /** frp control channel or gonc MQTT signaling: bytes relayed as-is to the embedded rendezvous (also exclusive). */
+        /** gonc MQTT signaling: bytes relayed as-is to the embedded rendezvous broker (also exclusive). */
         RELAY,
     }
 
@@ -232,20 +231,18 @@ public final class SnifferCore {
                 return;
             }
             // Signaling connections for the embedded rendezvous, relayed as-is
-            // to the loopback port: frp's control channel opens with a TLS
-            // ClientHello (0x16 0x03), gonc-p2p's with an MQTT CONNECT (0x10 +
+            // to the loopback broker: gonc-p2p opens with an MQTT CONNECT (0x10 +
             // remaining length + protocol name).
             if (ctx.rendezvousPort > 0) {
-                Boolean tls = TlsRecord.looksLikeHandshake(peek, peek.length);
                 Boolean mqtt = MqttConnect.looksLikeConnect(peek, peek.length);
-                if (Boolean.TRUE.equals(tls) || Boolean.TRUE.equals(mqtt)) {
+                if (mqtt == null) {
+                    return; // not enough bytes to decide, keep buffering
+                }
+                if (mqtt.booleanValue()) {
                     mode = Mode.RELAY;
                     takeover(c);
                     connectRendezvous(c);
                     return;
-                }
-                if (tls == null || mqtt == null) {
-                    return; // one detector still undecided, keep buffering
                 }
             }
             handleProxyProtocol(c);
@@ -278,7 +275,7 @@ public final class SnifferCore {
                     ByteBuf head = pending;
                     pending = null;
                     if (head != null && head.isReadable()) {
-                        // 嗅探期间吃掉的字节必须原样补回去，否则 frp 的握手断头
+                        // 嗅探期间吃掉的字节必须原样补回去，否则 MQTT CONNECT 断头
                         upstream.writeAndFlush(head);
                     } else if (head != null) {
                         head.release();

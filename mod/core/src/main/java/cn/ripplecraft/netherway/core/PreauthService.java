@@ -1,8 +1,5 @@
 package cn.ripplecraft.netherway.core;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-
 /**
  * 预下发的服务端半边：玩家进服之前把直连凭证发出去。
  *
@@ -23,12 +20,6 @@ public final class PreauthService {
 
         /** 要下发的房间凭证；配置不完整返回 null。 */
         Credentials credentials();
-
-        /** 每玩家令牌的签发密钥，空串表示不签发。 */
-        String tokenSigningKey();
-
-        /** 每玩家令牌的有效天数。 */
-        int tokenTtlDays();
 
         /** 诊断日志。参数已经过校验，可以安全进日志。 */
         void log(String message);
@@ -70,8 +61,7 @@ public final class PreauthService {
     /**
      * 处理凭证请求：校验输入形状后直接签发凭证。
      *
-     * <p>不做身份验证——username/uuid 只用于签发绑定该玩家的每玩家令牌
-     * （如果服务端配了 tokenSigningKey）以及日志。真实性由 MC 服务端保证。
+     * <p>不做身份验证——username/uuid 只用于日志。真实性由 MC 服务端保证。
      */
     public Reply handleRequest(String username, String uuid) {
         String bad = PreauthProtocol.validateIdentity(username, uuid);
@@ -82,29 +72,11 @@ public final class PreauthService {
         if (cred == null) {
             return Reply.err(L10n.tr("preauth.incompleteConfig"));
         }
-        cred = withPlayerToken(cred, uuid);
         host.log(L10n.tr("preauth.issued", username, uuid, cred.room()));
         try {
             return Reply.ok(cred.encode());
         } catch (RuntimeException e) {
             return Reply.err(L10n.tr("preauth.buildFailed"));
         }
-    }
-
-    /**
-     * 附加绑定该玩家 UUID、带有效期的身份参数。与
-     * {@code CredentialSender.withPlayerToken} 是同一套规则——登录后下发与
-     * 预下发必须签出同样形状的令牌，否则 authplugin 两边行为不一致。
-     */
-    private Credentials withPlayerToken(Credentials cred, String uuid) {
-        String key = host.tokenSigningKey();
-        if (key == null || key.isEmpty()) {
-            return cred;
-        }
-        long expiry = System.currentTimeMillis() / 1000L + host.tokenTtlDays() * 86400L;
-        Map<String, String> extra = new LinkedHashMap<String, String>();
-        extra.put(Credentials.PARAM_USER, uuid);
-        extra.put(Credentials.PARAM_USER_TOKEN, TokenIssuer.issue(key, uuid, expiry));
-        return cred.withExtraParams(extra);
     }
 }

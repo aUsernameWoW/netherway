@@ -78,7 +78,7 @@ public final class UpgradeReportReceiver {
                     player, report.room(), report.rttMs(), report.elapsedMs()));
         } else {
             // 失败原因用 warn：多个玩家同时失败通常意味着宿主机的
-            // serve 进程或 frps 出了问题，值得服主注意
+            // serve 进程或会合点出了问题，值得服主注意
             LOG.warn(L10n.tr("fserver.reportGaveUp",
                     player, report.room(), report.reason()));
         }

@@ -33,8 +33,6 @@ flowchart LR
   `netherway-bukkit-<version>.jar`。GitHub 自动显示的 `Source code (zip)` 和
   `Source code (tar.gz)` 不属于项目构建产物。新增平台时记得同步改
   `release.yml` 里写死的资产数量断言（当前是 9）。
-- 根目录 `build.sh` 生成的独立 agent 可能内嵌部署密钥，绝不能上传到公开 Release
-  或 Actions artifact。公开 JAR 只包含 `mod/build-natives.sh` 生成的无密钥 agent。
 - Release 发布后不覆盖资产、不移动或复用 tag；修复使用新的 patch 版本。
 
 ## 仓库的一次性设置

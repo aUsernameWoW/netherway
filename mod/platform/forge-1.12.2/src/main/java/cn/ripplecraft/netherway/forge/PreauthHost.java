@@ -27,16 +27,6 @@ final class PreauthHost implements PreauthService.Host {
     }
 
     @Override
-    public String tokenSigningKey() {
-        return config.tokenSigningKey();
-    }
-
-    @Override
-    public int tokenTtlDays() {
-        return config.tokenTtlDays();
-    }
-
-    @Override
     public void log(String message) {
         LOG.info(message);
     }

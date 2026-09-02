@@ -6,19 +6,19 @@
 // the shape this project is built around (see CLAUDE.md, 内嵌会合点): the
 // meeting point belongs to the server process, the only exposed port is the
 // Minecraft port, no third-party infrastructure is in the path, and the
-// credential's secret only means something to that one server process. So,
-// exactly as the frp-xtcp backend embeds frps (internal/rendezvous), the
-// gonc-p2p serve embeds a broker here and the player's MQTT CONNECT reaches
+// credential's secret only means something to that one server process. So
+// the gonc-p2p serve embeds a broker here and the player's MQTT CONNECT reaches
 // it through the Minecraft port via the mod's sniffer relay (it is told
 // apart from Minecraft traffic by its first bytes, see the Java-side
 // MqttConnect detector). Public brokers become an explicit opt-in.
 //
 // Loopback is not an option, it is the design: there is deliberately no
-// BindAddr field. CLAUDE.md's rule for the frp rendezvous — 会合点只能绑回环,
+// BindAddr field. CLAUDE.md's rule for the rendezvous — 会合点只能绑回环,
 // binding anything else silently opens a second public port and destroys
 // the "one mapped port" premise — applies verbatim, and the regression is
-// invisible functionally, so the package test checks the bind scope the
-// same bind-based way internal/rendezvous does.
+// invisible functionally, so the package test checks the bind scope in a
+// bind-based way (never by dialing: a transparent proxy on a dev machine
+// accepts connections to any address and would make a dial test pass).
 //
 // Access control is anonymous on purpose, but with an ACL (aclHook): the
 // topic name is a hash derived from the session key and every signaling
@@ -34,8 +34,8 @@
 // the broker's own "$SYS" tree in both directions; easyp2p only ever uses
 // exact topics (pinned by TestGoncSignalingInterop, guarded by
 // TestStrangerCannotDiscoverTopics). Anonymous access is acceptable only
-// because of that: topics are unguessable and unenumerable. The relay is
-// otherwise the same trust posture as the frp control-channel relay.
+// because of that: topics are unguessable and unenumerable. The relay
+// itself carries opaque bytes either way.
 package signalbroker
 
 import (
@@ -69,7 +69,7 @@ const maxPacketSize = 64 << 10
 type Options struct {
 	// BindPort is the loopback port to listen on. The caller (the server
 	// mod) picks it and hands the same number to the sniffer relay, so the
-	// two must agree — identical to the frp rendezvous port.
+	// two must agree.
 	BindPort int
 	// Logf receives the broker's own warnings and errors — nothing else,
 	// so the caller can route it to its warning channel; nil means silent.

@@ -55,7 +55,7 @@ public final class UpgradeReportService {
             LOG.info(L10n.tr("fserver.reportUpgraded",
                     player, report.room(), report.rttMs(), report.elapsedMs()));
         } else {
-            // 多个玩家同时失败通常意味着宿主机的 serve 进程或 frps 出了问题
+            // 多个玩家同时失败通常意味着宿主机的 serve 进程或会合点出了问题
             LOG.warn(L10n.tr("fserver.reportGaveUp",
                     player, report.room(), report.reason()));
         }
