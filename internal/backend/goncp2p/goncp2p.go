@@ -4,8 +4,8 @@
 // every accepted local TCP connection becomes one stream to the Minecraft
 // server.
 //
-// Unlike frp-xtcp there is no rendezvous server anywhere in the path: the
-// MQTT brokers are the rendezvous, so credentials carry no server address.
+// There is no rendezvous server of its own anywhere in the path: the MQTT
+// brokers are the rendezvous, so credentials carry no server address.
 // Both tunnel endpoints are this binary — the wire format between them
 // (punch sync, secure negotiation, mux framing) only has to agree with
 // itself, but it DOES have to agree across mod releases. gonc offers no
@@ -18,6 +18,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -39,11 +40,12 @@ const (
 	// the punch sync encryption, and the TLS/DTLS mutual-auth certificate.
 	ParamSessionKey = "sessionKey"
 	// ParamBrokers is an optional comma-separated list of MQTT broker URLs
-	// (gonc syntax, e.g. "tcp://host:1883"). Empty keeps gonc's defaults.
+	// (gonc syntax, e.g. "tcp://host:1883"). Empty keeps gonc's defaults
+	// (public brokers). An entry may be the BrokerOrigin placeholder.
 	ParamBrokers = "brokers"
 	// ParamSTUN is an optional comma-separated list of STUN servers in gonc
-	// syntax. Deliberately NOT named "stun": the frp-style "stun" key feeds
-	// the mod-bridge NAT telemetry probe, which expects host:port entries.
+	// syntax (scheme://host:port or host:port). The mod bridge's NAT
+	// telemetry probe reads the same list (ApplyServerLists).
 	ParamSTUN = "stunServers"
 	// ParamNetwork optionally pins the traversal network. Default "any"
 	// races IPv6 TCP > IPv4 TCP > IPv4 UDP like the gonc CLI.
@@ -54,6 +56,22 @@ const (
 	// key so credentials pass through without unknown-key warnings.
 	ParamRoom = "room"
 )
+
+// BrokerOrigin is the placeholder a ParamBrokers entry may carry instead of
+// a URL. Under the embedded rendezvous the server rarely knows its own
+// public entry, but the client always knows where it connected (CLAUDE.md,
+// 凭证的服务入口与会合点地址由客户端补): the server mod hands out credentials
+// with brokers=origin, the CLIENT replaces it with tcp://<host>:<port> of the
+// Minecraft entry the credential came from (Java Credentials.rendezvousAt,
+// so the player's MQTT CONNECT travels through the Minecraft port into the
+// sniffer relay), and the SERVER's serve replaces it with its own embedded
+// loopback broker (ResolveOriginBroker). Reaching a backend unresolved is
+// an error, never a silent drop (parseParams).
+//
+// Cross-language pin: the Java side mirrors this literal as
+// Credentials.BROKER_ORIGIN; TestBrokerOriginLiteral here and the Java
+// SelfTest both pin "origin". Change both or neither.
+const BrokerOrigin = "origin"
 
 var allowedNetworks = []string{"any", "tcp", "udp", "tcp4", "udp4", "tcp6", "udp6"}
 
@@ -151,18 +169,78 @@ func parseParams(params map[string]string) (runConfig, error) {
 			ParamNetwork, cfg.network, strings.Join(allowedNetworks, ", "))
 	}
 	cfg.brokers = splitList(params[ParamBrokers])
+	// The placeholder must have been substituted upstream (client mod or
+	// serve -rendezvous); handing gonc a bare "origin" would make it dial
+	// a host literally named origin, failing in a way nobody could read.
+	for _, b := range cfg.brokers {
+		if b == BrokerOrigin {
+			return cfg, i18n.Errorf("goncp2p.originUnresolved", ParamBrokers, BrokerOrigin)
+		}
+	}
 	cfg.stun = splitList(params[ParamSTUN])
 	return cfg, nil
 }
 
-// applyServerLists overrides gonc's built-in broker/STUN candidates. They are
-// package globals in easyp2p; one agent process runs one backend, so a single
-// pre-loop assignment is safe.
+// HasOriginBroker reports whether ParamBrokers carries the BrokerOrigin
+// placeholder (whitespace-trimmed, comma-separated).
+func HasOriginBroker(params map[string]string) bool {
+	for _, b := range splitList(params[ParamBrokers]) {
+		if b == BrokerOrigin {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveOriginBroker returns a copy of params with every BrokerOrigin
+// entry of ParamBrokers replaced by brokerURL; an empty or absent broker
+// list becomes just brokerURL. This is the serve-side substitution (the
+// embedded loopback broker is the origin as seen from the server itself);
+// the client-side one lives in Java, Credentials.rendezvousAt. Other
+// entries keep their order, so an operator can list the embedded broker
+// alongside public ones.
+func ResolveOriginBroker(params map[string]string, brokerURL string) map[string]string {
+	out := make(map[string]string, len(params)+1)
+	for k, v := range params {
+		out[k] = v
+	}
+	list := splitList(params[ParamBrokers])
+	if len(list) == 0 {
+		out[ParamBrokers] = brokerURL
+		return out
+	}
+	for i, b := range list {
+		if b == BrokerOrigin {
+			list[i] = brokerURL
+		}
+	}
+	out[ParamBrokers] = strings.Join(list, ",")
+	return out
+}
+
+// ApplyServerLists overrides gonc's built-in broker/STUN candidates from the
+// backend params (ParamBrokers / ParamSTUN, empty keeps the defaults). Run
+// and Serve do this themselves; it is exported for the mod bridge's NAT
+// telemetry probe, which rides on the same easyp2p globals and runs
+// concurrently with Run — calling this once up front, from the same params,
+// makes Run's own call a no-op (see applyServerLists) so no goroutine writes
+// the lists while another reads them.
+func ApplyServerLists(params map[string]string) {
+	applyServerLists(runConfig{
+		brokers: splitList(params[ParamBrokers]),
+		stun:    splitList(params[ParamSTUN]),
+	})
+}
+
+// applyServerLists writes the easyp2p package globals only when the value
+// actually changes; an equal list is left alone so a concurrent reader (the
+// NAT probe) never races a redundant write. One agent process runs one
+// backend, so a single pre-loop assignment is otherwise safe.
 func applyServerLists(cfg runConfig) {
-	if len(cfg.brokers) > 0 {
+	if len(cfg.brokers) > 0 && !slices.Equal(easyp2p.MQTTBrokerServers, cfg.brokers) {
 		easyp2p.MQTTBrokerServers = cfg.brokers
 	}
-	if len(cfg.stun) > 0 {
+	if len(cfg.stun) > 0 && !slices.Equal(easyp2p.STUNServers, cfg.stun) {
 		easyp2p.STUNServers = cfg.stun
 	}
 }

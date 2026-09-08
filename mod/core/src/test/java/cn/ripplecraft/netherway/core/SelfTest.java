@@ -38,12 +38,11 @@ public final class SelfTest {
         testAgentEventTolerance();
         testCredentialsRoundTrip();
         testCredentialsGenericBackend();
-        testCredentialsV1Compat();
+        testCredentialsV1Rejected();
         testCredentialsForwardCompat();
         testCredentialsValidation();
         testCredentialsHidesSecrets();
         testCredentialsDedupKey();
-        testFrpXtcpParamKeys();
         testGoncP2pCredentials();
         testServeCommandGoncP2p();
         testUpgradeReportRoundTrip();
@@ -51,10 +50,8 @@ public final class SelfTest {
         testUpgradeReportForwardCompat();
         testBuildCommand();
         testDescribeCommandMasksValues();
-        testServeCommand();
-        testCredentialsRendezvousAddress();
-        testServeCommandRendezvous();
-        testTlsRecordDetection();
+        testCredentialsBrokerOrigin();
+        testMqttConnectDetection();
         testTimingsNormalization();
         testCredAwareWaitWindows();
         testUpgradeGivesUpWithoutBinary();
@@ -72,9 +69,7 @@ public final class SelfTest {
         testWarmupListenerLifecycle();
         testWarmReadyRescuesGaveUp();
         testWarmRescueCapAcrossSessions();
-        testTokenIssuer();
-        testCredentialsWithExtraParams();
-        testServeCommandMetaToken();
+        testUnsupportedBackendEviction();
         testServeCommandProxyProtocol();
         testProxyProtocolV1();
         testProxyProtocolV2();
@@ -422,27 +417,28 @@ public final class SelfTest {
     // ---------- Credentials ----------
 
     private static void testCredentialsRoundTrip() throws Exception {
-        Credentials orig = Credentials.frpXtcp("203.0.113.10", 7000, "tok3n",
-                "stun.miwifi.com:3478", "survival", "s3cr3t", 15000);
+        Credentials orig = Credentials.goncP2p("s3ss10n", "survival",
+                "tcp://203.0.113.10:1883,tcp://b.example.com:1883",
+                "udp://stun.example.com:3478", "any", 15000);
         Credentials back = Credentials.decode(orig.encode());
 
-        check("往返 backend", Credentials.BACKEND_FRP_XTCP.equals(back.backendId()));
-        check("往返 server 参数", "203.0.113.10".equals(back.param("server")));
-        check("往返 serverPort 参数", "7000".equals(back.param("serverPort")));
-        check("往返 token 参数", "tok3n".equals(back.param("token")));
-        check("往返 stun 参数", "stun.miwifi.com:3478".equals(back.param("stun")));
+        check("往返 backend", Credentials.BACKEND_GONC_P2P.equals(back.backendId()));
+        check("往返 sessionKey 参数", "s3ss10n".equals(back.param("sessionKey")));
+        check("往返 brokers 参数", "tcp://203.0.113.10:1883,tcp://b.example.com:1883"
+                .equals(back.param(Credentials.PARAM_BROKERS)));
+        check("往返 stunServers 参数",
+                "udp://stun.example.com:3478".equals(back.param("stunServers")));
+        check("往返 network 参数", "any".equals(back.param("network")));
         check("往返 room", back.room().equals("survival"));
-        check("往返 secret 参数", "s3cr3t".equals(back.param("secret")));
         check("往返 timeout", back.punchTimeoutMs() == 15000);
         check("参数保持下发顺序",
-                new ArrayList<String>(back.params().keySet()).get(0).equals("server"));
+                new ArrayList<String>(back.params().keySet()).get(0).equals("sessionKey"));
 
         // 中文和特殊字符要能安全通过（writeUTF 是 modified UTF-8）
-        Credentials cn = Credentials.frpXtcp("a.example.com", 1, "令牌", "s:1",
-                "青金石小镇", "密钥#1", 0);
+        Credentials cn = Credentials.goncP2p("密钥#1", "青金石小镇", null, null, null, 0);
         Credentials cnBack = Credentials.decode(cn.encode());
         check("往返中文房间名", cnBack.room().equals("青金石小镇"));
-        check("往返中文密钥", "密钥#1".equals(cnBack.param("secret")));
+        check("往返中文密钥", "密钥#1".equals(cnBack.param("sessionKey")));
 
         Credentials withOrigin = orig.withOrigin("Play.Example.COM", 25566);
         Credentials originBack = Credentials.decode(withOrigin.encode());
@@ -464,8 +460,14 @@ public final class SelfTest {
         check("未知 backend 也有房间名", back.room().equals("survival"));
     }
 
-    private static void testCredentialsV1Compat() throws Exception {
-        // 老服务端下发的 v1（frp 专用布局）必须仍能解出来
+    /**
+     * v1 was the removed frp-only fixed layout (server, port, token, stun,
+     * room, secret, timeout). Its bytes must be refused as "version too old"
+     * rather than parsed with the generic layout: the first UTF field would
+     * come out as the backend id and the rest as garbage, and a cache file
+     * from a pre-v2 build would then look like a live credential.
+     */
+    private static void testCredentialsV1Rejected() throws Exception {
         java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
         java.io.DataOutputStream out = new java.io.DataOutputStream(buf);
         out.writeByte(1);
@@ -476,25 +478,37 @@ public final class SelfTest {
         out.writeUTF("survival");
         out.writeUTF("sec");
         out.writeInt(3000);
+        byte[] v1 = buf.toByteArray();
 
-        Credentials v1 = Credentials.decode(buf.toByteArray());
-        check("v1 识别为 frp-xtcp", Credentials.BACKEND_FRP_XTCP.equals(v1.backendId()));
-        check("v1 字段映射到参数", "1.2.3.4".equals(v1.param("server"))
-                && "sec".equals(v1.param("secret")));
-        check("v1 房间名", v1.room().equals("survival"));
-        check("v1 超时", v1.punchTimeoutMs() == 3000);
+        String error = null;
+        try {
+            Credentials.decode(v1);
+        } catch (java.io.IOException e) {
+            error = e.getMessage();
+        }
+        check("v1 凭证被拒绝而非误解码", error != null);
+        check("v1 拒绝原因是版本过旧", error != null && error.equals(L10n.tr("cred.versionTooOld", 1)));
+
+        // A v1 file in the cache directory is corrupt data for this build:
+        // skipped and deleted, never handed to warm-up.
+        Path dir = Files.createTempDirectory("netherway-cache-v1");
+        Path stale = dir.resolve("0123456789abcdef.cred");
+        Files.write(stale, v1);
+        CredentialCache cache = new CredentialCache(dir);
+        check("缓存里的 v1 文件被跳过", cache.loadAll().isEmpty());
+        check("缓存里的 v1 文件被清除", !Files.exists(stale));
     }
 
     private static void testCredentialsForwardCompat() throws Exception {
         // 未来版本在 v4 尾部追加字段时，当前客户端读已知前缀、忽略其余。
-        byte[] v4 = Credentials.frpXtcp("h", 1, "t", "s:1", "survival", "k", 0)
+        byte[] v4 = Credentials.goncP2p("k", "survival", null, null, null, 0)
                 .withOrigin("play.example.com", 25565).encode();
         byte[] v5 = new byte[v4.length + 5];
         System.arraycopy(v4, 0, v5, 0, v4.length);
         v5[0] = 5;
         Credentials fut = Credentials.decode(v5);
         check("未来版本读已知前缀", fut.room().equals("survival"));
-        check("未来版本参数完整", "t".equals(fut.param("token")));
+        check("未来版本参数完整", "k".equals(fut.param("sessionKey")));
         check("未来版本保留已知 origin", fut.hasOrigin()
                 && "play.example.com".equals(fut.originHost()));
 
@@ -503,7 +517,7 @@ public final class SelfTest {
         java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
         java.io.DataOutputStream out = new java.io.DataOutputStream(buf);
         out.writeByte(3);
-        out.writeUTF(Credentials.BACKEND_FRP_XTCP);
+        out.writeUTF(Credentials.BACKEND_GONC_P2P);
         out.writeInt(1234);
         out.writeShort(1);
         out.writeUTF(Credentials.PARAM_ROOM);
@@ -519,8 +533,8 @@ public final class SelfTest {
         // 当前服务端也会 encode v4（origin 留空）。v4 故意保留零长度 policy
         // 表头，使上一代 decoder 能读完已知前缀并忽略 origin 后缀。
         check("上一代 decoder 可接受 v4 凭证", "survival".equals(
-                decodeWithLegacyV3Layout(Credentials.frpXtcp(
-                        "h", 1, "t", "s:1", "survival", "k", 0).encode())));
+                decodeWithLegacyV3Layout(Credentials.goncP2p(
+                        "k", "survival", null, null, null, 0).encode())));
     }
 
     private static String decodeWithLegacyV3Layout(byte[] data) throws Exception {
@@ -551,11 +565,11 @@ public final class SelfTest {
     private static void testCredentialsValidation() {
         boolean threw = false;
         try {
-            Credentials.frpXtcp("", 7000, "t", "s", "r", "k", 0);
+            Credentials.goncP2p("k", "", null, null, null, 0);
         } catch (IllegalArgumentException e) {
             threw = true;
         }
-        check("空 serverAddr 应拒绝", threw);
+        check("空 roomName 应拒绝", threw);
 
         boolean threwBackend = false;
         try {
@@ -604,19 +618,19 @@ public final class SelfTest {
     }
 
     private static void testCredentialsHidesSecrets() {
-        Credentials c = Credentials.frpXtcp("host", 7000, "SUPER_TOKEN",
-                "stun:1", "room-x", "SUPER_SECRET", 0);
+        Credentials c = Credentials.goncP2p("SUPER_SECRET", "room-x",
+                "tcp://SUPER_BROKER:1883", null, null, 0);
         String s = c.toString();
-        check("toString 不含 token", !s.contains("SUPER_TOKEN"));
         check("toString 不含密钥", !s.contains("SUPER_SECRET"));
+        check("toString 不含参数值", !s.contains("SUPER_BROKER"));
         check("toString 含房间名便于排查", s.contains("room-x"));
-        check("toString 含 backend", s.contains(Credentials.BACKEND_FRP_XTCP));
+        check("toString 含 backend", s.contains(Credentials.BACKEND_GONC_P2P));
     }
 
     private static void testCredentialsDedupKey() {
-        Credentials a = Credentials.frpXtcp("h1", 1, "t1", "s:1", "survival", "k1", 0);
-        Credentials b = Credentials.frpXtcp("h2", 2, "t2", "s:2", "survival", "k2", 9);
-        Credentials c = Credentials.frpXtcp("h1", 1, "t1", "s:1", "other", "k1", 0);
+        Credentials a = Credentials.goncP2p("k1", "survival", "tcp://h1:1", null, null, 0);
+        Credentials b = Credentials.goncP2p("k2", "survival", "tcp://h2:2", null, null, 9);
+        Credentials c = Credentials.goncP2p("k1", "other", "tcp://h1:1", null, null, 0);
         check("同 backend 同房间去重键一致", a.dedupKey().equals(b.dedupKey()));
         check("不同房间去重键不同", !a.dedupKey().equals(c.dedupKey()));
         Credentials a1 = a.withOrigin("one.example.com", 25565);
@@ -630,8 +644,8 @@ public final class SelfTest {
     // ---------- AgentProcess 命令行 ----------
 
     private static void testBuildCommand() {
-        Credentials cred = Credentials.frpXtcp("1.2.3.4", 7000, "tok",
-                "stun.miwifi.com:3478", "survival", "sec", 0);
+        Credentials cred = Credentials.goncP2p("sec", "survival",
+                "tcp://broker.example.com:1883", null, null, 0);
         List<String> cmd = AgentProcess.buildCommand(
                 Paths.get("/tmp/netherway"), cred, Timings.defaults(),
                 Paths.get("/tmp/tunnel.log"));
@@ -639,18 +653,21 @@ public final class SelfTest {
         check("首个参数是可执行文件", cmd.get(0).endsWith("netherway"));
         check("子命令是 tunnel", "tunnel".equals(cmd.get(1)));
         int at = cmd.indexOf("-backend");
-        check("指定 backend", at >= 0 && Credentials.BACKEND_FRP_XTCP.equals(cmd.get(at + 1)));
-        check("server 经 -O 传递", cmd.contains("-O") && cmd.contains("server=1.2.3.4"));
+        check("指定 backend", at >= 0 && Credentials.BACKEND_GONC_P2P.equals(cmd.get(at + 1)));
+        check("brokers 经 -O 传递", cmd.contains("-O")
+                && cmd.contains("brokers=tcp://broker.example.com:1883"));
         check("room 经 -O 传递", cmd.contains("room=survival"));
-        check("secret 经 -O 传递", cmd.contains("secret=sec"));
+        check("sessionKey 经 -O 传递", cmd.contains("sessionKey=sec"));
         check("默认超时 15s", cmd.contains("15.000"));
         check("固定开启 agent 详细日志", cmd.contains("-v"));
         int lf = cmd.indexOf("-log-file");
         check("传递日志文件路径", lf >= 0 && cmd.get(lf + 1).endsWith("tunnel.log"));
+        // The tunnel command takes -backend/-O only: no backend-specific sugar flags.
+        check("不带任何 backend 专属旗标", !cmd.contains("-server") && !cmd.contains("-token")
+                && !cmd.contains("-secret") && !cmd.contains("-stun") && !cmd.contains("-room"));
 
         // 服务端下发的超时应当覆盖客户端默认值
-        Credentials override = Credentials.frpXtcp("1.2.3.4", 7000, "tok",
-                "stun:1", "survival", "sec", 3000);
+        Credentials override = Credentials.goncP2p("sec", "survival", null, null, null, 3000);
         List<String> cmd2 = AgentProcess.buildCommand(
                 Paths.get("/tmp/netherway"), override, Timings.defaults(), null);
         check("服务端超时优先", cmd2.contains("3.000") && !cmd2.contains("15.000"));
@@ -658,27 +675,19 @@ public final class SelfTest {
     }
 
     private static void testDescribeCommandMasksValues() {
-        Credentials cred = Credentials.frpXtcp("203.0.113.7", 7000, "SUPER_TOKEN",
-                "stun:1", "survival", "SUPER_SECRET", 0);
+        Credentials cred = Credentials.goncP2p("SUPER_SECRET", "survival",
+                "tcp://203.0.113.7:1883", "udp://stun.example.com:3478", null, 0);
         String desc = AgentProcess.describeCommand(AgentProcess.buildCommand(
                 Paths.get("/tmp/netherway"), cred, Timings.defaults(),
                 Paths.get("/tmp/tunnel.log")));
 
-        check("命令行描述不含 token 值", !desc.contains("SUPER_TOKEN"));
         check("命令行描述不含密钥值", !desc.contains("SUPER_SECRET"));
-        check("命令行描述不含服务器地址值", !desc.contains("203.0.113.7"));
+        check("命令行描述不含 broker 地址值", !desc.contains("203.0.113.7"));
+        check("命令行描述不含 STUN 地址值", !desc.contains("stun.example.com"));
         check("命令行描述保留参数键名",
-                desc.contains("token=") && desc.contains("secret="));
+                desc.contains("sessionKey=") && desc.contains("brokers="));
         check("命令行描述保留非敏感旗标",
                 desc.contains("-backend") && desc.contains("-timeout"));
-    }
-
-    private static void testFrpXtcpParamKeys() {
-        Credentials c = Credentials.frpXtcp("h", 1, "t", "s:1", "r", "k", 0);
-        check("契约键集与工厂产出一致",
-                Credentials.frpXtcpParamKeys().equals(c.params().keySet()));
-        check("契约键集含 secret", Credentials.frpXtcpParamKeys().contains("secret"));
-        check("契约键集不含 key", !Credentials.frpXtcpParamKeys().contains("key"));
     }
 
     // ---------- gonc-p2p ----------
@@ -727,9 +736,7 @@ public final class SelfTest {
 
         List<String> cmd = ServeCommand.build(Paths.get("/srv/netherway"),
                 Credentials.BACKEND_GONC_P2P, params, 25570,
-                new ServeCommand.Options()
-                        .metaToken("IGNORED").proxyProtocol("v1")
-                        .rendezvousPort(63333).signingKey("IGNORED"));
+                new ServeCommand.Options().proxyProtocol("v1").rendezvousPort(63333));
         check("gonc serve 子命令", "serve".equals(cmd.get(1)));
         int backend = cmd.indexOf("-backend");
         check("gonc serve 带 -backend",
@@ -738,30 +745,53 @@ public final class SelfTest {
                 && cmd.contains("room=survival") && cmd.contains("brokers=tcp://a:1883"));
         int port = cmd.indexOf("-port");
         check("gonc serve 本地端口", port >= 0 && "25570".equals(cmd.get(port + 1)));
-        // frp-exclusive options are meaningless under gonc-p2p and must be
-        // dropped as a group; proxy protocol is NOT one of them — gonc serve
-        // injects the punched peer address itself, so the flag goes through.
-        check("gonc serve 忽略 frp 专属旗标", !cmd.contains("-rendezvous")
+        // serve takes -backend/-O plus proxy protocol and the rendezvous port
+        // only: gonc serve injects the punched peer address itself, and
+        // -rendezvous starts its embedded loopback MQTT broker.
+        check("gonc serve 不带 backend 专属旗标", !cmd.contains("-server")
+                && !cmd.contains("-token") && !cmd.contains("-secret")
                 && !cmd.contains("-meta-token") && !cmd.contains("-signing-key"));
+        int rz = cmd.indexOf("-rendezvous");
+        check("gonc serve 转发会合点端口", rz >= 0 && "63333".equals(cmd.get(rz + 1)));
         int pp = cmd.indexOf("-proxy-protocol");
         check("gonc serve 转发 proxy protocol", pp >= 0 && "v1".equals(cmd.get(pp + 1)));
         List<String> noPp = ServeCommand.build(Paths.get("/srv/netherway"),
                 Credentials.BACKEND_GONC_P2P, params, 25570, new ServeCommand.Options());
         check("gonc serve 未开 proxy protocol 不带旗标", !noPp.contains("-proxy-protocol"));
+        check("gonc serve 未开会合点不带 -rendezvous", !noPp.contains("-rendezvous"));
+        check("gonc serve 描述保留会合点端口",
+                ServeCommand.describe(cmd).contains("-rendezvous 63333"));
 
         String desc = ServeCommand.describe(cmd);
         check("gonc serve 描述不含 sessionKey 值", !desc.contains("SUPER_SESSION_KEY"));
         check("gonc serve 描述保留键名", desc.contains("sessionKey=***"));
         check("gonc serve 描述保留房间", desc.contains("room=survival"));
+        check("gonc serve 描述保留 broker 列表", desc.contains("brokers=tcp://a:1883"));
 
-        // 同一入口对 frp-xtcp 仍走老组装（回归保护）
-        java.util.Map<String, String> frp = new java.util.LinkedHashMap<String, String>();
-        frp.put("server", "frps.example.com");
-        frp.put("room", "test");
-        List<String> frpCmd = ServeCommand.build(Paths.get("/srv/netherway"),
-                Credentials.BACKEND_FRP_XTCP, frp, 25570, new ServeCommand.Options());
-        check("backend 入口对 frp 走旗标组装", frpCmd.contains("-server")
-                && !frpCmd.contains("-backend") && !frpCmd.contains("-O"));
+        // Empty values are skipped, and any key that smells like a secret is
+        // masked in the description regardless of backend.
+        java.util.Map<String, String> extra = new java.util.LinkedHashMap<String, String>();
+        extra.put("sessionKey", "K");
+        extra.put("room", "r");
+        extra.put("network", "");
+        extra.put("apiToken", "T0KEN");
+        List<String> extraCmd = ServeCommand.build(Paths.get("/srv/netherway"),
+                Credentials.BACKEND_GONC_P2P, extra, 25570, new ServeCommand.Options());
+        check("gonc serve 空值参数不传", !extraCmd.contains("network="));
+        check("gonc serve 描述遮蔽 token 类键值",
+                !ServeCommand.describe(extraCmd).contains("T0KEN")
+                        && ServeCommand.describe(extraCmd).contains("apiToken=***"));
+
+        // The built-in serve is gonc-only; anything else is refused before a
+        // process is spawned (the launchers gate on supportsBackend first).
+        boolean refused = false;
+        try {
+            ServeCommand.build(Paths.get("/srv/netherway"), "frp-xtcp", params, 25570,
+                    new ServeCommand.Options());
+        } catch (IllegalArgumentException e) {
+            refused = true;
+        }
+        check("serve 拒绝不支持的 backend", refused);
     }
 
     // ---------- UpgradeReport ----------
@@ -814,162 +844,146 @@ public final class SelfTest {
         check("过旧版本回执应拒绝", threw);
     }
 
-    private static void testServeCommand() {
-        java.util.Map<String, String> params = new java.util.LinkedHashMap<String, String>();
-        params.put("server", "frps.example.com");
-        params.put("serverPort", "7000");
-        params.put("token", "SUPER_TOKEN");
-        params.put("room", "test");
-        params.put("secret", "SUPER_SECRET");
-        params.put("futureKey", "whatever"); // 未知键应被忽略
+    private static void testCredentialsBrokerOrigin() throws Exception {
+        // Cross-language pin: mirrors Go goncp2p.BrokerOrigin / ParamBrokers.
+        check("BROKER_ORIGIN 字面量为 origin", "origin".equals(Credentials.BROKER_ORIGIN));
+        check("PARAM_BROKERS 字面量为 brokers", "brokers".equals(Credentials.PARAM_BROKERS));
+        check("gonc 契约键含 brokers",
+                Credentials.goncP2pParamKeys().contains(Credentials.PARAM_BROKERS));
 
-        List<String> cmd = ServeCommand.build(Paths.get("/srv/netherway"), params, 25570);
-        check("serve 子命令", "serve".equals(cmd.get(1)));
-        int server = cmd.indexOf("-server");
-        check("server 映射为 -server",
-                server >= 0 && "frps.example.com".equals(cmd.get(server + 1)));
-        int sp = cmd.indexOf("-server-port");
-        check("serverPort 映射为 -server-port", sp >= 0 && "7000".equals(cmd.get(sp + 1)));
-        int room = cmd.indexOf("-room");
-        check("room 映射为 -room", room >= 0 && "test".equals(cmd.get(room + 1)));
-        int port = cmd.indexOf("-port");
-        check("本地端口经 -port 传递", port >= 0 && "25570".equals(cmd.get(port + 1)));
-        check("未知键被忽略", !cmd.contains("futureKey") && !cmd.contains("whatever"));
-        check("缺失的键不传旗标", !cmd.contains("-stun"));
-
-        String desc = ServeCommand.describe(cmd);
-        check("serve 描述不含 token 值", !desc.contains("SUPER_TOKEN"));
-        check("serve 描述不含密钥值", !desc.contains("SUPER_SECRET"));
-        check("serve 描述保留 frps 地址", desc.contains("frps.example.com"));
-        check("serve 描述保留房间名", desc.contains("-room test"));
-    }
-
-    private static void testCredentialsRendezvousAddress() throws Exception {
-        Credentials viaRz = Credentials.frpXtcpViaRendezvous(
-                "TOKEN", "stun.example.com:3478", "survival", "SECRET", 15000);
-        check("会合点凭证不含 server", !viaRz.params().containsKey("server"));
-        check("会合点凭证不含 serverPort", !viaRz.params().containsKey("serverPort"));
-        check("会合点凭证自报缺地址", viaRz.needsRendezvousAddress());
-
+        Credentials viaRz = Credentials.goncP2p("KEY", "survival",
+                Credentials.BROKER_ORIGIN, null, null, 15000);
+        check("gonc origin 占位自报缺地址", viaRz.needsRendezvousAddress());
         Credentials filled = viaRz.rendezvousAt("mc.example.com", 25565);
-        check("补齐后 server 生效", "mc.example.com".equals(filled.params().get("server")));
-        check("补齐后 serverPort 生效", "25565".equals(filled.params().get("serverPort")));
-        check("补齐后不再缺地址", !filled.needsRendezvousAddress());
-        check("补齐不影响其它参数", "SECRET".equals(filled.params().get("secret")));
-        check("原对象不变（缺地址）", viaRz.needsRendezvousAddress());
+        check("gonc origin 被替换为入口 broker URL",
+                "tcp://mc.example.com:25565".equals(filled.param(Credentials.PARAM_BROKERS)));
+        check("gonc 补齐后不再缺地址", !filled.needsRendezvousAddress());
+        check("gonc 补齐不影响其它参数", "KEY".equals(filled.param("sessionKey")));
+        check("gonc 原对象不变（缺地址）", viaRz.needsRendezvousAddress());
 
-        // 服务端明确指定了地址就以服务端为准——它可能有意指向别的入口
-        Credentials explicit = Credentials.frpXtcp("frps.example.com", 7000, "T",
-                "stun.example.com:3478", "survival", "S", 15000);
-        check("经典凭证不缺地址", !explicit.needsRendezvousAddress());
-        Credentials untouched = explicit.rendezvousAt("mc.example.com", 25565);
-        check("已有地址不被覆盖",
-                "frps.example.com".equals(untouched.params().get("server")));
-        check("已有端口不被覆盖", "7000".equals(untouched.params().get("serverPort")));
+        // Mixed list: placeholder resolved in place, order preserved.
+        Credentials mixed = Credentials.goncP2p("KEY", "survival",
+                "origin, tcp://broker.example.com:1883", null, null, 15000);
+        check("gonc 混合列表自报缺地址", mixed.needsRendezvousAddress());
+        check("gonc 混合列表保序替换",
+                "tcp://mc.example.com:25565,tcp://broker.example.com:1883".equals(
+                        mixed.rendezvousAt("mc.example.com", 25565)
+                                .param(Credentials.PARAM_BROKERS)));
 
-        // 非法地址不该把凭证改坏
-        check("空主机名不改动凭证", viaRz.rendezvousAt("", 25565).needsRendezvousAddress());
-        check("越界端口不改动凭证",
+        // IPv6 literal hosts must be bracketed before the port.
+        check("gonc IPv6 入口加方括号",
+                "tcp://[::1]:25565".equals(
+                        viaRz.rendezvousAt("::1", 25565).param(Credentials.PARAM_BROKERS)));
+
+        // No placeholder: nothing to do, the operator named explicit brokers.
+        Credentials explicit = Credentials.goncP2p("KEY", "survival",
+                "tcp://broker.example.com:1883", null, null, 15000);
+        check("gonc 显式 broker 不缺地址", !explicit.needsRendezvousAddress());
+        check("gonc 显式 broker 不被改写",
+                explicit.rendezvousAt("mc.example.com", 25565).params().equals(explicit.params()));
+        // "origin" must match a whole entry, not a substring of a URL.
+        Credentials lookalike = Credentials.goncP2p("KEY", "survival",
+                "tcp://origin.example.com:1883", null, null, 15000);
+        check("gonc 含 origin 子串的 URL 不算占位", !lookalike.needsRendezvousAddress());
+        // Static helper shared with the server-side config (same split/trim rules).
+        check("containsOriginBroker 识别整条目占位",
+                Credentials.containsOriginBroker(" origin ,tcp://broker.example.com:1883"));
+        check("containsOriginBroker 不认子串", !Credentials.containsOriginBroker("tcp://origin.example.com:1883"));
+        check("containsOriginBroker 空值为假",
+                !Credentials.containsOriginBroker(null) && !Credentials.containsOriginBroker(""));
+
+        // Invalid addresses leave the credential untouched.
+        check("gonc 空主机名不改动凭证", viaRz.rendezvousAt("", 25565).needsRendezvousAddress());
+        check("gonc 越界端口不改动凭证",
                 viaRz.rendezvousAt("mc.example.com", 70000).needsRendezvousAddress());
-        check("零端口不改动凭证",
+        check("gonc 零端口不改动凭证",
                 viaRz.rendezvousAt("mc.example.com", 0).needsRendezvousAddress());
 
-        // 别的 backend 的地址键名由它们自己的契约决定，这里不该乱猜
+        // Other backends' address keys are their own contract: even a
+        // "brokers=origin" parameter on an unknown backend is not interpreted.
         java.util.Map<String, String> other = new java.util.LinkedHashMap<String, String>();
         other.put(Credentials.PARAM_ROOM, "survival");
+        other.put(Credentials.PARAM_BROKERS, Credentials.BROKER_ORIGIN);
         Credentials generic = new Credentials("some-other-backend", other, 15000);
-        check("非 frp-xtcp 不报缺地址", !generic.needsRendezvousAddress());
-        check("非 frp-xtcp 不被塞入 server",
-                !generic.rendezvousAt("mc.example.com", 25565).params().containsKey("server"));
+        check("非 gonc backend 不报缺地址", !generic.needsRendezvousAddress());
+        check("非 gonc backend 的 brokers 不被 rendezvousAt 改写",
+                Credentials.BROKER_ORIGIN.equals(generic.rendezvousAt("mc.example.com", 25565)
+                        .param(Credentials.PARAM_BROKERS)));
 
-        // 编解码要能原样往返（少两个键不影响格式）
+        // Encode/decode keeps the placeholder verbatim (server → client wire).
         Credentials back = Credentials.decode(viaRz.encode());
-        check("会合点凭证编解码往返", back.needsRendezvousAddress()
-                && "survival".equals(back.params().get(Credentials.PARAM_ROOM)));
-
-        // withDefaultParams 的语义：只补空缺，不覆盖
-        java.util.Map<String, String> d = new java.util.LinkedHashMap<String, String>();
-        d.put("secret", "别的密钥");
-        d.put("新键", "新值");
-        Credentials merged = viaRz.withDefaultParams(d);
-        check("withDefaultParams 不覆盖已有值",
-                "SECRET".equals(merged.params().get("secret")));
-        check("withDefaultParams 补上缺失键", "新值".equals(merged.params().get("新键")));
+        check("gonc origin 占位编解码往返", back.needsRendezvousAddress()
+                && Credentials.BROKER_ORIGIN.equals(back.param(Credentials.PARAM_BROKERS)));
+        Credentials backFilled = Credentials.decode(
+                filled.withOrigin("mc.example.com", 25565).encode());
+        check("gonc 补齐后编解码往返", !backFilled.needsRendezvousAddress()
+                && "tcp://mc.example.com:25565".equals(backFilled.param(Credentials.PARAM_BROKERS)));
     }
 
-    private static void testServeCommandRendezvous() {
-        java.util.Map<String, String> params = new java.util.LinkedHashMap<String, String>();
-        params.put("server", "frps.example.com");
-        params.put("serverPort", "7000");
-        params.put("token", "ROOM_TOKEN");
-        params.put("room", "test");
-        params.put("secret", "SUPER_SECRET");
+    private static void testMqttConnectDetection() {
+        // A paho-style CONNECT prefix: 10 <len> 00 04 'M' 'Q' 'T' 'T' 04 02 ...
+        byte[] connect = {0x10, 0x1a, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0x02, 0x00, 0x3c};
+        check("MQTT CONNECT 被认出",
+                Boolean.TRUE.equals(MqttConnect.looksLikeConnect(connect, connect.length)));
+        byte[] mqisdp = {0x10, 0x1c, 0x00, 0x06, 'M', 'Q', 'I', 's', 'd', 'p', 0x03, 0x02};
+        check("MQTT 3.1 (MQIsdp) CONNECT 被认出",
+                Boolean.TRUE.equals(MqttConnect.looksLikeConnect(mqisdp, mqisdp.length)));
+        // Multi-byte remaining length (continuation bit set on the first byte).
+        byte[] longLen = {0x10, (byte) 0x80, 0x01, 0x00, 0x04, 'M', 'Q', 'T', 'T'};
+        check("多字节剩余长度的 CONNECT 被认出",
+                Boolean.TRUE.equals(MqttConnect.looksLikeConnect(longLen, longLen.length)));
 
-        List<String> cmd = ServeCommand.build(Paths.get("/srv/netherway"), params, 25565,
-                new ServeCommand.Options().rendezvousPort(41234).signingKey("SIGNING"));
+        // Tri-state: too few bytes must yield null, never a guess.
+        check("零字节时不下定论", MqttConnect.looksLikeConnect(new byte[0], 0) == null);
+        byte[] one = {0x10};
+        check("只有首字节时不下定论", MqttConnect.looksLikeConnect(one, 1) == null);
+        byte[] partialName = {0x10, 0x1a, 0x00, 0x04, 'M', 'Q'};
+        check("协议名未到齐时不下定论",
+                MqttConnect.looksLikeConnect(partialName, partialName.length) == null);
+        check("协议名到齐后立刻认出",
+                Boolean.TRUE.equals(MqttConnect.looksLikeConnect(connect, 8)));
+        byte[] partialLen = {0x10, (byte) 0x80};
+        check("剩余长度未到齐时不下定论",
+                MqttConnect.looksLikeConnect(partialLen, partialLen.length) == null);
+        check("只看 len 以内的字节", MqttConnect.looksLikeConnect(connect, 1) == null);
+        check("最多 13 字节必能下定论", MqttConnect.PEEK_BYTES == 13);
 
-        int rz = cmd.indexOf("-rendezvous");
-        check("会合点端口经 -rendezvous 传递", rz >= 0 && "41234".equals(cmd.get(rz + 1)));
-        // 会合点在本机回环上，agent 自己就知道地址，传公网 frps 的地址只会误导
-        check("内嵌会合点模式不传 -server", !cmd.contains("-server"));
-        check("内嵌会合点模式不传 -server-port", !cmd.contains("-server-port"));
-        // token 仍要传：它与下发凭证同源，玩家拿着它登录内嵌会合点
-        int token = cmd.indexOf("-token");
-        check("内嵌会合点模式仍传 token", token >= 0 && "ROOM_TOKEN".equals(cmd.get(token + 1)));
-        int key = cmd.indexOf("-signing-key");
-        check("签发密钥经 -signing-key 传递", key >= 0 && "SIGNING".equals(cmd.get(key + 1)));
-
-        String desc = ServeCommand.describe(cmd);
-        check("serve 描述不含签发密钥值", !desc.contains("SIGNING"));
-        check("serve 描述保留会合点端口", desc.contains("-rendezvous 41234"));
-
-        // 不启用时一切照旧
-        List<String> off = ServeCommand.build(Paths.get("/srv/netherway"), params, 25565,
-                new ServeCommand.Options().signingKey("SIGNING"));
-        check("未启用会合点时不传 -rendezvous", !off.contains("-rendezvous"));
-        check("未启用会合点时不传 -signing-key", !off.contains("-signing-key"));
-        check("未启用会合点时仍传 -server", off.contains("-server"));
-    }
-
-    private static void testTlsRecordDetection() {
-        // frp 控制通道实测首字节：16 03 01 ...（TLS ClientHello）
-        byte[] tls = {0x16, 0x03, 0x01, 0x00, 0x2f};
-        check("TLS 握手被认出", Boolean.TRUE.equals(TlsRecord.looksLikeHandshake(tls, tls.length)));
-
-        // 同一个端口上的其它流量都必须被排除，否则会被错误地转给会合点
-        byte[] mcModern = {0x10, 0x00, 0x2f};
+        // Everything else on the Minecraft port must be rejected.
+        byte[] zeroLen = {0x10, 0x00};
+        check("剩余长度为 0 时否定（MC 握手 10 00）",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(zeroLen, zeroLen.length)));
+        byte[] mcModern = {0x10, 0x00, 0x2f, 0x09, 'l', 'o', 'c', 'a', 'l'};
         check("MC 现代握手不被误判",
-                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(mcModern, mcModern.length)));
-        byte[] legacy = {(byte) 0xFE, 0x01};
-        check("MC legacy ping 不被误判",
-                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(legacy, legacy.length)));
-        byte[] proxyV1 = {'P', 'R', 'O', 'X', 'Y'};
-        check("PROXY v1 头不被误判",
-                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(proxyV1, proxyV1.length)));
-        byte[] proxyV2 = {0x0D, 0x0A, 0x0D, 0x0A};
-        check("PROXY v2 头不被误判",
-                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(proxyV2, proxyV2.length)));
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(mcModern, mcModern.length)));
+        // A TLS ClientHello (what the removed frp control channel opened with)
+        // must fall through to Minecraft like any other unknown traffic.
+        byte[] tls = {0x16, 0x03, 0x01};
+        check("TLS 握手不被误判",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(tls, tls.length)));
         byte[] nway = {'N', 'W', 'A', 'Y'};
         check("预认证帧不被误判",
-                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(nway, nway.length)));
-
-        // 三态：字节不够时必须回 null，而不是猜
-        check("零字节时不下定论", TlsRecord.looksLikeHandshake(new byte[0], 0) == null);
-        byte[] one = {0x16};
-        check("只有首字节时不下定论", TlsRecord.looksLikeHandshake(one, 1) == null);
-        // 首字节就不对的话不必再等第二个字节
-        byte[] oneBad = {0x17};
-        check("首字节即可否定时立刻下定论",
-                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(oneBad, 1)));
-        // 记录类型对但主版本不对（比如 SSLv2 或畸形流量）
-        byte[] wrongVersion = {0x16, 0x02};
-        check("记录类型对但版本不对时否定",
-                Boolean.FALSE.equals(TlsRecord.looksLikeHandshake(wrongVersion, 2)));
-
-        // len 是有效长度，不是数组长度：缓冲区通常比已读字节大
-        byte[] over = new byte[16];
-        over[0] = 0x16;
-        check("只看 len 以内的字节", TlsRecord.looksLikeHandshake(over, 1) == null);
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(nway, nway.length)));
+        byte[] legacy = {(byte) 0xFE, 0x01};
+        check("MC legacy ping 不被误判",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(legacy, legacy.length)));
+        byte[] proxyV1 = {'P', 'R', 'O', 'X', 'Y'};
+        check("PROXY v1 头不被误判",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(proxyV1, proxyV1.length)));
+        byte[] proxyV2 = {0x0D, 0x0A, 0x0D, 0x0A};
+        check("PROXY v2 头不被误判",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(proxyV2, proxyV2.length)));
+        byte[] wrongName = {0x10, 0x1a, 0x00, 0x04, 'M', 'Q', 'X', 'X'};
+        check("协议名不对时否定",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(wrongName, wrongName.length)));
+        byte[] wrongNameEarly = {0x10, 0x1a, 0x01};
+        check("协议名首字节就不对时立刻否定",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(wrongNameEarly, 3)));
+        byte[] flags = {0x11, 0x1a, 0x00, 0x04, 'M', 'Q', 'T', 'T'};
+        check("CONNECT 旗标非零时否定",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(flags, flags.length)));
+        byte[] overflow = {0x10, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 0x00};
+        check("4 字节续位溢出时否定",
+                Boolean.FALSE.equals(MqttConnect.looksLikeConnect(overflow, overflow.length)));
     }
 
     private static void testTimingsNormalization() {
@@ -1003,8 +1017,7 @@ public final class SelfTest {
 
         // 与 buildCommand 组装的 -timeout 同源：凭证说 1 小时，
         // 命令行就该是 3600 秒，而等待窗口必须比它更长
-        Credentials cred = Credentials.frpXtcp("1.2.3.4", 7000, "tok",
-                "stun:1", "survival", "sec", 3600000);
+        Credentials cred = Credentials.goncP2p("sec", "survival", null, null, null, 3600000);
         List<String> cmd = AgentProcess.buildCommand(
                 Paths.get("/tmp/netherway"), cred, t, null);
         int at = cmd.indexOf("-timeout");
@@ -1100,8 +1113,7 @@ public final class SelfTest {
         FakeBridge bridge = new FakeBridge(tmp);
         UpgradeController c = new UpgradeController(bridge, Timings.defaults());
 
-        Credentials cred = Credentials.frpXtcp("127.0.0.1", 7000, "t",
-                "stun:1", "room-a", "k", 1000);
+        Credentials cred = Credentials.goncP2p("k", "room-a", null, null, null, 1000);
         check("首次凭证启动升级", c.onCredentials(cred));
 
         // jar 里没有 natives 资源，应当迅速放弃而不是卡住等超时
@@ -1132,8 +1144,7 @@ public final class SelfTest {
         FakeBridge bridge = new FakeBridge(tmp);
         UpgradeController c = new UpgradeController(bridge, Timings.defaults());
 
-        Credentials cred = Credentials.frpXtcp("127.0.0.1", 7000, "t",
-                "stun:1", "room-b", "k", 1000);
+        Credentials cred = Credentials.goncP2p("k", "room-b", null, null, null, 1000);
         c.onCredentials(cred);
         bridge.settled.await(10, TimeUnit.SECONDS);
 
@@ -1156,8 +1167,8 @@ public final class SelfTest {
         CredentialCache cache = new CredentialCache(tmp.resolve("credentials"));
 
         // 上一场留下的好凭证：带会合点地址
-        Credentials viaRz = Credentials.frpXtcpViaRendezvous(
-                "T", "stun:1", "room-rz", "S", 1000);
+        Credentials viaRz = Credentials.goncP2p("S", "room-rz",
+                Credentials.BROKER_ORIGIN, null, null, 1000);
         cache.store(viaRz.rendezvousAt("mc.example.com", 25565));
 
         // 切换后的重复下发：此刻服务器地址推导不出来（模拟 ServerData 已被清）
@@ -1168,8 +1179,8 @@ public final class SelfTest {
 
         Credentials cached = cache.loadMostRecent();
         check("无地址凭证不覆盖缓存", cached != null && !cached.needsRendezvousAddress());
-        check("缓存里仍是带地址的版本",
-                cached != null && "mc.example.com".equals(cached.params().get("server")));
+        check("缓存里仍是带地址的版本", cached != null
+                && "tcp://mc.example.com:25565".equals(cached.param(Credentials.PARAM_BROKERS)));
         c.shutdown();
     }
 
@@ -1208,8 +1219,7 @@ public final class SelfTest {
             }
         };
         UpgradeController c = new UpgradeController(bridge, Timings.defaults());
-        Credentials cred = Credentials.frpXtcp("127.0.0.1", 7000, "t",
-                "stun:1", "room-race", "k", 1000);
+        Credentials cred = Credentials.goncP2p("k", "room-race", null, null, null, 1000);
 
         check("竞态：首次凭证启动升级", c.onCredentials(cred));
         check("竞态：worker 已进入升级流程", workerEntered.await(10, TimeUnit.SECONDS));
@@ -1241,8 +1251,10 @@ public final class SelfTest {
 
     // ---------- CredentialCache ----------
 
+    /** A resolvable gonc credential (explicit broker, no origin placeholder). */
     private static Credentials sampleCred(String room, String secret) {
-        return Credentials.frpXtcp("1.2.3.4", 7000, "tok", "stun:1", room, secret, 15000);
+        return Credentials.goncP2p(secret, room, "tcp://broker.example.com:1883",
+                null, null, 15000);
     }
 
     private static Credentials sampleCredAt(String room, String secret) {
@@ -1283,11 +1295,11 @@ public final class SelfTest {
         cache.store(sampleCred("survival", "s1"));
         Credentials back = cache.loadMostRecent();
         check("缓存往返房间名", back != null && back.room().equals("survival"));
-        check("缓存往返密钥", back != null && "s1".equals(back.param("secret")));
+        check("缓存往返密钥", back != null && "s1".equals(back.param("sessionKey")));
 
         // 同一房间重复缓存应覆盖同一个文件，而不是越攒越多
         cache.store(sampleCred("survival", "s2"));
-        check("同房间覆盖后取到新值", "s2".equals(cache.loadMostRecent().param("secret")));
+        check("同房间覆盖后取到新值", "s2".equals(cache.loadMostRecent().param("sessionKey")));
         check("同房间只留一个文件", listCredFiles(dir).size() == 1);
     }
 
@@ -1410,7 +1422,7 @@ public final class SelfTest {
                 "{\"event\":\"ready\",\"port\":25596,\"rttMs\":45,\"elapsedMs\":2000}"));
         check("就绪后按去重键查到端口",
                 Integer.valueOf(25595).equals(warmup.readyPort(cred.dedupKey())));
-        check("其他房间查不到", warmup.readyPort("frp-xtcp:other") == null);
+        check("其他房间查不到", warmup.readyPort("gonc-p2p:other") == null);
         check("按端口反查得到凭证", warmup.credentialsForPort(25595) == cred);
         check("多服务就绪状态同时保留",
                 Integer.valueOf(25596).equals(warmup.readyPort(second.dedupKey()))
@@ -1572,89 +1584,84 @@ public final class SelfTest {
         off.shutdown();
     }
 
-    // ---------- 每玩家令牌 ----------
+    // ---------- 不支持的 backend：驱逐缓存 ----------
 
-    private static void testTokenIssuer() {
-        // 跨语言已知答案：与 Go 侧 internal/authplugin 的测试用同一组常量。
-        // 任何一侧改了算法都会先在这里撞车，而不是玩家连不上时才发现。
-        String user = "069a79f4-44e9-4726-a5be-fca90e38aaf5";
-        String want = "1893456000."
-                + "0b91c0bf30d621d5c890a011253ea4b83c918422d19689334a18508e9b6db088";
-        check("跨语言已知答案一致", TokenIssuer.issue("k3y", user, 1893456000L).equals(want));
-        check("密钥指纹与 Go 侧一致", TokenIssuer.keyFingerprint("k3y").equals("a49b1287"));
+    /**
+     * A cached credential the agent answers {@code failed/start/backend_unknown}
+     * for (typically a cache file from a build that shipped another backend)
+     * must leave the cache and the warm-up room table, or it keeps taking a
+     * punch slot on every round for a punch that can never succeed.
+     */
+    private static void testUnsupportedBackendEviction() throws Exception {
+        AgentEvent unknown = AgentEvent.parse("{\"event\":\"failed\","
+                + "\"failureStage\":\"start\",\"failureCode\":\"backend_unknown\","
+                + "\"reason\":\"unknown backend\"}");
+        check("backend_unknown 事件被识别", unknown.isUnsupportedBackend());
+        check("其它失败码不算 backend 不支持", !AgentEvent.parse("{\"event\":\"failed\","
+                + "\"failureStage\":\"start\",\"failureCode\":\"bind_port_failed\"}")
+                .isUnsupportedBackend());
+        check("非 start 阶段的 backend_unknown 不算", !AgentEvent.parse("{\"event\":\"failed\","
+                + "\"failureStage\":\"backend\",\"failureCode\":\"backend_unknown\"}")
+                .isUnsupportedBackend());
+        check("READY 事件不算", !AgentEvent.parse("{\"event\":\"ready\",\"port\":1}")
+                .isUnsupportedBackend());
+        check("旧式无分类失败不算", !AgentEvent.failed("x").isUnsupportedBackend());
 
-        String token = TokenIssuer.issue("key-a", user, 1893456000L);
-        check("令牌以过期时间开头", token.startsWith("1893456000."));
-        check("签名为 64 位十六进制",
-                token.substring(token.indexOf('.') + 1).matches("[0-9a-f]{64}"));
-        check("不同 user 令牌不同",
-                !token.equals(TokenIssuer.issue("key-a", "other", 1893456000L)));
-        check("不同过期时间令牌不同",
-                !token.equals(TokenIssuer.issue("key-a", user, 1893456001L)));
-        check("不同密钥令牌不同",
-                !token.equals(TokenIssuer.issue("key-b", user, 1893456000L)));
+        Path tmp = Files.createTempDirectory("netherway-evict");
+        FakeBridge bridge = new FakeBridge(tmp);
+        CredentialCache cache = new CredentialCache(tmp.resolve("credentials"));
+        // A stale credential for a backend this build does not ship, next to a live one.
+        java.util.Map<String, String> p = new java.util.LinkedHashMap<String, String>();
+        p.put(Credentials.PARAM_ROOM, "stale-room");
+        p.put("server", "203.0.113.10");
+        Credentials stale = new Credentials("frp-xtcp", p, 1000).withOrigin("mc.example.com", 25565);
+        Credentials live = sampleCredAt("live-room", "k");
+        cache.store(stale);
+        cache.store(live);
+        check("驱逐前两份凭证都在缓存里", cache.loadAll().size() == 2);
 
-        boolean threw = false;
-        try {
-            TokenIssuer.issue("", user, 1L);
-        } catch (IllegalArgumentException e) {
-            threw = true;
-        }
-        check("空签发密钥应拒绝", threw);
-    }
-
-    private static void testCredentialsWithExtraParams() throws Exception {
-        Credentials base = sampleCred("survival", "sec");
-        java.util.Map<String, String> extra = new java.util.LinkedHashMap<String, String>();
-        extra.put(Credentials.PARAM_USER, "uuid-1");
-        extra.put(Credentials.PARAM_USER_TOKEN, "1893456000.abcd");
-        Credentials withId = base.withExtraParams(extra);
-
-        check("附加后含 user 参数", "uuid-1".equals(withId.param(Credentials.PARAM_USER)));
-        check("附加后原参数保留", "sec".equals(withId.param("secret")));
-        check("原凭证不受影响", base.param(Credentials.PARAM_USER) == null);
-        check("去重键不因身份参数改变", base.dedupKey().equals(withId.dedupKey()));
-
-        // 老客户端拿到带身份参数的凭证也能正常编解码并原样转交
-        Credentials back = Credentials.decode(withId.encode());
-        check("身份参数经编解码往返", "uuid-1".equals(back.param(Credentials.PARAM_USER)));
-        check("身份参数排在原参数之后", new ArrayList<String>(
-                back.params().keySet()).indexOf(Credentials.PARAM_USER) > 0);
-        check("toString 不含令牌值", !withId.toString().contains("1893456000.abcd"));
-    }
-
-    private static void testServeCommandMetaToken() {
-        java.util.Map<String, String> params = new java.util.LinkedHashMap<String, String>();
-        params.put("server", "frps.example.com");
-        params.put("room", "test");
-
-        List<String> plain = ServeCommand.build(Paths.get("/srv/netherway"), params, 25570);
-        check("未配置静态令牌则不传旗标", !plain.contains("-meta-token"));
-
-        List<String> cmd = ServeCommand.build(Paths.get("/srv/netherway"), params, 25570,
-                new ServeCommand.Options().metaToken("SERVE_STATIC"));
-        int at = cmd.indexOf("-meta-token");
-        check("静态令牌经 -meta-token 传递", at >= 0 && "SERVE_STATIC".equals(cmd.get(at + 1)));
-        check("serve 描述抹掉静态令牌值",
-                !ServeCommand.describe(cmd).contains("SERVE_STATIC"));
+        WarmupController warmup = new WarmupController(bridge, cache, Timings.defaults(),
+                null, 0, null);
+        warmup.injectReadyForTest(live, AgentEvent.parse("{\"event\":\"ready\",\"port\":25595}"));
+        check("非 backend_unknown 的失败不驱逐", !warmup.evictUnsupportedForTest(stale,
+                AgentEvent.parse("{\"event\":\"failed\",\"failureStage\":\"probe\","
+                        + "\"failureCode\":\"ready_probe_timeout\"}")));
+        check("驱逐前缓存仍完整", cache.loadAll().size() == 2);
+        check("backend_unknown 触发驱逐", warmup.evictUnsupportedForTest(stale, unknown));
+        List<Credentials> left = cache.loadAll();
+        check("过期凭证已从缓存移除", left.size() == 1 && "live-room".equals(left.get(0).room()));
+        check("预热房间表不再跟踪它", !warmup.tracksForTest(stale));
+        check("其它房间的隧道不受影响", warmup.readyPort(live.dedupKey()) != null);
+        check("驱逐写了 info 日志", bridge.logs.contains(
+                "agent 不支持房间 stale-room 缓存凭证的 backend（frp-xtcp），已从缓存移除"
+                        + "（中转进服或预取会取回新凭证）"));
+        check("重复驱逐幂等", warmup.evictUnsupportedForTest(stale, unknown)
+                && cache.loadAll().size() == 1);
+        // Direct cache API: evicting an absent credential is not an error.
+        check("evict 缺席凭证返回 false", !cache.evict(stale));
+        check("evict 在场凭证返回 true", cache.evict(live) && cache.loadAll().isEmpty());
+        warmup.shutdown();
     }
 
     private static void testServeCommandProxyProtocol() {
         java.util.Map<String, String> params = new java.util.LinkedHashMap<String, String>();
-        params.put("server", "frps.example.com");
+        params.put("sessionKey", "K");
         params.put("room", "test");
 
-        List<String> plain = ServeCommand.build(Paths.get("/srv/netherway"), params, 25570);
+        List<String> plain = ServeCommand.build(Paths.get("/srv/netherway"),
+                Credentials.BACKEND_GONC_P2P, params, 25570, new ServeCommand.Options());
         check("未配置 PROXY protocol 则不传旗标", !plain.contains("-proxy-protocol"));
 
-        List<String> cmd = ServeCommand.build(Paths.get("/srv/netherway"), params, 25570,
+        List<String> cmd = ServeCommand.build(Paths.get("/srv/netherway"),
+                Credentials.BACKEND_GONC_P2P, params, 25570,
                 new ServeCommand.Options().proxyProtocol("v2"));
         int at = cmd.indexOf("-proxy-protocol");
         check("PROXY protocol 版本经 -proxy-protocol 传递",
                 at >= 0 && "v2".equals(cmd.get(at + 1)));
-        check("只给静态令牌时不带出 PROXY 旗标",
-                !ServeCommand.build(Paths.get("/srv/netherway"), params, 25570,
-                        new ServeCommand.Options().metaToken("T"))
+        check("只给会合点端口时不带出 PROXY 旗标",
+                !ServeCommand.build(Paths.get("/srv/netherway"),
+                        Credentials.BACKEND_GONC_P2P, params, 25570,
+                        new ServeCommand.Options().rendezvousPort(4321))
                         .contains("-proxy-protocol"));
     }
 
@@ -2003,18 +2010,18 @@ public final class SelfTest {
         java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
         java.io.DataOutputStream out = new java.io.DataOutputStream(buf);
         out.writeByte(2);
-        out.writeUTF(Credentials.BACKEND_FRP_XTCP);
+        out.writeUTF(Credentials.BACKEND_GONC_P2P);
         out.writeInt(15_000);
         out.writeShort(2);
         out.writeUTF(Credentials.PARAM_ROOM);
         out.writeUTF("survival");
-        out.writeUTF("secret");
+        out.writeUTF("sessionKey");
         out.writeUTF("s3cret");
         out.flush();
 
         Credentials v2 = Credentials.decode(buf.toByteArray());
         check("v2 凭证仍能解码", v2.room().equals("survival"));
-        check("v2 参数完整", v2.param("secret").equals("s3cret"));
+        check("v2 参数完整", v2.param("sessionKey").equals("s3cret"));
     }
 
     private static void testWarmupRetryBackoff() {
@@ -2039,16 +2046,12 @@ public final class SelfTest {
 
     private static void testCredentialsSameConnection() {
         Credentials base = sampleCredAt("room-a", "secret-1");
-        java.util.Map<String, String> renewA = new java.util.LinkedHashMap<String, String>();
-        renewA.put(Credentials.PARAM_USER, "alice");
-        renewA.put(Credentials.PARAM_USER_TOKEN, "token-1");
-        java.util.Map<String, String> renewB = new java.util.LinkedHashMap<String, String>();
-        renewB.put(Credentials.PARAM_USER, "alice");
-        renewB.put(Credentials.PARAM_USER_TOKEN, "token-2");
-        check("令牌续签不算参数轮换",
-                base.withExtraParams(renewA).sameConnectionAs(base.withExtraParams(renewB)));
+        check("参数相同即等价", base.sameConnectionAs(sampleCredAt("room-a", "secret-1")));
         check("密钥轮换算参数变化",
                 !base.sameConnectionAs(sampleCredAt("room-a", "secret-2")));
+        check("多出一个参数算变化", !base.sameConnectionAs(Credentials.goncP2p(
+                "secret-1", "room-a", "tcp://broker.example.com:1883", null, "any", 15000)
+                .withOrigin("mc.example.com", 25565)));
         check("不同入口不等价", !sampleCred("room-a", "s").withOrigin("a.example.com", 25565)
                 .sameConnectionAs(sampleCred("room-a", "s").withOrigin("b.example.com", 25565)));
         check("null 不等价", !base.sameConnectionAs(null));
@@ -2525,8 +2528,8 @@ public final class SelfTest {
         WarmupController warmup = new WarmupController(bridge,
                 new CredentialCache(tmp.resolve("credentials")), Timings.defaults(),
                 null, 0, null);
-        Credentials cred = Credentials.frpXtcp("203.0.113.10", 7000, "secret-token",
-                "stun.example:3478", "private-room", "secret-key", 1000)
+        Credentials cred = Credentials.goncP2p("secret-key", "private-room",
+                "tcp://203.0.113.10:1883", "udp://stun.example:3478", null, 1000)
                 .withOrigin("mc.example.com", 25565);
         warmup.injectReadyForTest(cred, AgentEvent.parse(
                 "{\"event\":\"ready\",\"port\":25595,\"rttMs\":31,\"elapsedMs\":1792,"
@@ -2550,11 +2553,11 @@ public final class SelfTest {
         controller.onRedirectLanded();
         String after = telemetry.previewPayload();
         check("遥测落地：平台确认后才记录 landed", countOf(after, "redirect_landed") == 1);
-        check("遥测 payload 不含凭证与服务器标识", !after.contains("secret-token")
-                && !after.contains("secret-key") && !after.contains("private-room")
+        check("遥测 payload 不含凭证与服务器标识", !after.contains("secret-key")
+                && !after.contains("private-room")
                 && !after.contains("203.0.113.10") && !after.contains("stun.example"));
         check("遥测摘要带归一化 backend（不透传 backendId 原文）",
-                after.contains("\"backend\":\"frp_xtcp\"") && !after.contains("frp-xtcp"));
+                after.contains("\"backend\":\"gonc_p2p\"") && !after.contains("gonc-p2p"));
         check("遥测摘要带 agent 探得的 NAT 形态", after.contains("\"nat\":\"easy\""));
         controller.shutdown();
         warmup.shutdown();
@@ -2580,9 +2583,8 @@ public final class SelfTest {
         WarmupController warmup = new WarmupController(bridge,
                 new CredentialCache(tmp.resolve("credentials")), Timings.defaults(),
                 null, 0, null);
-        Credentials cred = Credentials.frpXtcp("203.0.113.11", 7000, "token",
-                "stun.example:3478", "room", "key", 1000)
-                .withOrigin("mc.example.com", 25565);
+        Credentials cred = Credentials.goncP2p("key", "room", "tcp://203.0.113.11:1883",
+                null, null, 1000).withOrigin("mc.example.com", 25565);
         warmup.injectReadyForTest(cred, AgentEvent.parse(
                 "{\"event\":\"ready\",\"port\":25596,\"rttMs\":40,\"elapsedMs\":2000}"));
         UpgradeController controller = new UpgradeController(bridge, Timings.defaults(),
@@ -2626,9 +2628,8 @@ public final class SelfTest {
         WarmupController warmup = new WarmupController(bridge,
                 new CredentialCache(tmp.resolve("credentials")), Timings.defaults(),
                 null, 0, null);
-        Credentials cred = Credentials.frpXtcp("203.0.113.12", 7000, "token",
-                "stun.example:3478", "room", "key", 1000)
-                .withOrigin("mc.example.com", 25565);
+        Credentials cred = Credentials.goncP2p("key", "room", "tcp://203.0.113.12:1883",
+                null, null, 1000).withOrigin("mc.example.com", 25565);
         warmup.injectReadyForTest(cred, AgentEvent.parse(
                 "{\"event\":\"ready\",\"port\":25597,\"rttMs\":40,\"elapsedMs\":2000}"));
         UpgradeController controller = new UpgradeController(bridge, Timings.defaults(),
@@ -2659,7 +2660,14 @@ public final class SelfTest {
     }
 
     private static void testTelemetryBackendNatDimensions() {
-        check("backendId 归一化：frp-xtcp → frp_xtcp",
+        check("backendId 归一化：gonc-p2p → gonc_p2p",
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend
+                        .fromBackendId("gonc-p2p")
+                        == cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.GONC_P2P);
+        // Historical wire value: the backend is gone from the agent, but the
+        // mapping stays so ingested rows and not-yet-evicted cache files keep
+        // their classification.
+        check("backendId 归一化：frp-xtcp → frp_xtcp（历史值）",
                 cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend
                         .fromBackendId("frp-xtcp")
                         == cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.FRP_XTCP);
@@ -2692,7 +2700,7 @@ public final class SelfTest {
                         cn.ripplecraft.netherway.core.telemetry.QualitySummary.Stage.TUNNEL_READY,
                         cn.ripplecraft.netherway.core.telemetry.QualitySummary.Outcome.SUCCESS)
                         .withBackend(cn.ripplecraft.netherway.core.telemetry
-                                .QualitySummary.Backend.FRP_XTCP)
+                                .QualitySummary.Backend.GONC_P2P)
                         .withNat(cn.ripplecraft.netherway.core.telemetry
                                 .QualitySummary.Nat.HARD);
 
@@ -2703,7 +2711,7 @@ public final class SelfTest {
         String full = enhanced.previewPayload();
         check("payload 声明 schema v2", full.contains("\"schemaVersion\":2"));
         check("增强 payload 带 backend/nat 维度",
-                full.contains("\"backend\":\"frp_xtcp\"") && full.contains("\"nat\":\"hard\""));
+                full.contains("\"backend\":\"gonc_p2p\"") && full.contains("\"nat\":\"hard\""));
 
         cn.ripplecraft.netherway.core.telemetry.TelemetryCollector basic =
                 new cn.ripplecraft.netherway.core.telemetry.TelemetryCollector(
@@ -2736,31 +2744,52 @@ public final class SelfTest {
     }
 
     private static void testServeTelemetryLifecycle() {
-        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend frp =
-                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.FRP_XTCP;
+        // 就绪靠 Go 侧 serve_gonc.go 前缀的 [serve-ready] 标记，告警行前缀
+        // [serve-warn]；标记与语言无关，其余文本本地化、绝不匹配
+        cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend gonc =
+                cn.ripplecraft.netherway.core.telemetry.QualitySummary.Backend.GONC_P2P;
+        String ready = cn.ripplecraft.netherway.core.telemetry.ServeTelemetry.GONC_READY_MARKER
+                + " gonc-p2p serve 就绪：信令 broker 可达，本机 Minecraft 端口 25565 已发布";
 
-        // 完整生命周期：启动 → 注册成功 → 异常退出
+        // 完整生命周期：启动 → 就绪 → 异常退出
         cn.ripplecraft.netherway.core.telemetry.TelemetryCollector full = serveCollector();
         cn.ripplecraft.netherway.core.telemetry.ServeTelemetry serve =
-                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(full, frp);
+                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(full, gonc);
         serve.onStartAttempt();
+        serve.onLogLine(cn.ripplecraft.netherway.core.telemetry.ServeTelemetry.GONC_WARN_MARKER
+                + " 没有可达的信令 broker: dial tcp: connection refused；重试中");
+        check("serve 告警行不算就绪", !full.previewPayload().contains("tunnel_ready"));
+        // The removed frp backend's own "start proxy success" text is just a
+        // localised-looking line now: only the marker contract counts.
         serve.onLogLine("2026/08/16 00:00:00 [I] [proxy_manager.go:100] "
                 + "[abc] start proxy success: [room]");
-        serve.onLogLine("start proxy success");  // 重复行不得再记一次
+        check("无标记的普通行不算就绪", !full.previewPayload().contains("tunnel_ready"));
+        serve.onLogLine(ready);
+        serve.onLogLine(ready);  // 重复行不得再记一次
         serve.onExit(false);
         String payload = full.previewPayload();
         check("serve 路径与角色", payload.contains("\"path\":\"serve\"")
                 && payload.contains("\"role\":\"dedicated_server\""));
-        check("serve 注册成功记 tunnel_ready", payload.contains("\"stage\":\"tunnel_ready\""));
-        check("serve 注册成功只记一次", countOf(payload, "tunnel_ready") == 1);
+        check("serve 就绪标记记 tunnel_ready", payload.contains("\"stage\":\"tunnel_ready\""));
+        check("serve 就绪只记一次", countOf(payload, "tunnel_ready") == 1);
         check("serve 就绪后异常退出记 tunnel_lost", payload.contains("\"stage\":\"tunnel_lost\"")
                 && payload.contains("\"failureCode\":\"backend_exited\""));
-        check("serve 摘要带 backend", payload.contains("\"backend\":\"frp_xtcp\""));
+        check("serve 摘要带 backend gonc_p2p", payload.contains("\"backend\":\"gonc_p2p\""));
+        // 跨语言钉住：与 Go 侧 cmd/netherway/serve_gonc.go 的常量逐字一致
+        check("就绪标记字面量与 Go 侧一致", "[serve-ready]".equals(
+                cn.ripplecraft.netherway.core.telemetry.ServeTelemetry.GONC_READY_MARKER));
+        check("告警标记字面量与 Go 侧一致", "[serve-warn]".equals(
+                cn.ripplecraft.netherway.core.telemetry.ServeTelemetry.GONC_WARN_MARKER));
+        check("ServeCommand 只支持 gonc-p2p",
+                ServeCommand.supportsBackend(Credentials.BACKEND_GONC_P2P)
+                && !ServeCommand.supportsBackend("frp-xtcp")
+                && !ServeCommand.supportsBackend("wireguard")
+                && !ServeCommand.supportsBackend(null));
 
-        // 早退：进程活了但没等到注册成功
+        // 早退：进程活了但没等到就绪
         cn.ripplecraft.netherway.core.telemetry.TelemetryCollector early = serveCollector();
         cn.ripplecraft.netherway.core.telemetry.ServeTelemetry earlyServe =
-                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(early, frp);
+                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(early, gonc);
         earlyServe.onStartAttempt();
         earlyServe.onExit(false);
         check("serve 早退记 agent_early_exit",
@@ -2769,9 +2798,9 @@ public final class SelfTest {
         // 主动停止不算事故
         cn.ripplecraft.netherway.core.telemetry.TelemetryCollector clean = serveCollector();
         cn.ripplecraft.netherway.core.telemetry.ServeTelemetry cleanServe =
-                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(clean, frp);
+                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(clean, gonc);
         cleanServe.onStartAttempt();
-        cleanServe.onLogLine("start proxy success");
+        cleanServe.onLogLine(ready);
         cleanServe.onExit(true);
         String cleanPayload = clean.previewPayload();
         check("serve 主动停止不记 tunnel_lost", !cleanPayload.contains("tunnel_lost")
@@ -2780,7 +2809,7 @@ public final class SelfTest {
         // 启动阶段失败
         cn.ripplecraft.netherway.core.telemetry.TelemetryCollector fail = serveCollector();
         cn.ripplecraft.netherway.core.telemetry.ServeTelemetry failServe =
-                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(fail, frp);
+                new cn.ripplecraft.netherway.core.telemetry.ServeTelemetry(fail, gonc);
         failServe.onStartAttempt();
         failServe.onStartFailure(
                 cn.ripplecraft.netherway.core.telemetry.QualitySummary.FailureStage.EXTRACT,

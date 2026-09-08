@@ -20,10 +20,9 @@ Netherway 让这类服务器也能 P2P 直连：玩家和服务器打洞成功�
 从 [GitHub Releases](https://github.com/aUsernameWoW/netherway/releases) 下载与你的 Minecraft 版本和平台匹配的 Netherway：
 
 - Forge / Fabric 版：客户端和服务端分别放入对应实例的 `mods/` 文件夹。
-- Sponge 版：放入服务端的 `mods/` 文件夹。
 - Bukkit 版：放入服务端的 `plugins/` 文件夹。
 
-目前仅提供 Forge 1.7.10 版，其他平台版本尚未发布。安装、默认配置、自建 frps 和故障排查请阅读[完整中文文档](docs/zh-CN/README.md)。
+目前提供 Forge 1.7.10、Forge 1.12.2、Forge/Fabric 1.16.5、1.18.2、1.20.1 以及 Bukkit（Spigot/Paper 1.13+，仅服务端）版本。安装、默认配置、可选功能和故障排查请阅读[完整中文文档](docs/zh-CN/README.md)。
 
 ---
 
@@ -42,10 +41,9 @@ Once Netherway successfully performs NAT traversal, gameplay traffic flows direc
 Download the Netherway build matching your Minecraft version and platform from [GitHub Releases](https://github.com/aUsernameWoW/netherway/releases):
 
 - Forge / Fabric: place the JAR in the `mods/` folder of both the client and server instances.
-- Sponge: place the JAR in the server's `mods/` folder.
 - Bukkit: place the JAR in the server's `plugins/` folder.
 
-Only the Forge 1.7.10 build is currently available; builds for the other platforms have not been released yet. See the [complete English documentation](docs/en/README.md) for installation, default configuration, self-hosted frps setup, and troubleshooting.
+Builds are available for Forge 1.7.10, Forge 1.12.2, Forge/Fabric 1.16.5, 1.18.2 and 1.20.1, and Bukkit (Spigot/Paper 1.13+, server only). See the [complete English documentation](docs/en/README.md) for installation, default configuration, optional features, and troubleshooting.
 
 ---
 

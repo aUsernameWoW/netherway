@@ -84,6 +84,11 @@ public final class QualitySummary {
      * backendId 原文——schema 无自由文本逃生舱是设计红线，未识别的一律
      * 归入 {@link #OTHER}。新增 backend 时两侧同步：这里加枚举值，
      * ingest 的 allowed 列表加 wire 值。
+     *
+     * <p>{@link #FRP_XTCP} is a historical wire value: the frp-xtcp backend
+     * has been removed from the agent, but ingested data carries it and a
+     * stale frp-era credential on a client's disk still reports under it
+     * until it is evicted. Keep the literal so those rows stay classified.
      */
     public enum Backend {
         UNKNOWN("unknown"), FRP_XTCP("frp_xtcp"), GONC_P2P("gonc_p2p"), OTHER("other");
@@ -94,13 +99,17 @@ public final class QualitySummary {
         /** 从凭证的 backendId 归一化；null/空 → UNKNOWN，未识别 → OTHER。 */
         public static Backend fromBackendId(String backendId) {
             if (backendId == null || backendId.isEmpty()) return UNKNOWN;
+            // Historical mapping kept for wire compatibility (see enum Javadoc).
             if ("frp-xtcp".equals(backendId)) return FRP_XTCP;
             if ("gonc-p2p".equals(backendId)) return GONC_P2P;
             return OTHER;
         }
     }
 
-    /** agent 侧 STUN 分类出的 NAT 形态（对应 frp 的 EasyNAT/HardNAT）。 */
+    /**
+     * agent 侧 STUN 分类出的 NAT 形态：easy = 映射可预测（cone 类），
+     * hard = 其余（含对称 NAT，线上值刻意不再细分）。
+     */
     public enum Nat {
         UNKNOWN("unknown"), EASY("easy"), HARD("hard");
         private final String wire;

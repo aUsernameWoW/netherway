@@ -1,8 +1,11 @@
-// Package mcping 实现 Minecraft 的 Server List Ping，用来判断隧道是否真的可用。
+// Package mcping implements Minecraft's Server List Ping, used to decide
+// whether a tunnel is really usable.
 //
-// frp 没有提供查询 visitor 打洞状态的 API（StatusExporter 只覆盖 proxy），
-// 所以就绪判断只能靠主动探测。用 Minecraft 自己的握手而不是单纯的 TCP 连接，
-// 好处是能一并确认服务端进程真的在响应，而不只是隧道端口被监听着。
+// Readiness is judged by active probing rather than by asking the tunnel
+// library (the backend interface deliberately does not report it). Using
+// Minecraft's own handshake instead of a bare TCP connect also confirms
+// that the server process is answering, not merely that the tunnel port is
+// being listened on.
 package mcping
 
 import (

@@ -1,28 +1,27 @@
-// Package config 定义房间标识、构建期注入的默认值，以及可调的时间参数。
+// Package config holds the tunable timing parameters shared by the tunnel
+// command and the backends.
 package config
 
-import (
-	"strconv"
-	"time"
+import "time"
 
-	"github.com/aUsernameWoW/netherway/internal/i18n"
-)
-
-// Timings 集中所有时间参数。
+// Timings gathers every time parameter in one place.
 //
-// 刻意不把这些数值散落在各处硬编码：不同玩家的网络差异很大，
-// mod 侧的配置文件需要能覆盖它们，再经命令行传给 agent。
-// 默认值来自真机实测（顺利时约 4.8s 建链完成）。
+// Deliberately not hard-coded at the use sites: player networks differ
+// widely, the mod's config file must be able to override each value, and
+// the mod passes them to the agent on the command line. Defaults come from
+// real-machine measurements (a smooth punch completes in a few seconds).
 type Timings struct {
-	// PunchTimeout 打洞总超时，超时即放弃升级、留在原有中转连接上。
+	// PunchTimeout is the overall punch budget; on expiry the upgrade is
+	// abandoned and the player stays on the existing relayed connection.
 	PunchTimeout time.Duration
-	// ProbeInterval 两次就绪探测之间的间隔。
+	// ProbeInterval separates two readiness probes.
 	ProbeInterval time.Duration
-	// ProbeTimeout 单次就绪探测的超时。
+	// ProbeTimeout bounds a single readiness probe.
 	ProbeTimeout time.Duration
-	// RetryMinInterval 打洞失败后的最小重试间隔。
+	// RetryMinInterval is the minimum pause after a failed punch attempt.
 	RetryMinInterval time.Duration
-	// MaxRetriesAnHour 每小时打洞重试次数上限，防止频繁重试打爆 STUN。
+	// MaxRetriesAnHour caps punch retries per hour so a flapping network
+	// cannot hammer the STUN servers.
 	MaxRetriesAnHour int
 }
 
@@ -36,7 +35,8 @@ func DefaultTimings() Timings {
 	}
 }
 
-// Normalize 把非正值回填为默认值，避免调用方传 0 导致死循环或空转。
+// Normalize replaces non-positive values with the defaults so a caller
+// passing 0 cannot produce a busy loop or a probe that never fires.
 func (t Timings) Normalize() Timings {
 	d := DefaultTimings()
 	if t.PunchTimeout <= 0 {
@@ -55,47 +55,4 @@ func (t Timings) Normalize() Timings {
 		t.MaxRetriesAnHour = d.MaxRetriesAnHour
 	}
 	return t
-}
-
-// 这些值通过 -ldflags "-X github.com/aUsernameWoW/netherway/internal/config.XXX=..."
-// 在构建时注入，目的是让玩家拿到的二进制零配置可用，同时密钥不进源码仓库。
-// 具体命令见 build.sh。
-var (
-	DefaultServerAddr = ""
-	DefaultServerPort = "7000"
-	DefaultToken      = ""
-	// 逗号分隔的候选列表。默认就带冗余：实测 stun.miwifi.com 会间歇性超时，
-	// 只配一台时那次打洞就直接失败了。启动前会并行探测并选用当场验证过的一台。
-	DefaultSTUNServer = "stun.miwifi.com:3478,stun.easyvoip.com:3478,stun.qq.com:3478"
-	DefaultRoom       = "minecraft"
-	DefaultSecretKey  = ""
-)
-
-// ServerPortDefault 把构建期注入的字符串端口转成 int，非法值回退到 7000。
-func ServerPortDefault() int {
-	p, err := strconv.Atoi(DefaultServerPort)
-	if err != nil || p <= 0 || p > 65535 {
-		return 7000
-	}
-	return p
-}
-
-// Room 标识一个联机房间。两端的 Name 和 SecretKey 必须一致，
-// 各类代理/访问者名称都由 Name 派生，避免两端手写不一致。
-type Room struct {
-	Name      string
-	SecretKey string
-}
-
-func (r Room) ProxyName() string   { return r.Name + "-p2p" }
-func (r Room) VisitorName() string { return r.Name + "-p2p-visitor" }
-
-func (r Room) Validate() error {
-	if r.Name == "" {
-		return i18n.Errorf("config.emptyRoom")
-	}
-	if r.SecretKey == "" {
-		return i18n.Errorf("config.emptySecret")
-	}
-	return nil
 }

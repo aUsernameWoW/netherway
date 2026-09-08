@@ -1,10 +1,10 @@
-# 构建产物含有注入的 frps 令牌与房间密钥，绝不能提交
+# 本地 go build 产物（CI 的冒烟二进制也落在这里），不提交
 /bin/
 
-# 真实部署参数（frps 地址、可选的密钥），模板见 build.env.example
+# 历史遗留：旧版构建脚本的本地部署参数文件，可能仍留在开发机上，继续忽略以免误提交
 /build.env
 
-# Java 编译输出；testres 下放着同样内嵌令牌的 agent 二进制
+# Java 编译输出与打进 jar 的 natives（build-natives.sh 产物）
 /mod/build/
 
 # 适配层的 Gradle 产物与本地缓存。用 ** 覆盖 modern 的多层工作区

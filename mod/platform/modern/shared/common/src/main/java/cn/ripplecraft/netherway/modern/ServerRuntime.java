@@ -3,7 +3,6 @@ package cn.ripplecraft.netherway.modern;
 import cn.ripplecraft.netherway.core.Credentials;
 import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.PreauthService;
-import cn.ripplecraft.netherway.core.TokenIssuer;
 import cn.ripplecraft.netherway.core.telemetry.TelemetryCollector;
 import cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment;
 import cn.ripplecraft.netherway.core.telemetry.TelemetryFlusher;
@@ -121,10 +120,6 @@ public final class ServerRuntime {
             return;
         }
         LOG.info(L10n.tr("fserver.enabled", cred));
-        if (!config.tokenSigningKey().isEmpty()) {
-            LOG.info(L10n.tr("fserver.tokenIssuing", config.tokenTtlDays(),
-                    TokenIssuer.keyFingerprint(config.tokenSigningKey())));
-        }
         if (config.serverRunAgent()) {
             LOG.info(L10n.tr("fserver.willRunServe", cred.room()));
         } else {

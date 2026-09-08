@@ -17,7 +17,7 @@
 凭证不随客户端分发，而是玩家通过服务器既有的正版验证 / 白名单之后才拿到。
 **能拿到密钥的必然是有权进服的人，于是不需要另建一套鉴权。**（缓存落盘
 刻意不加密：密钥与密文必然同机，加密对玩家本人只是混淆；止损靠服务端轮换，
-见 forge README 的 `secret=auto`。）
+见 forge README 的 `sessionKey=auto`。）
 
 ## 为什么分成 core 和适配层
 
@@ -28,10 +28,10 @@
 
 ```
 core/                      纯 Java 8，零第三方依赖，可脱离游戏测试
-platform/forge-1.7.10/     当前目标
-platform/forge-1.12.2/     以后
-platform/fabric-1.16.5/
-platform/sponge/           仅服务端（Sponge 没有客户端）
+platform/forge-1.7.10/     第一个平台，RetroFuturaGradle
+platform/forge-1.12.2/     与 1.7.10 逐类同构
+platform/modern/           1.16.5 / 1.18.2 / 1.20.1，一套源码同时编 Forge+Fabric
+platform/bukkit/           仅服务端的 Spigot/Paper 插件，复用 modern 的服务端半边
 ```
 
 两个关键决策让这件事成立：
@@ -41,8 +41,8 @@ platform/sponge/           仅服务端（Sponge 没有客户端）
 就要重写一遍编解码；而裸字节在所有加载器所有版本上都一样，适配层只需负责搬运
 `byte[]`。凭证走的是 Minecraft 原生的自定义频道，这个机制 Bukkit/Spigot/Paper
 插件、Sponge 插件、Forge/Fabric mod 甚至 BungeeCord/Velocity 代理都能收发，
-所以服务端那半几乎能覆盖所有平台。凭证自 v2 起是「backend 标识 + 参数表」，
-core 不解释参数、只原样转交 agent——将来把 frp 换成别的隧道方案，
+所以服务端那半几乎能覆盖所有平台。凭证是「backend 标识 + 参数表」，
+core 不解释参数、只原样转交 agent——将来换别的隧道方案，
 core 与适配层同样零改动。
 
 **core 零第三方依赖**，连 JSON 解析都是手写的（`Json`，约 150 行）。Minecraft
@@ -58,9 +58,8 @@ core 与适配层同样零改动。
 | `AgentProcess` | 启动 agent 子进程，读状态、管生命周期 |
 | `AgentEvent` / `Json` | 解析 agent 的逐行 JSON 状态输出 |
 | `Credentials` | 凭证（backend 标识 + 参数表 + 客户端来源入口）与跨版本安全的编解码 |
-| `CredentialCache` | 凭证的本地缓存，供下次启动预热（明文落盘、仅属主可读写） |
+| `CredentialCache` | 凭证的本地缓存，供下次启动预热（明文落盘、仅属主可读写）；agent 报 `backend_unknown` 的凭证会被驱逐 |
 | `WarmupController` | 启动期预热：多服务串行打洞、同时守望已建立隧道，与升级状态机刻意分离 |
-| `TokenIssuer` | 每玩家令牌签发（HMAC-SHA256），与 Go 侧 authplugin 校验逐字节一致 |
 | `UpgradeController` | 状态机：何时升级、何时放弃；复用/采认预热隧道 |
 | `ClientBridge` | 唯一的平台适配接口 |
 | `Timings` | 可调时间参数，默认值来自实测 |
@@ -82,13 +81,15 @@ core 与适配层同样零改动。
 
 ## 验证状态
 
-`SelfTest` 共 470 项，覆盖平台识别（含转译兜底）、二进制释放与旧版残留清理、
-遥测维度（backend/NAT 归一化、serve 生命周期、基础模式抹除）、
+`SelfTest` 共 554 项，覆盖平台识别（含转译兜底）、二进制释放与旧版残留清理、
+遥测维度（backend/NAT 归一化、serve 就绪/告警标记契约、基础模式抹除）、
 JSON 转义、事件解析容错、凭证往返（含中文与
-任意 backend）、v1 兼容与前向兼容、命令行构造、时间参数回填、状态机去重与
+任意 backend）、v1 布局的干净拒绝与前向兼容、命令行构造（`tunnel` 只带
+`-backend`/`-O`）、时间参数回填、状态机去重与
 复位竞态（shutdown 后过期 worker 不得覆写状态）、凭证缓存（往返/最近优先/
-损坏清理/上限/旧键迁移）、多服务预取、并存预热隧道的复用与采认、每玩家令牌
-（含与 Go 侧 authplugin 的跨语言已知答案向量）、预认证帧的编解码与嗅探。
+损坏清理/上限/旧键迁移/不支持 backend 的驱逐）、多服务预取、并存预热隧道的
+复用与采认、预认证帧的编解码与嗅探、会合点信令的首字节判定（MQTT CONNECT）
+及 gonc 凭证的 `brokers=origin` 占位补齐。
 刻意不依赖 JUnit，一条 javac + java 就能跑：
 
 ```bash
@@ -98,14 +99,12 @@ $JAVA8/bin/java -cp build/classes cn.ripplecraft.netherway.core.SelfTest
 ```
 
 **兼容性已实测**：用 Java 8 编译的字节码曾在 **Java 8 / 17 / 21 / 25**
-上全部通过（早期 87 项）；当前 432 项由 CI 在 8/17/21/25
+上全部通过（早期 87 项）；当前 554 项由 CI 在 8/17/21/25
 四个 JVM 上跑。Forge 1.7.10 客户端无论仍使用 Java 8，还是借助兼容工具链运行在
 现代 JVM 上，都只会经过这些公共稳定 API。
 代码只用 `ProcessBuilder`、`java.nio.file`、`java.net` 这类公共稳定 API，
 不碰 `sun.misc.*` 和 JDK 内部反射（Java 16+ 的强封装会直接拒绝）。
 
-**尚未完成**：Java 驱动的真实跨网络打洞。链路的每一环都单独验证过了——二进制
-释放、进程启动、JSON 解析、错误传播、agent 自身建链（实测 31ms RTT）——但把它们
-串起来跑通需要两个处于不同网络位置的机器，而开发机当时被全局 VPN 接管了 UDP，
-同机测试又受 hairpin NAT 限制。在正常网络下按上面的方式跑 `IntegrationTest`
-即可确认。未验证事项集中记录在 `docs/field-notes.md` 的「尚未验证」一节。
+**端到端**：跨网络的真实打洞不在 SelfTest 覆盖范围内（它需要两台处于不同
+网络位置的机器）；链路的每一环——二进制释放、进程启动、JSON 解析、错误传播、
+agent 自身建链——都单独验证过，整链的真机记录见 `docs/field-notes.md`。

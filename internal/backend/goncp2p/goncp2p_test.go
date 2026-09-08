@@ -53,6 +53,89 @@ func TestParseParams(t *testing.T) {
 	}
 }
 
+// TestBrokerOriginLiteral pins the cross-language placeholder: the Java
+// side mirrors it as Credentials.BROKER_ORIGIN and injects it into
+// credentials under the embedded rendezvous; Credentials.rendezvousAt
+// (client) and ResolveOriginBroker (serve) substitute it. Change both
+// sides or neither.
+func TestBrokerOriginLiteral(t *testing.T) {
+	if BrokerOrigin != "origin" {
+		t.Fatalf("BrokerOrigin = %q, want %q (Java Credentials.BROKER_ORIGIN)", BrokerOrigin, "origin")
+	}
+}
+
+// TestParseParamsRejectsUnresolvedOrigin: the placeholder must never reach
+// gonc — a bare "origin" would be dialed as a host name and fail
+// unreadably. Both the tunnel path (Run) and Serve go through parseParams.
+func TestParseParamsRejectsUnresolvedOrigin(t *testing.T) {
+	for _, brokers := range []string{"origin", " origin ", "tcp://a:1883,origin", "origin,tcp://a:1883"} {
+		_, err := parseParams(map[string]string{ParamSessionKey: "k", ParamBrokers: brokers})
+		if err == nil {
+			t.Fatalf("brokers=%q accepted with an unresolved placeholder", brokers)
+		}
+		if !strings.Contains(err.Error(), "占位符") || !strings.Contains(err.Error(), `"origin"`) {
+			t.Fatalf("brokers=%q: error does not explain the placeholder: %v", brokers, err)
+		}
+	}
+	// Not a substring match: a broker host that merely contains the word
+	// is a legitimate URL.
+	if _, err := parseParams(map[string]string{ParamSessionKey: "k", ParamBrokers: "tcp://origin.example.com:1883"}); err != nil {
+		t.Fatalf("legitimate URL rejected: %v", err)
+	}
+}
+
+func TestHasOriginBroker(t *testing.T) {
+	cases := map[string]bool{
+		"":                              false,
+		"tcp://a:1883":                  false,
+		"tcp://origin.example.com:1883": false,
+		"origin":                        true,
+		" origin , tcp://a:1883":        true,
+		"tcp://a:1883,origin":           true,
+	}
+	for brokers, want := range cases {
+		if got := HasOriginBroker(map[string]string{ParamBrokers: brokers}); got != want {
+			t.Errorf("HasOriginBroker(%q) = %v, want %v", brokers, got, want)
+		}
+	}
+	if HasOriginBroker(map[string]string{}) {
+		t.Error("absent brokers reported as containing origin")
+	}
+}
+
+func TestResolveOriginBroker(t *testing.T) {
+	const url = "tcp://127.0.0.1:17322"
+	cases := map[string]string{
+		"":                             url,
+		"origin":                       url,
+		"origin,tcp://b:1883":          url + ",tcp://b:1883",
+		"tcp://a:1883, origin ,origin": "tcp://a:1883," + url + "," + url,
+		"tcp://a:1883":                 "tcp://a:1883",
+	}
+	for brokers, want := range cases {
+		in := map[string]string{ParamSessionKey: "k", ParamBrokers: brokers}
+		out := ResolveOriginBroker(in, url)
+		if out[ParamBrokers] != want {
+			t.Errorf("ResolveOriginBroker(%q) = %q, want %q", brokers, out[ParamBrokers], want)
+		}
+		if out[ParamSessionKey] != "k" {
+			t.Errorf("other keys not copied: %v", out)
+		}
+		if in[ParamBrokers] != brokers {
+			t.Errorf("input mutated: %q -> %q", brokers, in[ParamBrokers])
+		}
+	}
+	// Absent key: the embedded broker becomes the list.
+	out := ResolveOriginBroker(map[string]string{ParamSessionKey: "k"}, url)
+	if out[ParamBrokers] != url {
+		t.Errorf("absent brokers -> %q, want %q", out[ParamBrokers], url)
+	}
+	// The resolved map must pass parseParams (the whole point).
+	if _, err := parseParams(ResolveOriginBroker(map[string]string{ParamSessionKey: "k", ParamBrokers: "origin"}, url)); err != nil {
+		t.Errorf("resolved params rejected: %v", err)
+	}
+}
+
 func TestUnknownKeys(t *testing.T) {
 	got := unknownKeys(map[string]string{
 		ParamSessionKey: "k", "server": "x", "aaa": "y",

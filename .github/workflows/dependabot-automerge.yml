@@ -9,7 +9,7 @@
 #   gh api -X PUT repos/aUsernameWoW/netherway/branches/main/protection \
 #     --input .github/branch-protection.json
 #
-# frp 的 bump 不做特殊拦截，理由见 ../dependabot.yml 头注。
+# gonc/smux are never bumped by the bot (see ../dependabot.yml); everything else auto-merges on green.
 name: dependabot-automerge
 
 on: pull_request

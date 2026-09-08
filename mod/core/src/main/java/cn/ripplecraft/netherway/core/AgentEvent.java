@@ -23,6 +23,11 @@ public final class AgentEvent {
          * 就绪后的隧道持续自检失败（典型原因：服务端重启、密钥轮换，
          * backend 只会拿旧凭证无限重试）。建议性事件，agent 进程不退出：
          * 预热侧据此立即刷新凭证并重建，正承载玩家连接时则忽略。
+         *
+         * <p>Reserved: no current backend emits it (gonc-p2p reports a dead
+         * session by exiting, which takes the "agent gone, rebuild" path).
+         * The handling stays so a future backend that can report degradation
+         * without exiting plugs into the same rebuild-and-refresh reaction.
          */
         DEGRADED,
         /** 无法识别的事件名。新版 agent 加了事件时老版 mod 会走到这里。 */
@@ -186,6 +191,19 @@ public final class AgentEvent {
     /** 供本地日志展示的自由文本原因，仅 FAILED/STOPPED 可能有值。 */
     public String reason() {
         return reason;
+    }
+
+    /**
+     * True when the agent refused the credential because it does not ship the
+     * requested backend ({@code failed/start/backend_unknown}). Such a
+     * credential can never succeed with this build, so the caller evicts it
+     * from the cache instead of retrying it forever (see
+     * {@link CredentialCache#evict}). The two literals are the Go-side
+     * {@code failureStageStart}/{@code failureCodeBackendUnknown}.
+     */
+    public boolean isUnsupportedBackend() {
+        return type == Type.FAILED && "start".equals(failureStage)
+                && "backend_unknown".equals(failureCode);
     }
 
     @Override

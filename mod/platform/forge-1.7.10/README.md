@@ -44,29 +44,28 @@ curl -L -C - -O $BASE/retrofuturagradle-1.4.9.jar -O $BASE/retrofuturagradle-1.4
 
 首次启动会生成 `config/netherway.cfg`（跟 mods 目录平级的那个 config）。
 新配置默认开启内嵌会合点，关键部分如下；公网侧只需把玩家使用的 TCP 入口
-转发到 Minecraft 端口，不需要自建 frps，也不需要修改这些值：
+转发到 Minecraft 端口，不需要架设任何其它服务，也不需要修改这些值：
 
 ```
 server {
     B:enabled=true
     B:runAgent=true
     B:rendezvous=true
+    S:backend=gonc-p2p
     S:params <
         # 默认内嵌会合点所需参数，保持原样即可
-        token=auto
+        sessionKey=auto
         room=minecraft
-        secret=auto
      >
 }
 ```
 
-`token=auto` 和 `secret=auto` 会在内存中生成本次启动使用的随机值，cfg 文件里
-仍保持 `auto`；`room` 只是显示和命名用，想改名时只改它即可。高级鉴权用的
-`server.tokenSigningKey` / `server.serveAuthToken` 默认不会生成，以免和
-`server.params` 里的登录令牌混淆；需要时按下节手工加入。
-
-自建 frps 时才把 `server.rendezvous` 改成 `false`，并把整个 `server.params`
-列表替换为 README 顶层文档中的自建 frps 示例。
+`sessionKey=auto` 会在内存中生成本次启动使用的随机会话密钥，cfg 文件里
+仍保持 `auto`，重启即轮换、旧凭证自动失效；`room` 只是显示和命名用，想改名
+时只改它即可。`rendezvous=true` 表示信令 broker 内嵌在服务端进程里、只监听
+回环，玩家的信令经 Minecraft 端口由嗅探器转入；凭证里因此只带 `brokers=origin`
+占位符，由客户端换成它实际连接的入口。想改用公共或自建 MQTT broker 时把
+`rendezvous` 设为 `false` 并在 `params` 里写 `brokers=tcp://host:1883,...`。
 
 注意 cfg 的语法细节：键有类型前缀（`B:` 布尔、`S:` 字符串、`I:` 整数），
 列表以 `S:params <` 开始、单独一行的 `>` 结束。配置只在启动时读取，
@@ -75,7 +74,7 @@ server {
 
 `params` 是通用 key=value 列表：凭证本来就是「backend 标识 + 参数表」，
 换隧道方案时这里跟着换键名即可，mod 代码零改动。键名契约与 Go 侧
-backend 实现（如 `internal/backend/frpxtcp`）保持一致。
+backend 实现（`internal/backend/goncp2p`）保持一致。
 
 **客户端零配置即用**，什么都不用填。默认 `client.prewarm=true` 且 `client.prefetch=true`：
 游戏启动时向 server.dat 里的候选并行预取，为每个成功应答的服务保留独立凭证。
@@ -88,67 +87,33 @@ backend 实现（如 `internal/backend/frpxtcp`）保持一致。
 `directEntryName` 控制其前缀。`prewarmPort` 可固定首选预热端口，其他时间参数也在
 同一 cfg 的 `client` 类目中配置。
 
-## 每玩家令牌（可选，frps 侧 authplugin）
-
-不部署也一切照常（全局 token 分层的基础校验仍在）。部署后：泄露的全局 token
-连 frps 都登不上，注册代理只认 serve 的静态令牌，玩家令牌绑定 UUID、30 天
-过期、登录即续签。
-
-> **开了 `rendezvous=true` 就不必读这一节。** 内嵌会合点会在回环上自带一个
-> 只服务本进程的 authplugin 端点，填了 `tokenSigningKey` 即生效，签发密钥
-> 不必再放到公网机器上，`serveAuthToken` 也不必填（未填时 serve 会本机生成
-> 一个自用的）。下面的独立部署只对连公网 frps 的经典模式有意义。
-
-frps 宿主机上运行（密钥经环境变量传入，避免出现在进程列表）：
-
-```bash
-NETHERWAY_AUTH_KEY=<签发密钥> ./netherway authplugin -static-token <serve静态令牌> -allow-legacy
-```
-
-frps.toml 加上（然后重启 frps）：
-
-```toml
-[[httpPlugins]]
-name = "netherway-auth"
-addr = "127.0.0.1:7200"
-path = "/handler"
-ops = ["Login", "NewProxy"]
-```
-
-服务端 cfg 填 `tokenSigningKey`（与 `-key` 同值）、`serveAuthToken`
-（与 `-static-token` 同值）。两侧启动日志都会打印**签发密钥指纹**，
-一致才说明密钥没配岔。
-
-迁移节奏：先带 `-allow-legacy` 上线（老客户端、没配令牌的 serve 都照常）；
-等玩家基本都经新版服务端登录过一轮（拿到了每玩家令牌），去掉
-`-allow-legacy` 重启 authplugin 即完成收口。frps 调不到插件时会拒绝登录
-（fail-closed），生产环境交给 systemd 并设自动重启。
-
 ## 排查
 
 直连没生效时看日志，两侧都有料：
 
 - **客户端游戏日志**（搜 `netherway`）：默认 `client.verboseLogging=true`，
   打洞全过程——收到的凭证键名、agent 启动命令（参数值已脱敏）、agent 的
-  每个事件与诊断输出、以及 frp 自身 info 及以上的日志（比如
-  `xtcp server for [xxx-p2p] doesn't exist`，意思是宿主机的 serve 没在
-  运行）——都以 INFO 级别写进游戏日志。嫌吵可在 cfg 里关掉，
-  这些内容会降为 DEBUG 级别。
+  每个事件与诊断输出、以及 agent 打洞过程的摘要日志——都以 INFO 级别
+  写进游戏日志。嫌吵可在 cfg 里关掉，这些内容会降为 DEBUG 级别。
 - **agent 详细日志**：`.minecraft/netherway/tunnel.log`（进服后的升级流程）与
-  `tunnel-warmup.log`（启动期预热），frp 的 debug 级输出，打洞握手的每一步
-  都在里面，玩家报告问题时让他带上对应文件。
+  `tunnel-warmup.log`（启动期预热），打洞握手的每一步都在里面，玩家报告
+  问题时让他带上对应文件。
   （debug 级刻意不进游戏日志：隧道存活期间会持续刷屏。）
 - **服务端日志**：启动时会打印生效的凭证配置（只列键名）；`server.params`
   里键名拼错（agent 按契约会静默忽略未知键）会有 WARN 指出来。
   每个玩家的直连结果也会回传记录在这里——成功一条 INFO（含延迟），
   失败一条 WARN（含原因），不用挨个找玩家要客户端日志。
-- **常见失败**：`xtcp server for [房间-p2p] doesn't exist` 意思是 frps 上
-  没有这个代理。默认 `server.runAgent=true` 时代理由 mod 内置的 serve
-  注册（参数与凭证同源，日志里带 `[serve]` 前缀，出问题先看它们）；
-  关掉 runAgent 的话代理注册靠宿主机上独立运行的 `netherway serve`，
-  检查它是否在跑、`-room` 与 `-server` 是否与 `server.params` 一致
-  （serve 不带 `-room` 时用的是构建期默认房间名）。两种方式**只能开一个**：
-  同名代理在 frps 上会注册冲突。
+- **常见失败**：客户端日志里打洞一直等到超时、服务端却没有任何
+  `[serve]` 输出，多半是服务端 serve 没起来。默认 `server.runAgent=true`
+  时 serve 由 mod 内置启动（参数与凭证同源，日志里带 `[serve]` 前缀，
+  就绪时有一行 `[serve-ready]`，告警行带 `[serve-warn]`，出问题先看它们）。
+  关掉 runAgent 的话内嵌会合点随之失效（mod 会按 `rendezvous=false` 处理并
+  告警：会合点起在内置 serve 进程里，独立运行的 serve 开不了它），凭证里
+  也不再带 `brokers=origin`——这时必须在 `server.params` 里写死
+  `sessionKey` 与外部 broker 列表 `brokers=tcp://host:1883,...`（`auto` 只对
+  内置启动有效），再在宿主机上用完全相同的参数自己跑 `netherway serve
+  -backend gonc-p2p -O sessionKey=… -O room=… -O brokers=… -port <MC端口>`
+  （不加 `-rendezvous`）。
 
 ## 实现要点
 
@@ -191,6 +156,7 @@ ops = ["Login", "NewProxy"]
 三者抢的是同一批首字节，必须合成一个 handler）：在监听端点的 server channel pipeline 里
 拦截 accept 出来的连接，抢在 MC 的 ChannelInitializer 之前往新连接头部塞
 剥头 handler。解析是嗅探式的（core 的 `ProxyProtocol`）——无头流量原样放行，
-所以 xtcp（上游尚未支持发头）、老 agent、直连预热的流量都不受影响；
-只信来自回环的连接，防止 MC 端口同时暴露在局域网时被伪造头。剥完头把
+所以预认证帧、转入 broker 的信令连接、经端口转发进来的普通玩家都不受影响，
+只有 serve 注入了头的隧道连接会被剥头；只信来自回环的连接，防止 MC 端口
+同时暴露在局域网时被伪造头。剥完头把
 真实来源写回 `NetworkManager.socketAddress`（非 final，反射带 MCP/SRG 双名）。

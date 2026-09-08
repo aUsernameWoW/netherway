@@ -1,17 +1,19 @@
 package main
 
+// The single registration point for tunnel backends: adding a scheme is one
+// implementation package plus one Register line here (and a serve case in
+// main.go if the scheme has a publish side). The registry is looked up by
+// name, so the credential's backendId picks the implementation and an
+// unknown id fails with tunnel.unknownBackend listing what this build has.
+
 import (
 	"github.com/aUsernameWoW/netherway/internal/backend"
-	"github.com/aUsernameWoW/netherway/internal/backend/frpxtcp"
 	"github.com/aUsernameWoW/netherway/internal/backend/goncp2p"
 )
 
-// 这里是 backend 的唯一注册点：新增一种隧道方案 = 一个实现包 + 这里一行。
-//
-// 将来引入体积大的 backend（比如内嵌 tsnet）、需要按发行版裁剪二进制时，
-// 把对应注册行移进带 build tag 的文件即可——注册表按名字查找，
-// 没编译进来的 backend 自然就不可选。
+// defaultBackendName is what serve and tunnel use when -backend is absent.
+const defaultBackendName = goncp2p.Name
+
 func init() {
-	backend.Register(frpxtcp.New())
 	backend.Register(goncp2p.New())
 }

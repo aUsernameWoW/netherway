@@ -338,6 +338,13 @@ public final class UpgradeController {
             if (outcome.type() != AgentEvent.Type.READY) {
                 String why = outcome.reason() == null
                         ? L10n.tr("reason.punchFailed") : outcome.reason();
+                if (cache != null && outcome.isUnsupportedBackend()) {
+                    // rememberAsync stored this credential moments ago; it can
+                    // never punch with this build, so take it back out before
+                    // the next launch's warm-up finds it and retries forever.
+                    cache.evict(cred);
+                    bridge.info(L10n.tr("upgrade.evictUnsupported", cred.room(), cred.backendId()));
+                }
                 giveUp(proc, cred, why, gen,
                         QualitySummary.FailureStage.fromWire(outcome.failureStage()),
                         QualitySummary.FailureCode.fromWire(outcome.failureCode()));
@@ -423,8 +430,8 @@ public final class UpgradeController {
     /**
      * 复用已就绪的预热隧道，成功返回 true。
      *
-     * <p>隧道健康只由「进程还活着」担保（frp 的 keepTunnelOpen 会自行维护
-     * 会话）；极端情况下切换会失败，玩家重连一次即可回到既有流程——
+     * <p>隧道健康只由「进程还活着」担保（会话死亡即 agent 退出）；
+     * 极端情况下切换会失败，玩家重连一次即可回到既有流程——
      * 这与点击直连条目失败的体验一致，不为它增加一套探测。
      */
     private boolean reuseWarmTunnel(Credentials cred, long gen) {

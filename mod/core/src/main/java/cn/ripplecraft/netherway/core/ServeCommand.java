@@ -2,48 +2,46 @@ package cn.ripplecraft.netherway.core;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
  * 组装宿主侧 serve 进程的命令行（服务端 mod 内置启动 agent 用）。
  *
- * <p>serve 是 frp 专用的独立工具、不走 backend 抽象，所以这里的键名映射
- * 是 frp-xtcp 专属的：把服务端配置里的参数表翻译成 serve 的旗标。
- * 关键在于参数表与下发给客户端的凭证**同源**——凭证和代理注册永远一致，
- * 不会出现「客户端拿着 test 房间的凭证，宿主机却注册着 production-p2p」的漂移。
+ * <p>serve 走通用的 {@code -backend} + {@code -O key=value}，参数表原样透传。
+ * 关键在于参数表与下发给客户端的凭证<b>同源</b>——凭证和服务端发布的房间
+ * 永远一致，不会出现「客户端拿着 test 房间的凭证，宿主机却发布着
+ * production」的漂移。
  */
 public final class ServeCommand {
 
     private ServeCommand() {
     }
 
+    /**
+     * Whether the built-in serve can publish the given backend. Single source
+     * of truth for the platform launchers' gate; {@link #build} refuses the
+     * same ids. Unknown ids must be refused up front: the agent would reject
+     * them anyway, but only after the binary has been extracted and a process
+     * spawned.
+     */
+    public static boolean supportsBackend(String backendId) {
+        return Credentials.BACKEND_GONC_P2P.equals(backendId);
+    }
+
     /** serve 的可选项。逐个加旗标参数会让签名膨胀，集中在这里。 */
     public static final class Options {
 
-        String metaToken;
         String proxyProtocol;
         int rendezvousPort;
-        String signingKey;
-
-        /**
-         * 向 authplugin 表明身份的静态令牌（{@code -meta-token}）。
-         * 内嵌会合点模式下不必给：agent 会自己生成一个进程内自用的。
-         */
-        public Options metaToken(String v) {
-            this.metaToken = v;
-            return this;
-        }
 
         /**
          * PROXY protocol version ("v1"/"v2", flag {@code -proxy-protocol});
-         * same value as the cfg key {@code server.proxyProtocol}. Applies to
-         * both backends: turning it on means the MC side must strip the
-         * header (this mod's platform layer does). Under gonc-p2p serve
-         * itself injects the punched peer's address, so the MC server sees
-         * the real player IP; under frp-xtcp the header is frp's to send and
-         * current xtcp P2P streams never carry one (fatedier/frp#2748).
+         * same value as the cfg key {@code server.proxyProtocol}. Turning it
+         * on means the MC side must strip the header (this mod's platform
+         * layer does). serve injects the punched peer's address itself, so
+         * the MC server sees the real player IP.
          */
         public Options proxyProtocol(String v) {
             this.proxyProtocol = v;
@@ -51,124 +49,63 @@ public final class ServeCommand {
         }
 
         /**
-         * 内嵌会合点的回环端口（{@code -rendezvous}）。非零即启用：agent 不再
-         * 连公网 frps，改在本机起会合点，玩家的控制连接由嗅探器从 Minecraft
-         * 端口转发进来。端口由平台层挑选并同时告诉嗅探器，两边必须是同一个数。
+         * Loopback port of the embedded rendezvous ({@code -rendezvous}).
+         * Non-zero makes serve embed the signaling broker on that loopback
+         * port instead of using public brokers; players' signaling
+         * connections are relayed in from the Minecraft port by the sniffer.
+         * The platform layer picks the port and tells the sniffer the same
+         * number; the two must agree.
          */
         public Options rendezvousPort(int v) {
             this.rendezvousPort = v;
             return this;
         }
-
-        /** 每玩家令牌签发密钥（{@code -signing-key}），仅内嵌会合点模式有意义。 */
-        public Options signingKey(String v) {
-            this.signingKey = v;
-            return this;
-        }
     }
 
     /**
-     * 按 backend 组装 serve 命令行。frp-xtcp 走专属旗标（历史契约）；
-     * gonc-p2p 走通用的 {@code -backend}+{@code -O}，参数表原样透传——
-     * 与凭证同源这条纪律对两种 backend 同样成立。
+     * 按 backend 组装 serve 命令行：{@code -backend} + 参数表经 {@code -O}
+     * 原样透传（空值跳过），再加本地端口与可选项。
      *
-     * <p>{@link Options} 里的 frp 专属项（meta token、会合点、签发密钥）
-     * 对 gonc-p2p 无意义，静默忽略；PROXY protocol 两种 backend 都转发。
-     * 平台层不必按 backend 分支组装。
+     * @param localPort Minecraft 服务器监听的本地端口
+     * @throws IllegalArgumentException backend 不受内置 serve 支持
+     *         （调用方应先经 {@link #supportsBackend} 把关）
      */
     public static List<String> build(Path exe, String backendId, Map<String, String> params,
                                      int localPort, Options opts) {
-        if (Credentials.BACKEND_GONC_P2P.equals(backendId)) {
-            List<String> cmd = new ArrayList<String>();
-            cmd.add(exe.toAbsolutePath().toString());
-            cmd.add("serve");
-            cmd.add("-backend");
-            cmd.add(Credentials.BACKEND_GONC_P2P);
-            for (Map.Entry<String, String> e : params.entrySet()) {
-                if (e.getValue() == null || e.getValue().isEmpty()) {
-                    continue;
-                }
-                cmd.add("-O");
-                cmd.add(e.getKey() + "=" + e.getValue());
-            }
-            cmd.add("-port");
-            cmd.add(Integer.toString(localPort));
-            if (opts.proxyProtocol != null && !opts.proxyProtocol.isEmpty()) {
-                cmd.add("-proxy-protocol");
-                cmd.add(opts.proxyProtocol);
-            }
-            return cmd;
+        if (!supportsBackend(backendId)) {
+            throw new IllegalArgumentException(L10n.tr("serve.backendUnsupported", backendId));
         }
-        return build(exe, params, localPort, opts);
-    }
-
-    /**
-     * 由 frp-xtcp 参数表组装 serve 命令行。
-     *
-     * <p>与 backend 契约同一纪律：无法识别的键直接忽略；缺失的键不传旗标，
-     * 留给 agent 用构建期注入的默认值补齐。
-     *
-     * @param localPort Minecraft 服务器监听的本地端口
-     */
-    public static List<String> build(Path exe, Map<String, String> params, int localPort) {
-        return build(exe, params, localPort, new Options());
-    }
-
-    /** 同上，带可选项。 */
-    public static List<String> build(Path exe, Map<String, String> params, int localPort,
-                                     Options opts) {
-        String metaToken = opts.metaToken;
-        String proxyProtocol = opts.proxyProtocol;
-        // 键名与 Go 侧 internal/backend/frpxtcp 的常量一致（见 frpXtcpParamKeys）
-        Map<String, String> flagOf = new LinkedHashMap<String, String>();
-        if (opts.rendezvousPort <= 0) {
-            // 内嵌会合点模式下 frps 的地址与端口没有意义：会合点在本机回环上，
-            // agent 自己就知道。仍然传 token——凭证里的 token 与会合点同源，
-            // 玩家拿着它登录内嵌会合点。
-            flagOf.put("server", "-server");
-            flagOf.put("serverPort", "-server-port");
-        }
-        flagOf.put("token", "-token");
-        flagOf.put("stun", "-stun");
-        flagOf.put(Credentials.PARAM_ROOM, "-room");
-        flagOf.put("secret", "-secret");
-
         List<String> cmd = new ArrayList<String>();
         cmd.add(exe.toAbsolutePath().toString());
         cmd.add("serve");
-        for (Map.Entry<String, String> e : flagOf.entrySet()) {
-            String v = params.get(e.getKey());
-            if (v != null && !v.isEmpty()) {
-                cmd.add(e.getValue());
-                cmd.add(v);
+        cmd.add("-backend");
+        cmd.add(backendId);
+        for (Map.Entry<String, String> e : params.entrySet()) {
+            if (e.getValue() == null || e.getValue().isEmpty()) {
+                continue;
             }
+            cmd.add("-O");
+            cmd.add(e.getKey() + "=" + e.getValue());
         }
         cmd.add("-port");
         cmd.add(Integer.toString(localPort));
-        if (metaToken != null && !metaToken.isEmpty()) {
-            cmd.add("-meta-token");
-            cmd.add(metaToken);
-        }
-        if (proxyProtocol != null && !proxyProtocol.isEmpty()) {
+        if (opts.proxyProtocol != null && !opts.proxyProtocol.isEmpty()) {
             cmd.add("-proxy-protocol");
-            cmd.add(proxyProtocol);
+            cmd.add(opts.proxyProtocol);
         }
         if (opts.rendezvousPort > 0) {
+            // Embedded signaling broker on loopback; serve resolves the
+            // credential's brokers=origin placeholder to it.
             cmd.add("-rendezvous");
             cmd.add(Integer.toString(opts.rendezvousPort));
-            if (opts.signingKey != null && !opts.signingKey.isEmpty()) {
-                cmd.add("-signing-key");
-                cmd.add(opts.signingKey);
-            }
         }
         return cmd;
     }
 
     /**
-     * 供日志输出的命令行描述。serve 的旗标语义已知，只需抹掉真正敏感的
-     * {@code -token}、{@code -secret} 与 {@code -signing-key}；服务器地址、
-     * 房间名与会合点端口保留——排查「注册到哪去了」正需要它们。
-     * {@code -O} 形式的参数按键名判断：密钥类只留键名，其余原样保留。
+     * 供日志输出的命令行描述。{@code -O} 形式的参数按键名判断：密钥类
+     * （键名含 key/secret/token/password）只留键名，其余原样保留——房间名、
+     * broker 列表与会合点端口正是排查「发布到哪去了」需要的。
      */
     public static String describe(List<String> cmd) {
         StringBuilder sb = new StringBuilder();
@@ -178,17 +115,11 @@ public final class ServeCommand {
             }
             String arg = cmd.get(i);
             sb.append(arg);
-            if (("-token".equals(arg) || "-secret".equals(arg) || "-meta-token".equals(arg)
-                    || "-signing-key".equals(arg))
-                    && i + 1 < cmd.size()) {
-                sb.append(" ***");
-                i++;
-            } else if ("-O".equals(arg) && i + 1 < cmd.size()) {
+            if ("-O".equals(arg) && i + 1 < cmd.size()) {
                 String kv = cmd.get(i + 1);
                 int eq = kv.indexOf('=');
                 String key = eq > 0 ? kv.substring(0, eq) : kv;
-                if ("sessionKey".equals(key) || "secret".equals(key)
-                        || "token".equals(key) || Credentials.PARAM_USER_TOKEN.equals(key)) {
+                if (sensitiveKey(key)) {
                     sb.append(' ').append(key).append("=***");
                 } else {
                     sb.append(' ').append(kv);
@@ -197,5 +128,12 @@ public final class ServeCommand {
             }
         }
         return sb.toString();
+    }
+
+    /** Keys whose values must never reach a log line. */
+    private static boolean sensitiveKey(String key) {
+        String k = key.toLowerCase(Locale.ROOT);
+        return k.contains("key") || k.contains("secret") || k.contains("token")
+                || k.contains("password");
     }
 }

@@ -1,12 +1,17 @@
-// netherway 通过 frp xtcp 打洞，让玩家 P2P 直连 Minecraft 服务器。
+// netherway lets Minecraft players reach a server over a direct P2P
+// connection. The hole-punching scheme is pluggable through
+// internal/backend; gonc-p2p is the backend shipped today.
 //
-//	netherway serve    在服务器宿主机运行
-//	netherway tunnel   供 Minecraft mod 调用，打洞并输出逐行 JSON 状态
-//	netherway authplugin  在 frps 宿主机运行（每玩家令牌校验）
+//	netherway serve    run on the server host: publishes the local
+//	                   Minecraft port, optionally with an embedded
+//	                   signaling broker on loopback (-rendezvous)
+//	netherway tunnel   called by the Minecraft mod: punches and prints
+//	                   line-delimited JSON status on stdout
 //
-// 玩家进服前的凭证预取不在这里：它是 mod 与 MC 服务端之间在 Minecraft
-// 端口上的一次对话（core 的 PreauthClient/PreauthService），不经 agent，
-// 也不需要服务器多开任何监听端口。
+// Credential prefetch before a player joins is not here: it is a Java-only
+// exchange between the mod and the Minecraft server on the Minecraft port
+// (core PreauthClient/PreauthService), never touching the agent and never
+// opening another listening port on the server.
 package main
 
 import (
@@ -16,14 +21,12 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
-	"github.com/aUsernameWoW/netherway/internal/backend/frpxtcp"
+	"github.com/aUsernameWoW/netherway/internal/backend"
 	"github.com/aUsernameWoW/netherway/internal/backend/goncp2p"
-	"github.com/aUsernameWoW/netherway/internal/config"
 	"github.com/aUsernameWoW/netherway/internal/i18n"
-	"github.com/aUsernameWoW/netherway/internal/stunpick"
-	"github.com/aUsernameWoW/netherway/internal/tunnel"
 )
 
 func main() {
@@ -37,8 +40,6 @@ func main() {
 		err = cmdServe(os.Args[2:])
 	case "tunnel":
 		err = cmdTunnel(os.Args[2:])
-	case "authplugin":
-		err = cmdAuthPlugin(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -57,27 +58,6 @@ func usage() {
 	fmt.Fprint(os.Stderr, i18n.T("main.usage"))
 }
 
-// endpointFlags 注册两端共用的选项。
-func endpointFlags(fs *flag.FlagSet) (*tunnel.Endpoint, *config.Room, *bool) {
-	ep := &tunnel.Endpoint{}
-	room := &config.Room{}
-	fs.StringVar(&ep.ServerAddr, "server", config.DefaultServerAddr, i18n.T("flag.server"))
-	fs.IntVar(&ep.ServerPort, "server-port", config.ServerPortDefault(), i18n.T("flag.serverPort"))
-	fs.StringVar(&ep.Token, "token", config.DefaultToken, i18n.T("flag.token"))
-	fs.StringVar(&ep.STUNServer, "stun", config.DefaultSTUNServer, i18n.T("flag.stun"))
-	fs.StringVar(&room.Name, "room", config.DefaultRoom, i18n.T("flag.room"))
-	fs.StringVar(&room.SecretKey, "secret", config.DefaultSecretKey, i18n.T("flag.secret"))
-	verbose := fs.Bool("v", false, i18n.T("flag.verbose"))
-	return ep, room, verbose
-}
-
-func validate(ep *tunnel.Endpoint, room *config.Room) error {
-	if err := ep.Validate(); err != nil {
-		return err
-	}
-	return room.Validate()
-}
-
 func logLevelOf(verbose bool) string {
 	if verbose {
 		return "debug"
@@ -85,86 +65,50 @@ func logLevelOf(verbose bool) string {
 	return "info"
 }
 
-// consoleLog 是 serve 这类前台命令的日志配置。
-func consoleLog(verbose bool) tunnel.LogOptions {
-	return tunnel.LogOptions{Level: logLevelOf(verbose), To: "console"}
-}
-
-// signalContext 返回一个在收到 SIGINT/SIGTERM 时取消的 context。
+// signalContext returns a context canceled on SIGINT/SIGTERM.
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
+// checkProxyProtocol gives a plain-language error before the backend's own
+// configuration validation gets to it.
+func checkProxyProtocol(v string) error {
+	switch v {
+	case "", "v1", "v2":
+		return nil
+	default:
+		return i18n.Errorf("serve.badProxyProtocol", v)
+	}
+}
+
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	ep, room, verbose := endpointFlags(fs)
 	localPort := fs.Int("port", 25565, i18n.T("flag.serve.port"))
-	metaToken := fs.String("meta-token", "", i18n.T("flag.serve.metaToken"))
 	proxyProtocol := fs.String("proxy-protocol", "", i18n.T("flag.serve.proxyProtocol"))
 	rendezvousPort := fs.Int("rendezvous", 0, i18n.T("flag.serve.rendezvous"))
-	signingKey := fs.String("signing-key", "", i18n.T("flag.serve.signingKey"))
-	backendName := fs.String("backend", frpxtcp.Name, i18n.T("flag.serve.backend"))
+	backendName := fs.String("backend", defaultBackendName, i18n.T("flag.serve.backend"))
 	params := paramFlags{}
 	fs.Var(params, "O", i18n.T("flag.serve.param"))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *backendName == goncp2p.Name {
-		// gonc-p2p publish path: no frps, no rendezvous, no per-player token
-		// layer — the MQTT brokers are the rendezvous and the session key is
-		// the whole admission story (same params the server hands out in
-		// credentials; Java side composes them in ServeCommand).
-		if *rendezvousPort != 0 {
-			return i18n.Errorf("serve.goncRendezvous")
-		}
-		if err := checkProxyProtocol(*proxyProtocol); err != nil {
-			return err
-		}
-		ctx, stop := signalContext()
-		defer stop()
-		fmt.Println(i18n.T("serve.goncPublish", *localPort))
-		if *proxyProtocol != "" {
-			fmt.Println(i18n.T("serve.goncProxyProtocolOn", *proxyProtocol))
-		}
-		return goncp2p.Serve(ctx, params, *localPort,
-			goncp2p.ServeOptions{ProxyProtocol: *proxyProtocol}, os.Stdout,
-			func(f string, a ...any) { fmt.Printf(f+"\n", a...) })
+	// serve is dispatched by name rather than through backend.Lookup: the
+	// publish side of a backend is its own program (a wait loop, an embedded
+	// broker), not the "open a local port" shape the Backend interface
+	// describes. A new backend adds a case here next to its registration in
+	// backends.go.
+	switch *backendName {
+	case goncp2p.Name:
+		return serveGonc(params, *localPort, *rendezvousPort, *proxyProtocol)
+	default:
+		return i18n.Errorf("tunnel.unknownBackend",
+			*backendName, strings.Join(backend.Names(), ", "))
 	}
-	if *rendezvousPort != 0 {
-		return serveEmbedded(ep, room, *localPort, *rendezvousPort,
-			*signingKey, *metaToken, *proxyProtocol, *verbose)
-	}
-	if err := validate(ep, room); err != nil {
-		return err
-	}
-	if err := checkProxyProtocol(*proxyProtocol); err != nil {
-		return err
-	}
-	if *metaToken != "" {
-		ep.Metas = map[string]string{"token": *metaToken}
-	}
-
-	ctx, stop := signalContext()
-	defer stop()
-
-	fmt.Println(i18n.T("serve.publish", *localPort, room.Name))
-	picked, err := stunpick.Resolve(ep.STUNServer, func(f string, a ...any) {
-		fmt.Printf(f+"\n", a...)
-	})
-	if err != nil {
-		return err
-	}
-	ep.STUNServer = picked
-	fmt.Printf("frps %s:%d\n", ep.ServerAddr, ep.ServerPort)
-	if *proxyProtocol != "" {
-		fmt.Println(i18n.T("serve.proxyProtocolOn", *proxyProtocol))
-	}
-	return tunnel.Serve(ctx, *ep, *room, *localPort,
-		tunnel.ServeOptions{ProxyProtocol: *proxyProtocol}, consoleLog(*verbose))
 }
 
-// pickPort 优先使用 want，被占用时让系统分配一个空闲端口。
-// tunnel 模式会把实际端口随 STARTING 事件上报，用哪个都不影响调用方。
+// pickPort prefers want and falls back to a system-assigned free port when
+// it is taken. tunnel mode reports the actual port in the STARTING event, so
+// the caller does not care which one it got.
 func pickPort(want int) (int, error) {
 	if want > 0 && portFree(want) {
 		return want, nil

@@ -1,7 +1,7 @@
-# CI 构建。三条流水线相互独立：
+# CI 构建。几条流水线相互独立：
 #
-#   go    — agent 本体的编译、vet、测试，外加三个真实二进制冒烟
-#           （build.sh 注入、tunnel stdout 契约、serve 内嵌会合点）
+#   go    — agent 本体的编译、vet、测试，外加两个真实二进制冒烟
+#           （tunnel stdout JSON 契约、serve 内嵌信令 broker）
 #   core  — Java core 用 JDK 8 编译，在 8/17/21/25 四个 JVM 上跑 SelfTest，
 #           对应 GTNH 用 lwjgl3ify 把 1.7.10 跑在现代 JVM 上的场景
 #   mod   — Forge 1.7.10 适配层（RetroFuturaGradle），产出可发布的 mod jar。
@@ -9,11 +9,8 @@
 #           netherway-forge-1.7.10-312dd35.jar，mcmod.info/@Mod 同步），
 #           tag 发布则以 gradle.properties 的 modVersion 为准
 #
-# 这里刻意不接触 TOKEN/SECRET：mod jar 打包的 agent 二进制经
-# mod/build-natives.sh 构建、不含任何密钥，公开发布是安全的。
-# 根目录 build.sh 产出的独立 agent 内嵌 frps 令牌与房间密钥，
-# 那类产物绝不能挂到公开的 Release / artifact 上——如需 CI 构建，
-# 单独开私有渠道，别往这个文件里加。
+# agent 二进制不含任何构建期密钥（mod/build-natives.sh）：它需要的全部参数
+# 都在运行期由服务端下发的凭证经 -O 传入，公开发布是安全的。
 name: build
 
 on:
@@ -45,92 +42,123 @@ jobs:
           go-version-file: go.mod
       - run: go build ./...
       - run: go vet ./...
-      # 跨语言契约测试（authplugin 的已知答案向量）在这里守门：
-      # 只 build 不 test 的话，契约被改坏要到 Java 侧 SelfTest 才炸，甚至漏网。
-      # internal/rendezvous 的 interop 测试也在其中：frp client 库真连内嵌
-      # 会合点，钉住登录与代理注册的放行/拒绝规则（frp bump 的行为级防线）。
-      # 不开 -race：frp 自身关停路径带数据竞争，见 interop_test.go 头注。
-      - run: go test ./...
-      # build.sh 的 -X symbol 名与 internal/config 的变量名是逐字契约，
-      # symbol 写错时 Go 会静默忽略、构建照样成功——真实打包时默认值就悄悄
-      # 丢了。这里用占位值（无任何真实密钥）构建单平台，断言每个注入值
-      # 确实落进了二进制。
-      - name: build.sh 注入冒烟（占位值）
-        run: |
-          ONLY=linux/amd64 \
-          SERVER_ADDR=203.0.113.99 SERVER_PORT=7391 ROOM=ci-smoke-room \
-          TOKEN=ci-dummy-token SECRET=ci-dummy-secret \
-            ./build.sh
-          for v in 203.0.113.99 7391 ci-smoke-room \
-                   ci-dummy-token ci-dummy-secret; do
-            grep -aq "$v" bin/netherway-linux-amd64 || {
-              echo "注入值 $v 未落进二进制：-X symbol 名与 internal/config 失配？"
-              exit 1
-            }
-          done
-      # tunnel 的 stdout 是 mod 逐行解析的 JSON 契约，frp 的日志一旦漏到
-      # stdout（例如新版 frp 在 initFrpLogger 生效前打印）就会破坏它——
-      # 这类破坏编译与单测都抓不到。这里跑真实二进制指向不可达的 frps：
-      # 打洞注定失败，但 frp 的登录重试会在整个超时窗口内持续产生日志，
-      # 恰好压满「日志只进 stderr/文件」的契约。frp 依赖自动升级
-      # （dependabot auto-merge）后，这是行为级回归的主要防线。
-      # STUN 探测失败也没关系：starting 在 backend 启动前就已发出，
-      # failed 的原因不同但断言不变。
+      # 行为级契约测试在这里守门：goncp2p 的 glue 测试（自有 smux 层、
+      # PROXY 头向量、origin 占位符）、internal/signalbroker 的 easyp2p
+      # interop 测试（gonc 的 hello/wait 真跑在我们的 broker 上，绑定范围
+      # 与 ACL）、i18n 目录一致性、cmd 的事件契约与 serve 标记。
+      - run: go test -race ./...
+      - name: 构建冒烟用二进制
+        run: go build -trimpath -o bin/netherway-linux-amd64 ./cmd/netherway
+      # tunnel 的 stdout 是 mod 逐行解析的 JSON 契约，backend 库的日志一旦
+      # 漏到 stdout（gonc/paho 某次升级改了日志去向）就会破坏它——这类破坏
+      # 编译与单测都抓不到。这里跑真实二进制指向无人监听的 broker 与 STUN：
+      # 打洞注定失败，但 gonc 的重试会在整个超时窗口内持续产生日志，恰好
+      # 压满「日志只进 stderr/文件」的契约。全程不出网：broker 与 STUN 都
+      # 指向本机死端口。断言：stdout 每行都是带 event 的 JSON、首条
+      # starting、末条 failed 且带 failureStage/failureCode。
       - name: tunnel stdout JSON 契约冒烟
         run: |
-          if bin/netherway-linux-amd64 tunnel \
-               -server 127.0.0.1 -server-port 1 -token ci \
-               -room ci-smoke -secret ci-smoke -timeout 6 \
-               -log-file /tmp/tunnel-smoke.log \
+          if bin/netherway-linux-amd64 tunnel -backend gonc-p2p \
+               -O sessionKey=ci-smoke -O room=ci-smoke \
+               -O brokers=tcp://127.0.0.1:1 -O stunServers=127.0.0.1:1 \
+               -timeout 6 -log-file /tmp/tunnel-smoke.log \
                >stdout.jsonl 2>stderr.log; then
-            echo "指向不可达 frps 却成功就绪？"
+            echo "指向不可达 broker 却成功就绪？"
             exit 1
           fi
           tail -20 stderr.log
           jq -es 'length >= 2
+                  and all(.[]; has("event"))
                   and (.[0].event == "starting")
-                  and (.[-1].event == "failed")' stdout.jsonl || {
+                  and (.[-1].event == "failed")
+                  and (.[-1].failureStage | length > 0)
+                  and (.[-1].failureCode | length > 0)' stdout.jsonl || {
             echo "stdout 不是纯 JSON 事件流，或事件序列不对："
             cat stdout.jsonl
             exit 1
           }
-      # 内嵌会合点冒烟：真实二进制跑通「起会合点 → serve 的 frpc 从回环连
-      # 回来 → 过内嵌 authplugin → 注册 xtcp 代理」全链路，再验证 SIGTERM
-      # 干净退出。全程不出网：STUN 只在真正打洞时才会被联系，而 stunpick
-      # 对单个候选不做探测直接放行。库层同样的契约由 internal/rendezvous
-      # 的 interop 测试钉住，这里额外覆盖 main/serveEmbedded 的旗标装配、
-      # 自用静态令牌生成与信号退出路径。「start proxy success」是 frp 的
-      # 日志原文，刻意用作 frp bump 的绊线——frp 若改了字样，这里跟着改。
+          if grep -qv '^{' stdout.jsonl; then
+            echo "stdout 出现了非 JSON 行（backend 库的日志漏进来了？）："
+            cat stdout.jsonl
+            exit 1
+          fi
+      # gonc-p2p 冒烟：真实二进制跑 serve 的 wait 侧，钉住 serve 状态标记
+      # 契约（cmd/netherway/serve_gonc.go 的 [serve-ready]/[serve-warn] ↔
+      # Java ServeTelemetry 的常量）。正路：-rendezvous 起内嵌信令 broker
+      # （internal/signalbroker，只绑回环），broker 探测打到回环即打
+      # [serve-ready]，顺带钉住「内嵌信令 broker」那行文案；反路：broker
+      # 指向无人监听的端口，只能看到 [serve-warn]、绝不能出现 [serve-ready]；
+      # 第三条：brokers=origin 占位符没有 -rendezvous 可解析时必须立即
+      # 非零退出并说明原因。全程不出网、不装任何软件：打洞只在玩家 hello
+      # 后才开始，STUN 不会被联系。库层同样的契约由 internal/signalbroker
+      # 的 easyp2p interop 测试钉住，这里额外覆盖 main/serveGonc 的旗标装配。
       # 文案断言以 zh 目录为基准（与 SelfTest、Go 测试一致），故固定
       # NETHERWAY_LANG=zh，不随 runner locale 漂移。
-      - name: serve 内嵌会合点冒烟
+      - name: serve gonc-p2p 冒烟
         env:
           NETHERWAY_LANG: zh
         run: |
-          bin/netherway-linux-amd64 serve \
-            -rendezvous 17321 -port 25565 \
-            -room ci-smoke -secret ci-smoke -token ci-token \
-            -signing-key ci-signing-key \
-            -stun 127.0.0.1:1 \
-            >serve.out 2>serve.err &
+          bin/netherway-linux-amd64 serve -backend gonc-p2p \
+            -rendezvous 17322 \
+            -O sessionKey=ci-smoke -O room=ci-smoke \
+            -port 25565 >gonc-serve.out 2>gonc-serve.err &
           pid=$!
           ok=""
           for i in $(seq 1 40); do
-            if grep -q "start proxy success" serve.out 2>/dev/null; then ok=1; break; fi
+            if grep -q "\[serve-ready\]" gonc-serve.out 2>/dev/null; then ok=1; break; fi
             if ! kill -0 "$pid" 2>/dev/null; then break; fi
             sleep 0.5
           done
+          alive=""; kill -0 "$pid" 2>/dev/null && alive=1
           kill "$pid" 2>/dev/null || true
           status=0; wait "$pid" || status=$?
-          cat serve.out
-          cat serve.err >&2
-          grep -q "内嵌会合点" serve.out || { echo "会合点未启动"; exit 1; }
+          cat gonc-serve.out
+          cat gonc-serve.err >&2
+          if [ -z "$alive" ]; then
+            echo "gonc serve 进程提前退出（exit $status）"
+            exit 1
+          fi
+          grep -q "内嵌信令 broker" gonc-serve.out || { echo "内嵌信令 broker 未启动"; exit 1; }
           if [ -z "$ok" ]; then
-            echo "serve 未能在内嵌会合点上注册代理（登录或 NewProxy 被拒？）"
+            echo "gonc serve 20 秒内未打出 [serve-ready]（内嵌 broker 探测失败？标记字样变了？）"
             exit 1
           fi
           if [ "$status" -ne 0 ]; then
             echo "SIGTERM 后未干净退出（exit $status）"
+            exit 1
+          fi
+          # 第三条：占位符无处解析 → 立即报错退出
+          status=0
+          bin/netherway-linux-amd64 serve -backend gonc-p2p \
+            -O sessionKey=ci-smoke -O room=ci-smoke -O brokers=origin \
+            -port 25565 >gonc-origin.out 2>gonc-origin.err || status=$?
+          cat gonc-origin.out; cat gonc-origin.err >&2
+          if [ "$status" -eq 0 ]; then
+            echo "brokers=origin 无 -rendezvous 竟然没有报错退出"
+            exit 1
+          fi
+          grep -q "占位符" gonc-origin.err gonc-origin.out || { echo "报错未说明占位符"; exit 1; }
+          # 反路：无 broker 可达时只有告警标记，绝无就绪标记
+          bin/netherway-linux-amd64 serve -backend gonc-p2p \
+            -O sessionKey=ci-smoke -O room=ci-smoke \
+            -O brokers=tcp://127.0.0.1:1 \
+            -port 25565 >gonc-nobroker.out 2>gonc-nobroker.err &
+          pid=$!
+          warn=""
+          for i in $(seq 1 30); do
+            if grep -q "\[serve-warn\]" gonc-nobroker.out 2>/dev/null; then warn=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" || true
+          cat gonc-nobroker.out
+          if [ -z "$warn" ]; then
+            echo "broker 不可达时 15 秒内未打出 [serve-warn]"
+            exit 1
+          fi
+          if grep -q "\[serve-ready\]" gonc-nobroker.out; then
+            echo "broker 不可达却打出了 [serve-ready]"
             exit 1
           fi
 

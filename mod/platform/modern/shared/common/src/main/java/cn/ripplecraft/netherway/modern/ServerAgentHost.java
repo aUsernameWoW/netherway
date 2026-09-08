@@ -20,14 +20,16 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
- * 服务端内置的 serve 进程：随 MC 服务端启动，把本地端口注册为房间代理。
+ * 服务端内置的 serve 进程：随 MC 服务端启动，把本地 Minecraft 端口作为房间发布出去。
  *
  * <p>参数与下发给客户端的凭证同源（都来自 {@code server.params}），
- * 从根上杜绝「凭证是 test 房间、宿主机却注册着别的房间」这类漂移；
+ * 从根上杜绝「凭证是 test 房间、宿主机却发布着别的房间」这类漂移；
  * 生命周期也跟着服务端走，不再需要 systemd/screen 单独伺候一个进程。
  *
- * <p>frp 掉线会自己重连（LoginFailExit=false），所以这里不做自动重启：
- * 进程退出通常意味着配置错误，重启只会无限刷同一个错。
+ * <p>No automatic restart: goncp2p.Serve retries broker probing and
+ * wait/punch cycles internally and only returns on cancellation, so an exit
+ * is a configuration error, never a transient network failure worth
+ * restarting over (a restart would just loop on the same error).
  */
 public final class ServerAgentHost {
 
@@ -50,7 +52,7 @@ public final class ServerAgentHost {
     /**
      * 启动 serve。失败只记日志——直连是增强功能，绝不能拖垮服务端启动。
      *
-     * @param rendezvousPort 内嵌会合点端口（回环）；0 表示不启用，连公网 frps。
+     * @param rendezvousPort loopback port of the embedded rendezvous (the MQTT signaling broker); 0 = off, use the brokers named in server.params.
      *                       非零时必须与 {@link ConnectionSniffer} 收到的是同一个数。
      */
     public void start(Path cacheDir, int localPort, int rendezvousPort) {
@@ -58,7 +60,7 @@ public final class ServerAgentHost {
             return;
         }
         telemetry.onStartAttempt();
-        if (!Credentials.BACKEND_FRP_XTCP.equals(config.serverBackendId())) {
+        if (!ServeCommand.supportsBackend(config.serverBackendId())) {
             LOG.warn(L10n.tr("serve.backendUnsupported", config.serverBackendId()));
             telemetry.onStartFailure(QualitySummary.FailureStage.START,
                     QualitySummary.FailureCode.BACKEND_UNKNOWN);
@@ -85,10 +87,8 @@ public final class ServerAgentHost {
         try {
             List<String> cmd = ServeCommand.build(exe, config.serverBackendId(), config.serverParams(), localPort,
                     new ServeCommand.Options()
-                            .metaToken(config.serveAuthToken())
                             .proxyProtocol(config.serveProxyProtocol())
-                            .rendezvousPort(rendezvousPort)
-                            .signingKey(rendezvousPort > 0 ? config.tokenSigningKey() : null));
+                            .rendezvousPort(rendezvousPort));
             LOG.info(L10n.tr("serve.starting", platform, ServeCommand.describe(cmd)));
 
             ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -133,7 +133,12 @@ public final class ServerAgentHost {
         }
     }
 
-    /** 把 serve 的输出逐行转进服务端日志；frp 的 warn/error 行保持醒目。 */
+    /**
+     * Forwards serve output line by line into the server log. Lines carrying the
+     * language-independent {@code [serve-warn]} marker (the only serve output
+     * contract besides {@code [serve-ready]}) stay prominent at WARN; everything
+     * else, localised text included, is INFO.
+     */
     private void pumpOutput(Process proc) {
         BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream(), UTF8));
         try {
@@ -144,7 +149,7 @@ public final class ServerAgentHost {
                     continue;
                 }
                 telemetry.onLogLine(t);
-                if (t.contains(" [W] ") || t.contains(" [E] ")) {
+                if (t.startsWith(ServeTelemetry.GONC_WARN_MARKER)) {
                     LOG.warn("[serve] {}", t);
                 } else {
                     LOG.info("[serve] {}", t);
@@ -169,7 +174,7 @@ public final class ServerAgentHost {
         }
     }
 
-    /** 服务端关闭时调用：先请求优雅退出（关掉代理注册），超时强杀。 */
+    /** 服务端关闭时调用：先请求优雅退出（撤下发布的房间），超时强杀。 */
     public void stop() {
         Process proc = process;
         process = null;

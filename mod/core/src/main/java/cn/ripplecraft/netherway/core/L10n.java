@@ -279,6 +279,10 @@ public final class L10n {
         def("upgrade.failed",
                 "Failed to establish the direct connection",
                 "建立直连失败");
+        def("upgrade.evictUnsupported",
+                "The agent does not support the backend of the credentials for room {0} ({1}); "
+                        + "removed them from the cache",
+                "agent 不支持房间 {0} 凭证的 backend（{1}），已从缓存移除");
         def("reason.outcomeTimeout",
                 "Timed out waiting for the direct-connection outcome",
                 "等待直连结果超时");
@@ -360,6 +364,10 @@ public final class L10n {
                 "Warm tunnel for room {0} reported unhealthy but is carrying the current connection; "
                         + "leaving it alone",
                 "房间 {0} 的隧道上报失效，但正承载当前连接，暂不处理");
+        def("warmup.evictUnsupported",
+                "The agent does not support the backend of the cached credentials for room {0} ({1}); "
+                        + "removed them from the cache (a relay join or prefetch fetches current ones)",
+                "agent 不支持房间 {0} 缓存凭证的 backend（{1}），已从缓存移除（中转进服或预取会取回新凭证）");
     }
 
     private static void defPrefetch() {
@@ -710,10 +718,10 @@ public final class L10n {
                         + "(set server.localPort explicitly)",
                 "无法确定 Minecraft 监听端口，内置 serve 未启动（可用 server.localPort 显式指定）");
         def("fserver.rendezvousPort",
-                "The embedded rendezvous will listen on 127.0.0.1:{0}: players' frp control connections are "
+                "The embedded rendezvous will listen on 127.0.0.1:{0}: players' signaling connections are "
                         + "forwarded in from the Minecraft port, so the public side only needs a TCP tunnel "
                         + "to the Minecraft port",
-                "内嵌会合点将监听 127.0.0.1:{0}：玩家的 frp 控制连接会从 Minecraft "
+                "内嵌会合点将监听 127.0.0.1:{0}：玩家的信令连接会从 Minecraft "
                         + "端口转发进去，公网侧只需要一条能到 Minecraft 端口的 TCP 隧道");
         def("fserver.rendezvousPortFailed",
                 "Failed to pick a rendezvous port; the embedded rendezvous is disabled",
@@ -733,22 +741,19 @@ public final class L10n {
         def("fserver.enabled",
                 "Server-side direct connection enabled; {0} will be delivered after players log in",
                 "服务端直连已启用，玩家登录后将下发 {0}");
-        def("fserver.tokenIssuing",
-                "Per-player token issuing enabled (valid for {0} days), signing key fingerprint {1}",
-                "每玩家令牌签发已启用（有效期 {0} 天），签发密钥指纹 {1}");
         def("fserver.willRunServe",
-                "The built-in serve starts with the server and registers room \"{0}\" with frps "
-                        + "(if a standalone netherway serve also runs on this host, stop one of them: "
-                        + "same-name proxies conflict on registration)",
-                "将随服务端启动内置 serve，把房间 \"{0}\" 注册到 frps"
-                        + "（若宿主机还单独跑着 netherway serve，请停掉其一，同名代理会注册冲突）");
+                "The built-in serve starts with the server and publishes room \"{0}\" through the "
+                        + "tunnel backend (if a standalone netherway serve also runs on this host, stop one "
+                        + "of them: two serves for the same room conflict)",
+                "将随服务端启动内置 serve，经隧道 backend 发布房间 \"{0}\""
+                        + "（若宿主机还单独跑着 netherway serve，请停掉其一，同一房间的两个 serve 会冲突）");
         def("fserver.noRunAgent",
-                "Note: server.runAgent is off, so the mod only delivers credentials; the proxy for room \"{0}\" "
-                        + "must be registered with frps by a standalone netherway serve on the host "
-                        + "(-room must match), otherwise players will see \"xtcp server doesn't exist\"",
-                "注意：server.runAgent 已关闭，mod 只下发凭证；房间 \"{0}\" 的"
-                        + "代理需要宿主机上独立运行的 netherway serve 注册到 frps"
-                        + "（-room 必须一致），否则玩家侧会报 xtcp server doesn't exist");
+                "Note: server.runAgent is off, so the mod only delivers credentials; room \"{0}\" must be "
+                        + "published by a standalone netherway serve on the host with the same "
+                        + "server.params (backend and keys must match), otherwise players cannot punch through",
+                "注意：server.runAgent 已关闭，mod 只下发凭证；房间 \"{0}\" 需要宿主机上"
+                        + "独立运行的 netherway serve 用同一份 server.params 发布"
+                        + "（backend 与密钥必须一致），否则玩家打不通");
         def("fserver.delivered",
                 "Delivered direct-connection credentials to {0}: {1}",
                 "已向 {0} 下发直连凭证 {1}");
@@ -762,9 +767,9 @@ public final class L10n {
                 "{0} failed to go direct (room {1}): {2}",
                 "{0} 直连失败（房间 {1}）：{2}");
         def("serve.backendUnsupported",
-                "The built-in serve currently supports only frp-xtcp (configured backend: {0}); "
+                "The built-in serve does not support backend {0}; "
                         + "run the matching tunnel service on the host yourself",
-                "内置 serve 目前仅支持 frp-xtcp（当前 backend: {0}），请在宿主机上自行运行对应的隧道服务");
+                "内置 serve 不支持 backend {0}，请在宿主机上自行运行对应的隧道服务");
         def("serve.noBinary",
                 "No bundled agent binary for this system; cannot start serve: {0}",
                 "当前系统没有内置的 agent 二进制，无法启动 serve: {0}");
@@ -778,12 +783,13 @@ public final class L10n {
                 "Failed to start the built-in serve",
                 "内置 serve 启动失败");
         def("serve.exited",
-                "The built-in serve exited (code {0}). frp reconnects on its own after network drops, so an "
-                        + "outright exit usually means a configuration error (frps address/token/secret); see the "
-                        + "[serve] log above for the cause, fix the configuration and restart the server",
-                "内置 serve 进程退出（码 {0}）。frp 掉线会自动重连，进程直接退出"
-                        + "通常是配置错误（frps 地址/令牌/密钥），原因见上方 [serve] 日志；"
-                        + "修正配置后重启服务端生效");
+                "The built-in serve exited (code {0}). The tunnel backend reconnects on its own after network "
+                        + "drops, so an outright exit usually means a configuration error (server.backend / "
+                        + "server.params, e.g. the session key or broker list); see the [serve] log above "
+                        + "for the cause, fix the configuration and restart the server",
+                "内置 serve 进程退出（码 {0}）。隧道 backend 掉线会自动重连，进程直接退出"
+                        + "通常是配置错误（server.backend / server.params，如 sessionKey 或 broker 列表），"
+                        + "原因见上方 [serve] 日志；修正配置后重启服务端生效");
         def("serve.stopped",
                 "The built-in serve has stopped",
                 "内置 serve 已停止");
@@ -803,27 +809,6 @@ public final class L10n {
                         + "serve process; a standalone serve does not open it). Treated as disabled this time",
                 "server.rendezvous 需要 server.runAgent=true（会合点起在内置 serve "
                         + "进程里，独立运行的 serve 不会开它）。本次按未启用处理");
-        def("config.secretAutoNeedsRunAgent",
-                "secret=auto requires server.runAgent=true (the built-in serve and the delivered credentials "
-                        + "share the same source); a standalone serve cannot learn the generated secret and "
-                        + "players would fail to punch through forever",
-                "secret=auto 需要 server.runAgent=true（内置 serve 与下发凭证同源）；"
-                        + "独立运行的 serve 无法得知本次生成的密钥，玩家会一直打洞失败");
-        def("config.secretAutoGenerated",
-                "secret=auto: a random room secret was generated for this run; it rotates on every server "
-                        + "restart and players need to do nothing",
-                "secret=auto：本次启动已生成随机房间密钥，服务端每次重启轮换，玩家侧无需任何操作");
-        def("config.tokenAutoGenerated",
-                "token=auto: a random rendezvous token was generated for this run; it rotates on every server "
-                        + "restart and players need to do nothing",
-                "token=auto：本次启动已生成随机会合点令牌，服务端每次重启轮换，玩家侧无需任何操作");
-        def("config.tokenAutoClassic",
-                "token=auto only makes sense with server.rendezvous=true (in classic mode the token must match "
-                        + "the public frps auth.token). Using the literal value \"auto\", which is almost "
-                        + "certainly not what you want",
-                "token=auto 只在 server.rendezvous=true 时有意义（经典模式的 token "
-                        + "必须与公网 frps 的 auth.token 一致）。已按字面值 \"auto\" 使用，"
-                        + "这几乎肯定不是你想要的");
         def("config.sessionKeyAutoNeedsRunAgent",
                 "sessionKey=auto generates a fresh key on every start, but server.runAgent=false means the "
                         + "externally-run serve cannot know it; players will never be able to punch",
@@ -833,16 +818,21 @@ public final class L10n {
                 "sessionKey=auto: a random session key was generated for this run; it rotates on every server "
                         + "restart and players need to do nothing",
                 "sessionKey=auto：本次启动已生成随机会话密钥，服务端每次重启轮换，玩家侧无需任何操作");
-        def("config.rendezvousFrpOnly",
-                "server.rendezvous only applies to the frp-xtcp backend; backend \"{0}\" needs no rendezvous "
-                        + "(MQTT signaling), treated as off",
-                "server.rendezvous 只适用于 frp-xtcp backend；backend \"{0}\" 不需要会合点"
-                        + "（MQTT 信令），已按关闭处理");
-        def("config.tokenSigningFrpOnly",
-                "tokenSigningKey only applies to the frp-xtcp backend (there is no login gate to verify "
-                        + "per-player tokens under backend \"{0}\"); per-player tokens disabled",
-                "tokenSigningKey 只适用于 frp-xtcp backend（backend \"{0}\" 下没有校验每玩家令牌"
-                        + "的登录关卡）；已停用每玩家令牌");
+        def("config.unknownBackend",
+                "server.backend \"{0}\" is not a backend this build's agent ships (known: {1}); the built-in "
+                        + "serve will not start and players' agents will reject the delivered credentials. "
+                        + "Fix it if it is a typo",
+                "server.backend \"{0}\" 不是本版本 agent 自带的 backend（认识的: {1}）；内置 serve "
+                        + "不会启动，玩家侧 agent 也会拒绝下发的凭证。若是拼写错误请改正");
+        def("config.goncOriginNeedsRendezvous",
+                "server.params brokers contains the \"{0}\" placeholder but the embedded rendezvous is off "
+                        + "(server.rendezvous=false or server.runAgent=false): nothing resolves it, the "
+                        + "built-in serve refuses to start and players' signaling connections to this "
+                        + "server's Minecraft port are dropped. Turn the rendezvous on or list explicit "
+                        + "broker URLs",
+                "server.params 的 brokers 含占位符 \"{0}\"，但内嵌会合点未开启（server.rendezvous=false "
+                        + "或 server.runAgent=false）：没有谁来解析它，内置 serve 会拒绝启动，玩家发往本服 "
+                        + "Minecraft 端口的信令连接也会被丢弃。请开启会合点或改写成显式 broker URL");
         def("config.badProxyProtocol",
                 "server.proxyProtocol only accepts v1 or v2 (current value \"{0}\"); treated as off",
                 "server.proxyProtocol 只接受 v1 或 v2（当前值 \"{0}\"），已按关闭处理");
@@ -850,9 +840,9 @@ public final class L10n {
                 "A line in server.params is not of the key=value form; that line is ignored",
                 "server.params 中的行不是 key=value 形式，已忽略一行");
         def("config.unknownParamKey",
-                "Key \"{0}\" in server.params is not part of the frp-xtcp contract (known keys: {1}); "
-                        + "the agent will ignore it — fix it if it is a typo",
-                "server.params 里的键 \"{0}\" 不在 frp-xtcp 的契约里（认识的键: {1}），"
+                "Key \"{0}\" in server.params is not part of the backend's parameter contract "
+                        + "(known keys: {1}); the agent will ignore it — fix it if it is a typo",
+                "server.params 里的键 \"{0}\" 不在该 backend 的参数契约里（认识的键: {1}），"
                         + "agent 会忽略它；若是拼写错误请改正");
         def("config.incompleteCred",
                 "The credential configuration is incomplete: {0}",
@@ -871,14 +861,14 @@ public final class L10n {
                 "Server side only. A freshly generated config is already the recommended embedded-rendezvous "
                         + "mode and usually needs no editing:\n"
                         + "any public TCP address players use just has to forward to the Minecraft port.\n"
-                        + "See the advanced configuration in the README when self-hosting frps or switching "
-                        + "the tunnel backend.\n"
+                        + "See the advanced configuration in the README when using external signaling "
+                        + "brokers or switching the tunnel backend.\n"
                         + "Note: this file holds auto-generated secrets; restrict its permissions to the "
                         + "server process.\n"
                         + "Clients do not need to fill in the server category.",
                 "服务端专用。新生成的配置就是推荐的内嵌会合点模式，通常无需修改：\n"
                         + "只要玩家正在使用的公网 TCP 地址能转发到 Minecraft 端口即可。\n"
-                        + "需要自建 frps 或更换隧道 backend 时再看 README 的高级配置。\n"
+                        + "需要使用外部信令 broker 或更换隧道 backend 时再看 README 的高级配置。\n"
                         + "注意：此文件含自动生成密钥的配置，权限只给服务端进程；\n"
                         + "客户端不需要填写 server 类目。");
         def("cfg.server.enabled",
@@ -896,27 +886,29 @@ public final class L10n {
                         + "listens on",
                 "内置 serve 发布的 Minecraft 本地端口，0 表示使用服务器实际监听的端口");
         def("cfg.server.backend",
-                "Tunnel backend identifier: frp-xtcp (default; embedded rendezvous, per-player tokens) or "
-                        + "gonc-p2p (MQTT signaling, no rendezvous; params take sessionKey=auto plus room)",
-                "隧道方案标识：frp-xtcp（默认；内嵌会合点、每玩家令牌）或 "
-                        + "gonc-p2p（MQTT 信令、无会合点；params 填 sessionKey=auto 与 room 即可）");
+                "Tunnel backend identifier. gonc-p2p (default): MQTT signaling, embedded rendezvous = "
+                        + "loopback broker, params take sessionKey=auto plus room",
+                "隧道方案标识。gonc-p2p（默认）：MQTT 信令，内嵌会合点即回环 broker，"
+                        + "params 填 sessionKey=auto 与 room 即可");
         def("cfg.server.rendezvous",
-                "Recommended and default mode: run the rendezvous inside the server process.\n"
-                        + "Players' control connections come in through the public Minecraft entry; "
-                        + "no self-hosted frps or authplugin needed.\n"
+                "Recommended and default mode: run the rendezvous (the signaling broker) inside the "
+                        + "server process on loopback.\n"
+                        + "Players' signaling connections come in through the public Minecraft entry; "
+                        + "no public MQTT broker and no extra open port needed.\n"
                         + "Keep runAgent=true; server.params already carries working out-of-the-box values.\n"
-                        + "Set to false only when switching to a self-hosted frps, and replace the whole "
-                        + "params list as the README describes",
-                "推荐且默认模式：在服务端进程内运行会合点。\n"
-                        + "玩家的控制连接从 Minecraft 公网入口进入，无需自建 frps 或部署 authplugin。\n"
+                        + "Set to false only when switching to external MQTT brokers, and list them in "
+                        + "server.params as the README describes",
+                "推荐且默认模式：在服务端进程内的回环上运行会合点（信令 broker）。\n"
+                        + "玩家的信令连接从 Minecraft 公网入口进入，无需公共 MQTT broker，也不多开端口。\n"
                         + "保持 runAgent=true；server.params 已带齐开箱即用的参数。\n"
-                        + "只有改用自建 frps 时才设为 false，并按 README 替换整个 params 列表");
+                        + "只有改用外部 MQTT broker 时才设为 false，并按 README 在 server.params 里列出它们");
         def("cfg.server.params",
-                "Tunnel parameters, one key=value per line. The three defaults already work.\n"
-                        + "Replace the whole list per the README only when self-hosting frps; "
-                        + "advanced auth options do not go here",
-                "隧道参数，每行一个 key=value。默认三项已经可用。\n"
-                        + "自建 frps 时才按 README 替换整个列表；高级鉴权项不写在这里");
+                "Tunnel parameters, one key=value per line. The defaults already work: sessionKey=auto "
+                        + "generates a fresh session key on every start\n"
+                        + "(players pick it up automatically), room names the published room. Add brokers=... "
+                        + "per the README only for external signaling brokers",
+                "隧道参数，每行一个 key=value。默认项已经可用：sessionKey=auto 每次启动生成新会话密钥\n"
+                        + "（玩家侧自动拿到），room 是发布的房间名。只有改用外部信令 broker 时才按 README 加 brokers=…");
         def("cfg.server.params.defaultNote",
                 "Parameters for the default embedded rendezvous; leave them as they are",
                 "默认内嵌会合点所需参数，保持原样即可");
@@ -924,40 +916,18 @@ public final class L10n {
                 "Suggested hole-punching timeout in seconds for clients; 0 lets each client use its "
                         + "own setting",
                 "建议客户端使用的打洞超时秒数，0 表示由客户端自己配置");
-        def("cfg.server.tokenSigningKey",
-                "[Advanced auth] Signing key for per-player tokens. Works as-is with the embedded "
-                        + "rendezvous;\n"
-                        + "with a self-hosted frps it must match the authplugin -key flag.\n"
-                        + "This is not the rendezvous token in server.params; see the README for deployment",
-                "【高级鉴权项】每玩家令牌签发密钥。内嵌会合点可直接使用；\n"
-                        + "自建 frps 时须与 authplugin 的 -key 一致。\n"
-                        + "它不是 server.params 中的会合点令牌；具体部署见 README");
-        def("cfg.server.tokenTtlDays",
-                "[Advanced auth] Validity of per-player tokens in days; renewed automatically on "
-                        + "every login",
-                "【高级鉴权项】每玩家令牌的有效天数；每次登录自动续签");
-        def("cfg.server.serveAuthToken",
-                "[Advanced, self-hosted frps] Static identity token of the built-in serve;\n"
-                        + "must match the authplugin -static-token flag and must never go into server.params",
-                "【自建 frps 高级项】内置 serve 的静态身份令牌，\n"
-                        + "须与 authplugin 的 -static-token 一致，绝不能放进 server.params");
         def("cfg.server.proxyProtocol",
                 "Have the tunnel process send a PROXY protocol header before dialing the local MC port "
                         + "(v1 or v2; empty = off).\n"
                         + "When on, the mod installs a sniffing header stripper on the server network "
                         + "pipeline, so login logs and bans\n"
-                        + "see the player's real source address instead of 127.0.0.1.\n"
-                        + "Backend gonc-p2p carries the real player address today (serve injects the "
+                        + "see the player's real source address instead of 127.0.0.1 (serve injects the "
                         + "punched peer address itself).\n"
-                        + "On frp-xtcp only the stcp relay path currently sends the header; xtcp P2P "
-                        + "streams pick this up once upstream supports it.\n"
                         + "With runAgent=false, pass the same -proxy-protocol flag to the standalone "
                         + "serve yourself",
                 "让隧道进程连本地 MC 端口前先发 PROXY protocol 头（填 v1 或 v2，留空关闭）。\n"
                         + "开启后本 mod 会给服务端接入链装嗅探式剥头组件，登录日志与封禁\n"
-                        + "看到的是玩家真实来源地址而不是 127.0.0.1。\n"
-                        + "gonc-p2p backend 现在就能透传真实玩家地址（serve 自行注入打洞对端地址）。\n"
-                        + "frp-xtcp 下当前只有 stcp 中转路径实际带头，xtcp 的 P2P 流等上游支持后自动生效。\n"
+                        + "看到的是玩家真实来源地址而不是 127.0.0.1（serve 自行注入打洞对端地址）。\n"
                         + "runAgent=false 时须给独立运行的 serve 手动加同值的 -proxy-protocol 旗标");
         def("cfg.server.preauth",
                 "Let players obtain direct-connection credentials on the Minecraft port before joining "
