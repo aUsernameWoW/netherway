@@ -95,6 +95,31 @@ rather use a public or self-hosted MQTT broker, add
 broker address and players signal to it directly instead of through the
 Minecraft port.
 
+### Invite codes (servers with no reachable entry at all)
+
+When the server has no Minecraft entry reachable from the internet (no port
+forward, no rented tunnel), credentials cannot reach players through login
+or preauth. Use public (or self-hosted) signaling brokers instead and hand
+players the credential folded into an **invite code**:
+
+1. Add `brokers=tcp://broker.example.com:1883` (comma-separate several) to
+   `server.params` and set `rendezvous` to `false`.
+2. Start the server; the log prints a line `Invite code ...: nw1-…`.
+3. Players open Multiplayer → Add Server and **paste the code as the server
+   address**, with any name. The mod starts punching for it right away; once
+   the tunnel is up, clicking the entry connects directly and the listed
+   latency is the direct one. Until then the entry shows as unreachable.
+
+The invite code is the session key: whoever holds it can open a tunnel to the
+Minecraft port, and admission stays with the server's whitelist and online
+mode. Under `sessionKey=auto` the key rotates on every restart and so does
+the code; for a long-lived code put a fixed `sessionKey` in `server.params`.
+The code has to fit the server-address field (128 characters): the default
+parameters take about 50, two brokers still fit, and the startup log says so
+when the list is too long. Deleting the entry closes its tunnel; invite
+credentials are never written to the client's credential cache, the list
+entry itself is the source.
+
 ### PROXY protocol (`server.proxyProtocol`)
 
 Set it to `v2` (or `v1`) and connections arriving through the direct tunnel
@@ -124,6 +149,8 @@ At startup, the client fetches credentials from all candidates in the multiplaye
 By default, once warm-up succeeds, selecting the original multiplayer entry connects through the local P2P tunnel. Its real address is never replaced in `servers.dat`, so it remains available on the next launch, after a prefetch failure, or after removing the mod. If the player joins before warm-up finishes, Netherway switches the active connection as soon as the tunnel becomes ready. Failures retry with per-service backoff without affecting other services.
 
 Set `client.replaceServerEntries` to `false` to keep separate `[P2P直连] <room> (<endpoint>)` entries visible alongside the original entries.
+
+A server-list entry starting with `nw1-` is treated as an invite code (see above); nothing else needs to be configured.
 
 ## Known limitations
 

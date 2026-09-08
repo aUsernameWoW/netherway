@@ -60,7 +60,12 @@ public final class ClientProxy extends CommonProxy {
         UpgradeController controller = new UpgradeController(
                 bridge, config.clientTimings(), cache, warmup, telemetry);
         controller.setRedirectOnWarmReady(config.redirectOnWarmReady());
-        ClientEvents events = new ClientEvents(controller, warmup, bridge);
+        // 服务器列表里的邀请码是缓存之外的凭证来源：启动时扫一遍，
+        // 多人界面开着时由 ClientEvents 每秒重扫（玩家刚粘贴的码立即生效）。
+        InviteEntries invites = new InviteEntries(bridge);
+        invites.rescan();
+        warmup.setCredentialSource(invites);
+        ClientEvents events = new ClientEvents(controller, warmup, bridge, invites);
 
         // 凭证包走频道自己的事件总线，tick 与连接事件走 FML 总线
         channel.register(events);

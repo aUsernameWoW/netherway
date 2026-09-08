@@ -119,6 +119,9 @@ Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者�
   别放行。
 - PROXY protocol 头：Go `TestProxyHeader` 与 Java SelfTest 的剥头向量钉住
   同一组字节。
+- 邀请码格式（`InviteCode`：前缀 `nw1-`、backend/键编码表、字典）是
+  服务端 mod ↔ 客户端 mod 之间的 Java↔Java 契约，append-only，由 SelfTest
+  钉住往返与拒绝路径。
 
 agent 的 stderr 是诊断通道：backend 的参数快照、被忽略的未知键、gonc 的
 打洞过程日志都会回显到这里，mod 逐行转进游戏日志（`bridge.debug`）。
@@ -357,6 +360,39 @@ ServerData 所以切换后仍在」是错的）——所以 `connectTo` 在清�
 **补不上 origin/会合点地址的凭证绝不落盘**（`rememberAsync` 里拦截）。
 缓存文件按「backend + origin + room」命名；两台服务即使共用 backend/room
 也不会覆盖。
+
+### 邀请码（2026-09-08 起）
+
+零入口场景：服务器没有任何公网 MC 入口时，凭证既到不了登录也到不了预认证。
+`server.rendezvous=false` + 显式 `brokers`（公共或自建）的凭证已经自足
+（sessionKey + brokers 即 agent 所需的一切），于是把它折成一段字符串交给
+玩家，玩家把它当作「服务器地址」粘进原版服务器列表：
+
+- **编码**：core `InviteCode`，`nw1-` + base64url（无 padding）的紧凑二进制
+  （版本字节、backend 编码表、u16 秒级超时、参数表：键编码表 + 值；值可打包
+  小写十六进制、或按 URL 片段字典编码）。**不复用 `Credentials.encode`**：
+  原版地址栏 1.7.10–1.20.1 一律上限 128 字符，逐字 UTF-8 的两个 broker URL
+  就超了。编码表与字典都是 append-only 的线上契约。默认参数约 50 字符，
+  两个 broker + STUN 约 112。
+- **服务端**只在凭证能自足时打印（`InviteCode.encode` 对带 `origin` 占位的
+  凭证返回 null → debug 说明；超长抛异常 → warn 点名参数）。三处启动日志
+  （forge ×2 `Netherway.logInviteCode`、modern `ServerRuntime`，bukkit 复用）。
+  日志行含密钥，服务端日志归服主；`sessionKey=auto` 下每次重启换码，所以每次
+  启动都打印。
+- **客户端身份**：邀请码条目没有 host:port，凭证的 origin 是合成的
+  `invite-<12 hex of SHA-256(码文)>` + 默认端口（`InviteCode.originOf`）。
+  哈希让密钥不进路由日志与缓存文件名；路由表与「玩家正连着哪台服务器」的桥接
+  都经 `ServerCandidates.parseEntry` 从条目文本推出同一个 origin，
+  `ServerCandidates.parse` 则跳过邀请码（预取无处可问）。
+- **来源不是缓存**：`WarmupController.CredentialSource`（平台层 `InviteEntries`
+  三份：forge ×2 与 modern shared）每轮被管理线程轮询，与缓存合并成希望集合
+  （同键来源覆盖缓存）；条目删掉下一轮即拆隧道。`InviteEntries.rescan` 读
+  servers.dat，启动时扫一次，多人界面开着时每秒重扫（玩家刚粘贴的码立即
+  开始打洞，不必重启）。经邀请码隧道进服后服务端照常下发的凭证被推导为同一
+  origin、命中重复分支，且 `rememberAsync` 对 `isInviteOrigin` 的凭证跳过落盘
+  ——缓存一份副本会让删掉条目后隧道仍活着。
+- 刻意不做：直连（Direct Connect）按钮里粘邀请码（没预热就没隧道，走原版
+  失败即可）、邀请码携带 MC 入口（有入口就直接填地址）。
 
 ### 就绪判断靠主动探测
 

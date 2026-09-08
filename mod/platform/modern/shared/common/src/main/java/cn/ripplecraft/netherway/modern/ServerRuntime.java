@@ -1,6 +1,7 @@
 package cn.ripplecraft.netherway.modern;
 
 import cn.ripplecraft.netherway.core.Credentials;
+import cn.ripplecraft.netherway.core.InviteCode;
 import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.PreauthService;
 import cn.ripplecraft.netherway.core.telemetry.TelemetryCollector;
@@ -124,6 +125,27 @@ public final class ServerRuntime {
             LOG.info(L10n.tr("fserver.willRunServe", cred.room()));
         } else {
             LOG.info(L10n.tr("fserver.noRunAgent", cred.room()));
+        }
+        logInviteCode(cred);
+    }
+
+    /**
+     * Hands the operator the invite code when the credential can stand alone
+     * (public brokers, no origin placeholder). Under sessionKey=auto the code
+     * changes every restart, which is exactly why it is printed every start.
+     * The line contains the session key; the server log is the operator's.
+     */
+    private static void logInviteCode(Credentials cred) {
+        try {
+            String invite = InviteCode.encode(cred);
+            if (invite != null) {
+                LOG.info(L10n.tr("fserver.inviteCode", invite));
+            } else {
+                LOG.debug(L10n.tr("fserver.inviteUnavailable",
+                        L10n.tr("invite.placeholder", Credentials.BROKER_ORIGIN)));
+            }
+        } catch (IllegalArgumentException e) {
+            LOG.warn(L10n.tr("fserver.inviteTooLarge", e.getMessage()));
         }
     }
 }

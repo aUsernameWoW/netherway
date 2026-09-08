@@ -11,6 +11,8 @@ import io.netty.buffer.ByteBuf;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiMultiplayer;
 import net.minecraft.network.NetworkManager;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -32,15 +34,21 @@ public final class ClientEvents {
 
     private static final Logger LOG = LogManager.getLogger(Netherway.MODID);
 
+    /** 多人界面开着时重扫邀请码的间隔（tick）；一秒一次读 servers.dat 可忽略不计。 */
+    private static final int INVITE_RESCAN_TICKS = 20;
+
     private final UpgradeController controller;
     private final WarmupController warmup;
     private final ForgeClientBridge bridge;
+    private final InviteEntries invites;
+    private int ticksUntilInviteRescan;
 
     public ClientEvents(UpgradeController controller, WarmupController warmup,
-                        ForgeClientBridge bridge) {
+                        ForgeClientBridge bridge, InviteEntries invites) {
         this.controller = controller;
         this.warmup = warmup;
         this.bridge = bridge;
+        this.invites = invites;
     }
 
     /** 服务端在我们的频道上发来了凭证。事件在 netty 线程触发。 */
@@ -70,7 +78,25 @@ public final class ClientEvents {
                 controller.onRedirectNotLanded();
                 controller.shutdown();
             }
+            rescanInvitesWhileListOpen();
         }
+    }
+
+    /**
+     * 玩家在多人界面上添加/编辑/删除条目都会立刻写回 servers.dat；界面开着时
+     * 每秒重扫一次，粘贴进去的邀请码不用重启游戏就开始预热。
+     */
+    private void rescanInvitesWhileListOpen() {
+        if (invites == null
+                || !(Minecraft.getMinecraft().currentScreen instanceof GuiMultiplayer)) {
+            ticksUntilInviteRescan = 0;
+            return;
+        }
+        if (--ticksUntilInviteRescan > 0) {
+            return;
+        }
+        ticksUntilInviteRescan = INVITE_RESCAN_TICKS;
+        invites.rescan();
     }
 
     @SubscribeEvent

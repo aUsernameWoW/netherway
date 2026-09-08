@@ -177,7 +177,10 @@ public final class ModernClientBridge implements ClientBridge {
         if (data == null || data.ip == null || data.ip.isEmpty()) {
             return switchOrigin;
         }
-        ServerCandidates.Address parsed = ServerCandidates.parse(data.ip);
+        // parseEntry maps an invite-code entry to the synthetic origin its
+        // credential carries, so the server's re-sent credential dedups
+        // against the adopted tunnel instead of spawning a second room.
+        ServerCandidates.Address parsed = ServerCandidates.parseEntry(data.ip);
         if (parsed == null || isLoopback(parsed.host)) {
             return switchOrigin;
         }

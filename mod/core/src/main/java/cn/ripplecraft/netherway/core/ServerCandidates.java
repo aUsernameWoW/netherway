@@ -123,6 +123,11 @@ public final class ServerCandidates {
         if (s.isEmpty() || s.startsWith("[")) {
             return null;
         }
+        // An invite code is a credential, not a host: there is nothing to
+        // preauth against (see parseEntry for the route-key view of it).
+        if (InviteCode.isInviteCode(s)) {
+            return null;
+        }
         int port = DEFAULT_PORT;
         int colon = s.indexOf(':');
         if (colon >= 0) {
@@ -145,6 +150,21 @@ public final class ServerCandidates {
             return null;
         }
         return new Address(host, port);
+    }
+
+    /**
+     * The address a server-list entry stands for when looking up runtime
+     * routes: a host[:port] parses as in {@link #parse}, an invite code maps
+     * to the synthetic origin its credential carries
+     * ({@link InviteCode#originOf}). Only the routers and the "which server
+     * am I on" bridges use this; prefetch candidates keep {@link #parse},
+     * which skips invite codes.
+     */
+    public static Address parseEntry(String address) {
+        if (InviteCode.isInviteCode(address)) {
+            return InviteCode.originOf(address);
+        }
+        return parse(address);
     }
 
     private static int parsePort(String s) {

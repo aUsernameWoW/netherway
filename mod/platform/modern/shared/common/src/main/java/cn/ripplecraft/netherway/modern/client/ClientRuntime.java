@@ -17,6 +17,7 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.ServerList;
 import net.minecraft.network.Connection;
@@ -35,15 +36,21 @@ public final class ClientRuntime {
 
     private static final Logger LOG = LogManager.getLogger("netherway");
 
+    /** 多人界面开着时重扫邀请码的间隔（tick）；一秒一次读 servers.dat 可忽略不计。 */
+    private static final int INVITE_RESCAN_TICKS = 20;
+
     private final ModernClientBridge bridge;
     private final UpgradeController controller;
     private final WarmupController warmup;
+    private final InviteEntries invites;
+    private int ticksUntilInviteRescan;
 
     private ClientRuntime(ModernClientBridge bridge, UpgradeController controller,
-                          WarmupController warmup) {
+                          WarmupController warmup, InviteEntries invites) {
         this.bridge = bridge;
         this.controller = controller;
         this.warmup = warmup;
+        this.invites = invites;
     }
 
     public ModernClientBridge bridge() {
@@ -73,6 +80,11 @@ public final class ClientRuntime {
         UpgradeController controller = new UpgradeController(
                 bridge, config.clientTimings(), cache, warmup, telemetry);
         controller.setRedirectOnWarmReady(config.redirectOnWarmReady());
+        // 服务器列表里的邀请码是缓存之外的凭证来源：启动时扫一遍，
+        // 多人界面开着时由 clientTick 每秒重扫（玩家刚粘贴的码立即生效）。
+        InviteEntries invites = new InviteEntries(bridge);
+        invites.rescan();
+        warmup.setCredentialSource(invites);
 
         // 覆盖模式下把路由表登记给 ConnectScreen/ServerStatusPinger 的 Mixin
         if (entryRouter.replacesEntries() && config.clientPrewarm()) {
@@ -81,7 +93,7 @@ public final class ClientRuntime {
         if (config.clientPrewarm()) {
             warmup.start();
         }
-        return new ClientRuntime(bridge, controller, warmup);
+        return new ClientRuntime(bridge, controller, warmup, invites);
     }
 
     /** 组装凭证预取器；缺任何前提返回 null，预热退回「只用缓存凭证」。 */
@@ -153,6 +165,23 @@ public final class ClientRuntime {
             controller.onRedirectNotLanded();
             controller.shutdown();
         }
+        rescanInvitesWhileListOpen();
+    }
+
+    /**
+     * 玩家在多人界面上添加/编辑/删除条目都会立刻写回 servers.dat；界面开着时
+     * 每秒重扫一次，粘贴进去的邀请码不用重启游戏就开始预热。
+     */
+    private void rescanInvitesWhileListOpen() {
+        if (!(Minecraft.getInstance().screen instanceof JoinMultiplayerScreen)) {
+            ticksUntilInviteRescan = 0;
+            return;
+        }
+        if (--ticksUntilInviteRescan > 0) {
+            return;
+        }
+        ticksUntilInviteRescan = INVITE_RESCAN_TICKS;
+        invites.rescan();
     }
 
     /** 新连接建立。 */

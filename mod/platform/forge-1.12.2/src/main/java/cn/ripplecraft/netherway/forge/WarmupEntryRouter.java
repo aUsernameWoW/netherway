@@ -94,12 +94,12 @@ final class WarmupEntryRouter implements WarmupController.Listener {
         }
     }
 
-    /** 返回点击该持久入口时应使用的 READY 路由；不做 DNS/SRV 查询。 */
+    /** 返回点击该持久入口时应使用的 READY 路由；不做 DNS/SRV 查询。邀请码条目按其合成 origin 查。 */
     Route resolve(String serverAddress) {
         if (!replaceEntries) {
             return null;
         }
-        ServerCandidates.Address address = ServerCandidates.parse(serverAddress);
+        ServerCandidates.Address address = ServerCandidates.parseEntry(serverAddress);
         return address == null ? null : routes.get(key(address.host, address.port));
     }
 

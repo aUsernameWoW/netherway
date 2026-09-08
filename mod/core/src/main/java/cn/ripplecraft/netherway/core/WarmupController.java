@@ -1,5 +1,6 @@
 package cn.ripplecraft.netherway.core;
 
+import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -51,6 +52,19 @@ public final class WarmupController {
      */
     public interface ReadyObserver {
         void onWarmTunnelReady(Credentials cred, AgentEvent event);
+    }
+
+    /**
+     * Credentials that exist outside the cache and outlive nothing: today the
+     * invite codes sitting in the player's server list ({@link InviteCode}).
+     * Polled every manager round on the warm-up thread; the result is merged
+     * after the cached credentials, so on a key clash the source wins. An
+     * entry that disappears from the source has its tunnel torn down on the
+     * next round, exactly like a cache file that went away. Implementations
+     * must be cheap and never throw.
+     */
+    public interface CredentialSource {
+        List<Credentials> current();
     }
 
     /** 平台层关心的时刻。回调在后台线程触发，实现自行转到游戏主线程。 */
@@ -123,6 +137,7 @@ public final class WarmupController {
     private volatile Thread worker;
     private volatile UpgradeGate upgradeGate;
     private volatile ReadyObserver readyObserver;
+    private volatile CredentialSource credentialSource;
     /** agent 最近探测出的 NAT 形态；宿主网络属性，各房间共享。 */
     private volatile QualitySummary.Nat lastNat = QualitySummary.Nat.UNKNOWN;
 
@@ -200,8 +215,7 @@ public final class WarmupController {
                     prefetcher.refresh(cache);
                 }
 
-                List<Credentials> cached = cache.loadAll();
-                reconcile(cached);
+                reconcile(desiredCredentials());
                 boolean empty;
                 synchronized (roomsLock) {
                     empty = rooms.isEmpty();
@@ -217,7 +231,10 @@ public final class WarmupController {
                 }
 
                 if (empty) {
-                    if (prefetcher == null) {
+                    // Nothing to do and no way for anything to appear later:
+                    // neither a prefetcher nor a credential source (a source
+                    // can start empty and grow when the player adds an invite).
+                    if (prefetcher == null && credentialSource == null) {
                         bridge.debug(L10n.tr("warmup.noCredentials"));
                         return;
                     }
@@ -246,8 +263,26 @@ public final class WarmupController {
         }
     }
 
-    /** 把缓存当作希望集合：新增目标建状态，参数轮换时重建对应隧道。 */
-    private void reconcile(List<Credentials> cached) {
+    /**
+     * The desired set for this round: everything in the cache, then whatever
+     * the {@link CredentialSource} currently holds. Later entries win in
+     * {@link #reconcile}'s keyed map, so a source credential overrides a
+     * cached one for the same target. Package-private for the self-test.
+     */
+    List<Credentials> desiredCredentials() throws IOException {
+        List<Credentials> out = new ArrayList<Credentials>(cache.loadAll());
+        CredentialSource source = credentialSource;
+        if (source != null) {
+            List<Credentials> extra = source.current();
+            if (extra != null) {
+                out.addAll(extra);
+            }
+        }
+        return out;
+    }
+
+    /** 把缓存当作希望集合：新增目标建状态，参数轮换时重建对应隧道。包内可见供自检直接驱动。 */
+    void reconcile(List<Credentials> cached) {
         Map<String, Credentials> desired = new LinkedHashMap<String, Credentials>();
         for (Credentials cred : cached) {
             desired.put(cred.dedupKey(), cred);
@@ -672,6 +707,16 @@ public final class WarmupController {
 
     public void setReadyObserver(ReadyObserver observer) {
         this.readyObserver = observer;
+    }
+
+    /**
+     * Installs the out-of-cache credential source. Set it before
+     * {@link #start()}: an empty cache with no prefetcher and no source ends
+     * the manager thread for good, whereas a source that is merely empty
+     * right now keeps it polling.
+     */
+    public void setCredentialSource(CredentialSource source) {
+        this.credentialSource = source;
     }
 
     private boolean upgradeBusy() {
