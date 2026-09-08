@@ -1,6 +1,7 @@
 package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.ClientBridge;
+import cn.ripplecraft.netherway.core.InviteCode;
 import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.ServerCandidates;
 import net.minecraftforge.fml.common.network.FMLEventChannel;
@@ -252,6 +253,12 @@ public final class ForgeClientBridge implements ClientBridge {
         ServerData data = mc.getCurrentServerData();
         if (data == null || data.serverIP == null || data.serverIP.isEmpty()) {
             return switchOrigin;
+        }
+        // An invite-code entry has no host: its identity is the synthetic
+        // origin the credential carries, so the server's re-sent credential
+        // dedups against the adopted tunnel instead of spawning a second room.
+        if (InviteCode.isInviteCode(data.serverIP)) {
+            return InviteCode.originOf(data.serverIP);
         }
         try {
             ServerAddress parsed = ServerAddress.fromString(data.serverIP);

@@ -141,6 +141,7 @@ public final class L10n {
         defConfig();
         defCfgComments();
         defTelemetry();
+        defInvite();
     }
 
     /** 玩家聊天栏可见的提示（经 notifyPlayer）。 */
@@ -1084,5 +1085,69 @@ public final class L10n {
         def("telemetry.previewFailedChat",
                 "Failed to write the telemetry preview: {0}",
                 "写入遥测预览失败: {0}");
+    }
+
+    /** Invite codes ({@link InviteCode}): server-side hand-out and client-side pickup. */
+    private static void defInvite() {
+        def("fserver.inviteCode",
+                "Invite code (players paste it as the server address in the multiplayer list; no reachable entry needed): {0}",
+                "邀请码（玩家把它填进多人游戏列表的服务器地址栏即可，不需要任何公网入口）: {0}");
+        def("fserver.inviteUnavailable",
+                "No invite code for this configuration: {0}",
+                "当前配置无法生成邀请码: {0}");
+        def("fserver.inviteTooLarge",
+                "Invite code not generated: {0}",
+                "未能生成邀请码: {0}");
+        def("invite.placeholder",
+                "the broker list still carries the \"{0}\" placeholder (embedded rendezvous); invite codes need public brokers — set rendezvous=false and list brokers in server.params",
+                "broker 列表仍是「{0}」占位（内嵌会合点）；邀请码需要公共 broker——把 rendezvous 设为 false 并在 server.params 里写 brokers");
+        def("invite.tooLong",
+                "the code would be {0} characters, above the {1}-character limit of the server address field; shorten the brokers list",
+                "邀请码长度 {0} 超过服务器地址栏的 {1} 字符上限，请缩短 brokers 列表");
+        def("invite.valueTooLong",
+                "parameter {0} exceeds {1} bytes and does not fit in an invite code",
+                "参数 {0} 超过 {1} 字节，放不进邀请码");
+        def("invite.tooManyParams",
+                "{0} parameters do not fit in an invite code",
+                "{0} 个参数放不进邀请码");
+        def("invite.badPrefix",
+                "not an invite code (expected the {0} prefix)",
+                "不是邀请码（应以 {0} 开头）");
+        def("invite.badBase64",
+                "the invite code is not valid base64url text",
+                "邀请码不是合法的 base64url 文本");
+        def("invite.badVersion",
+                "invite code format version {0} is not supported (this build reads version {1}); update the mod",
+                "不支持邀请码格式版本 {0}（本版本只认 {1}），请更新 mod");
+        def("invite.badBackendCode",
+                "unknown backend code {0} in the invite code",
+                "邀请码里的 backend 编码 {0} 无法识别");
+        def("invite.badKeyCode",
+                "unknown parameter code {0} in the invite code; update the mod",
+                "邀请码里的参数编码 {0} 无法识别，请更新 mod");
+        def("invite.badToken",
+                "unknown value encoding {0} in the invite code; update the mod",
+                "邀请码里的取值编码 {0} 无法识别，请更新 mod");
+        def("invite.trailingBytes",
+                "{0} unexpected trailing bytes in the invite code",
+                "邀请码末尾多出 {0} 个字节");
+        def("invite.truncated",
+                "the invite code is truncated",
+                "邀请码不完整");
+        def("invite.badCredentials",
+                "the invite code does not describe a usable credential: {0}",
+                "邀请码里的凭证不可用: {0}");
+        def("invite.invalid",
+                "A server-list entry looks like an invite code but could not be read: {0}",
+                "服务器列表里有一条像邀请码的条目但无法解读: {0}");
+        def("invite.found",
+                "Invite code in the server list: warming up room {0} as {1}",
+                "服务器列表里发现邀请码：按 {1} 为房间 {0} 预热");
+        def("invite.gone",
+                "Invite code entry {0} was removed from the server list; its tunnel will be closed",
+                "邀请码条目 {0} 已从服务器列表移除，对应隧道将关闭");
+        def("upgrade.skipCacheInvite",
+                "Credentials for room {0} came from an invite-code entry; not cached (the list entry is the source)",
+                "房间 {0} 的凭证来自邀请码条目，不写缓存（列表条目本身就是来源）");
     }
 }

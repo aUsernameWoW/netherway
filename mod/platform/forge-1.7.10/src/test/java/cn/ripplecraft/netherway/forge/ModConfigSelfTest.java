@@ -2,6 +2,7 @@ package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.AgentEvent;
 import cn.ripplecraft.netherway.core.Credentials;
+import cn.ripplecraft.netherway.core.InviteCode;
 import cpw.mods.fml.relauncher.FMLInjectionData;
 import java.io.File;
 import java.lang.reflect.Field;
@@ -32,7 +33,9 @@ public final class ModConfigSelfTest {
             goncBackendEmbedsRendezvousBroker(root);
             goncBackendKeepsExplicitBrokers(root);
             goncOriginWithoutRendezvousIsPassedThroughAndWarned(root);
+            inviteCodeFollowsBrokerChoice(root);
             runtimeRoutesExistOnlyWhileReady();
+            inviteEntriesRouteByTheirSyntheticOrigin();
             eventSubscriberIsExternallyAccessible();
             System.out.println("ModConfigSelfTest passed");
         } finally {
@@ -256,6 +259,60 @@ public final class ModConfigSelfTest {
         check("origin,tcp://broker.example.com:1883".equals(cred.param(Credentials.PARAM_BROKERS)),
                 "会合点关闭时 brokers 列表原样下发，不注入也不摘除");
         check(cred.needsRendezvousAddress(), "含 origin 的凭证自报缺地址");
+    }
+
+    /**
+     * The invite code is derived from the same credential the server hands
+     * out: none under the default embedded rendezvous (its broker is behind
+     * the Minecraft entry the invite is meant to replace), one that decodes
+     * back to the very same parameters once the operator names public
+     * brokers and turns the rendezvous off.
+     */
+    private static void inviteCodeFollowsBrokerChoice(Path root) throws Exception {
+        Path embedded = root.resolve("invite-embedded.cfg");
+        Files.write(embedded, "general {\n    S:language=en\n}\n".getBytes(StandardCharsets.UTF_8));
+        Credentials placeholder = new ModConfig(embedded.toFile()).serverCredentials();
+        check(InviteCode.encode(placeholder) == null,
+                "默认内嵌会合点的凭证不生成邀请码（broker 在 MC 入口后面）");
+
+        Path external = root.resolve("invite-external.cfg");
+        Files.write(external, (
+                "server {\n"
+                + "    S:backend=gonc-p2p\n"
+                + "    B:rendezvous=false\n"
+                + "    S:params <\n"
+                + "        sessionKey=auto\n"
+                + "        room=minecraft\n"
+                + "        brokers=tcp://broker.example.com:1883,tcp://broker2.example.com:1883\n"
+                + "     >\n"
+                + "}\n").getBytes(StandardCharsets.UTF_8));
+        ModConfig config = new ModConfig(external.toFile());
+        Credentials cred = config.serverCredentials();
+        String invite = InviteCode.encode(cred);
+        check(invite != null && invite.length() <= InviteCode.MAX_LENGTH,
+                "公共 broker 配置生成的邀请码放得进地址栏");
+        Credentials decoded = InviteCode.decode(invite);
+        check(decoded.params().equals(cred.params())
+                        && decoded.backendId().equals(cred.backendId()),
+                "邀请码解码回与下发凭证相同的参数表");
+        check(!invite.contains(cred.param("sessionKey")), "邀请码不含密钥明文");
+    }
+
+    /** Clicking an invite-code entry resolves through the same route table, keyed by its synthetic origin. */
+    private static void inviteEntriesRouteByTheirSyntheticOrigin() throws Exception {
+        WarmupEntryRouter router = new WarmupEntryRouter(true, null, null);
+        String invite = InviteCode.encode(Credentials.goncP2p(
+                "0123456789abcdef0123456789abcdef", "room",
+                "tcp://broker.example.com:1883", null, null, 0));
+        Credentials cred = InviteCode.decode(invite);
+        AgentEvent ready = AgentEvent.parse("{\"event\":\"ready\",\"port\":25598}");
+        check(router.resolve(invite) == null, "邀请码条目未就绪时不路由");
+        router.onTunnelReady(cred, ready);
+        WarmupEntryRouter.Route route = router.resolve("  " + invite + " ");
+        check(route != null && route.port == 25598, "邀请码条目 READY 后按合成 origin 路由到回环端口");
+        check(router.resolve("mc.example.com") == null, "别的条目不受邀请码路由影响");
+        router.onTunnelClosed(cred, 25598);
+        check(router.resolve(invite) == null, "邀请码隧道关闭后路由撤销");
     }
 
     private static void runtimeRoutesExistOnlyWhileReady() {

@@ -1,6 +1,7 @@
 package cn.ripplecraft.netherway.forge;
 
 import cn.ripplecraft.netherway.core.Credentials;
+import cn.ripplecraft.netherway.core.InviteCode;
 import cn.ripplecraft.netherway.core.L10n;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
@@ -165,6 +166,27 @@ public final class Netherway {
             LOG.info(L10n.tr("fserver.willRunServe", cred.room()));
         } else {
             LOG.info(L10n.tr("fserver.noRunAgent", cred.room()));
+        }
+        logInviteCode(cred);
+    }
+
+    /**
+     * Hands the operator the invite code when the credential can stand alone
+     * (public brokers, no origin placeholder). Under sessionKey=auto the code
+     * changes every restart, which is exactly why it is printed every start.
+     * The line contains the session key; the server log is the operator's.
+     */
+    private static void logInviteCode(Credentials cred) {
+        try {
+            String invite = InviteCode.encode(cred);
+            if (invite != null) {
+                LOG.info(L10n.tr("fserver.inviteCode", invite));
+            } else {
+                LOG.debug(L10n.tr("fserver.inviteUnavailable",
+                        L10n.tr("invite.placeholder", Credentials.BROKER_ORIGIN)));
+            }
+        } catch (IllegalArgumentException e) {
+            LOG.warn(L10n.tr("fserver.inviteTooLarge", e.getMessage()));
         }
     }
 }

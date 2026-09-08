@@ -99,6 +99,11 @@ public final class SelfTest {
         testUpgradeTelemetryLanding();
         testUpgradeTelemetryStaleRedirect();
         testUpgradeTelemetryRedirectFailure();
+        testInviteCodeRoundTrip();
+        testInviteCodeRejects();
+        testServerCandidatesSkipInviteCodes();
+        testWarmupCredentialSource();
+        testUpgradeDoesNotCacheInviteCredentials();
 
         System.out.println();
         System.out.println("通过 " + passed + "，失败 " + failed);
@@ -2821,6 +2826,268 @@ public final class SelfTest {
                 failPayload.contains("\"failureCode\":\"binary_extract_failed\""));
         check("serve 启动失败后不再记早退",
                 !failPayload.contains("agent_early_exit"));
+    }
+
+    // ---------- 邀请码 ----------
+
+    /**
+     * 邀请码是折进一个字符串的凭证，要能填进原版服务器地址栏（上限 128 字符）：
+     * 默认配置（32 位十六进制密钥 + 房间名）要远短于上限，带两个公共 broker
+     * 也要放得下；解码结果的参数表逐字相同，并带上按码文哈希出的合成 origin。
+     */
+    private static void testInviteCodeRoundTrip() throws Exception {
+        Credentials plain = Credentials.goncP2p("0123456789abcdef0123456789abcdef", "minecraft",
+                null, null, null, 15_000);
+        String code = InviteCode.encode(plain);
+        check("邀请码以约定前缀开头", code != null && code.startsWith(InviteCode.PREFIX));
+        check("默认配置的邀请码远短于地址栏上限（" + code.length() + " 字符）",
+                code.length() <= 64);
+        check("邀请码不含密钥明文", !code.contains("0123456789abcdef"));
+        check("邀请码被识别为邀请码", InviteCode.isInviteCode(code)
+                && InviteCode.isInviteCode("  " + code + " "));
+        check("普通地址不是邀请码", !InviteCode.isInviteCode("mc.example.com:25565")
+                && !InviteCode.isInviteCode(null));
+
+        Credentials back = InviteCode.decode(code);
+        check("邀请码解码 backend 一致", Credentials.BACKEND_GONC_P2P.equals(back.backendId()));
+        check("邀请码解码参数逐字一致", plain.params().equals(back.params()));
+        check("邀请码解码打洞超时按秒往返", back.punchTimeoutMs() == 15_000);
+        check("邀请码解码附带合成 origin",
+                back.hasOrigin() && InviteCode.isInviteOrigin(back)
+                        && back.originHost().startsWith("invite-")
+                        && back.originPort() == ServerCandidates.DEFAULT_PORT);
+        check("合成 origin 与按条目文本推导的一致",
+                InviteCode.originOf(code).equals(
+                        ServerCandidates.Address.of(back.originHost(), back.originPort())));
+        check("首尾空白不影响解码与 origin",
+                InviteCode.decode("  " + code + "\n").dedupKey().equals(back.dedupKey()));
+        check("origin 不泄露密钥", !back.originHost().contains("0123456789abcdef"));
+        check("普通凭证不是邀请码 origin",
+                !InviteCode.isInviteOrigin(sampleCredAt("r", "k")) && !InviteCode.isInviteOrigin(null));
+
+        // 带公共 broker、STUN 与网络钉死的完整参数表，也要放得进地址栏。
+        Credentials full = Credentials.goncP2p("0123456789abcdef0123456789abcdef", "minecraft",
+                "tcp://broker.example.com:1883,tcp://broker2.example.com:1883",
+                "stun.example.com:3478", "udp4", 0);
+        String fullCode = InviteCode.encode(full);
+        check("带两个 broker 的邀请码仍在 128 字符内（" + fullCode.length() + "）",
+                fullCode.length() <= InviteCode.MAX_LENGTH);
+        Credentials fullBack = InviteCode.decode(fullCode);
+        check("完整参数表往返一致", full.params().equals(fullBack.params())
+                && fullBack.punchTimeoutMs() == 0);
+        // 字典只对 ASCII 值生效；含非 ASCII 的值与字典词自身作为普通文本都要精确往返。
+        Credentials tricky = Credentials.goncP2p("k", "房间-tcp://", "tcp://tcp://:1883:1883,x",
+                "stun:stun", "any", 0);
+        check("字典词与非 ASCII 混排的值精确往返",
+                tricky.params().equals(InviteCode.decode(InviteCode.encode(tricky)).params()));
+        check("不同邀请码得到不同 origin", !fullBack.dedupKey().equals(back.dedupKey()));
+
+        // 非十六进制/大写密钥按原文携带；未知 backend 与未知键也能往返（不解释参数）。
+        java.util.Map<String, String> p = new java.util.LinkedHashMap<String, String>();
+        p.put(Credentials.PARAM_ROOM, "房间");
+        p.put("sessionKey", "ABCDEF0123456789ABCDEF0123456789");
+        p.put("custom", "值");
+        Credentials generic = new Credentials("future-backend", p, 61_500);
+        Credentials genericBack = InviteCode.decode(InviteCode.encode(generic));
+        check("未知 backend 的邀请码往返", "future-backend".equals(genericBack.backendId())
+                && p.equals(genericBack.params()));
+        check("非整秒的超时向上取整到秒", genericBack.punchTimeoutMs() == 62_000);
+        check("邀请码 toString 不出现密钥", !genericBack.toString().contains("ABCDEF"));
+    }
+
+    private static void testInviteCodeRejects() throws Exception {
+        Credentials placeholder = Credentials.goncP2p("k", "minecraft",
+                Credentials.BROKER_ORIGIN, null, null, 0);
+        check("带 origin 占位的凭证不生成邀请码（需要公共 broker）",
+                InviteCode.encode(placeholder) == null);
+        check("null 凭证不生成邀请码", InviteCode.encode(null) == null);
+
+        StringBuilder longBrokers = new StringBuilder();
+        for (int i = 0; i < 6; i++) {
+            longBrokers.append(i > 0 ? "," : "").append("tcp://broker").append(i)
+                    .append(".example.com:1883");
+        }
+        Credentials tooLong = Credentials.goncP2p("0123456789abcdef0123456789abcdef", "minecraft",
+                longBrokers.toString(), null, null, 0);
+        boolean refused = false;
+        String reason = "";
+        try {
+            InviteCode.encode(tooLong);
+        } catch (IllegalArgumentException e) {
+            refused = true;
+            reason = e.getMessage();
+        }
+        check("放不下的参数值被拒绝并点名参数", refused && reason.contains("brokers"));
+
+        // 每个值单独都放得下，合起来却超过地址栏上限。
+        StringBuilder key = new StringBuilder();
+        StringBuilder odd = new StringBuilder("tcp://");
+        for (int i = 0; i < 60; i++) {
+            key.append('x');
+            odd.append((char) ('a' + (i * 7) % 26));
+        }
+        Credentials overflow = Credentials.goncP2p(key.toString(), "minecraft",
+                odd.toString(), null, null, 0);
+        refused = false;
+        try {
+            InviteCode.encode(overflow);
+        } catch (IllegalArgumentException e) {
+            refused = true;
+            reason = e.getMessage();
+        }
+        check("超过地址栏上限的邀请码被拒绝并说明上限",
+                refused && reason.contains(String.valueOf(InviteCode.MAX_LENGTH)));
+
+        String good = InviteCode.encode(Credentials.goncP2p("0123456789abcdef0123456789abcdef",
+                "minecraft", null, null, null, 0));
+        check("无前缀文本解码失败", decodeFails("mc.example.com"));
+        check("前缀后是垃圾时解码失败", decodeFails(InviteCode.PREFIX + "!!!not base64!!!"));
+        check("截断的邀请码解码失败", decodeFails(good.substring(0, good.length() - 6)));
+        check("末尾多余字节解码失败", decodeFails(good + "AAAA"));
+        // 手工拼一个带 origin 占位的码：解码必须拒绝，不能让 agent 去拨名为 origin 的主机。
+        java.util.Map<String, String> p = new java.util.LinkedHashMap<String, String>();
+        p.put("sessionKey", "k");
+        p.put(Credentials.PARAM_ROOM, "r");
+        p.put(Credentials.PARAM_BROKERS, "tcp://x.example.com:1883");
+        String withBrokers = InviteCode.encode(new Credentials(Credentials.BACKEND_GONC_P2P, p, 0));
+        byte[] raw = java.util.Base64.getUrlDecoder().decode(
+                withBrokers.substring(InviteCode.PREFIX.length()));
+        raw[0] = 9; // 未来的格式版本
+        check("未知格式版本解码失败并提示更新", decodeFails(InviteCode.PREFIX
+                + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(raw)));
+        FakeBridge bridge = new FakeBridge(Files.createTempDirectory("netherway-invite"));
+        java.util.List<Credentials> found = InviteCode.collect(java.util.Arrays.asList(
+                "mc.example.com", good, InviteCode.PREFIX + "???", "  " + good + " "), bridge);
+        check("collect 只收合法邀请码、按条目顺序、允许重复", found.size() == 2
+                && found.get(0).dedupKey().equals(found.get(1).dedupKey()));
+        boolean warned = false;
+        for (String line : bridge.logs) {
+            if (line.startsWith("WARN ") && line.contains("像邀请码")) {
+                warned = true;
+            }
+        }
+        check("collect 对坏码告警而不中断", warned);
+        check("collect 容忍 null 列表", InviteCode.collect(null, bridge).isEmpty());
+    }
+
+    private static boolean decodeFails(String text) {
+        try {
+            InviteCode.decode(text);
+            return false;
+        } catch (java.io.IOException e) {
+            return e.getMessage() != null && !e.getMessage().isEmpty();
+        }
+    }
+
+    /** 预取候选跳过邀请码（无处可问），路由键却要把它映射到合成 origin。 */
+    private static void testServerCandidatesSkipInviteCodes() {
+        String code = InviteCode.encode(Credentials.goncP2p("0123456789abcdef0123456789abcdef",
+                "minecraft", null, null, null, 0));
+        check("parse 跳过邀请码", ServerCandidates.parse(code) == null);
+        List<ServerCandidates.Address> built = ServerCandidates.build(null,
+                java.util.Arrays.asList(code, "mc.example.com"));
+        check("候选列表不含邀请码", built.size() == 1 && "mc.example.com".equals(built.get(0).host));
+        ServerCandidates.Address entry = ServerCandidates.parseEntry(code);
+        check("parseEntry 把邀请码映射到合成 origin",
+                entry != null && entry.equals(InviteCode.originOf(code)));
+        check("parseEntry 对普通地址与 parse 一致",
+                ServerCandidates.parse("Play.Example.com:25566")
+                        .equals(ServerCandidates.parseEntry("Play.Example.com:25566")));
+        check("parseEntry 对回环仍返回 null", ServerCandidates.parseEntry("127.0.0.1:25565") == null);
+    }
+
+    /**
+     * 缓存之外的凭证来源（服务器列表里的邀请码）与缓存合并成希望集合：
+     * 来源新增即建状态，同键时来源覆盖缓存，来源撤下即拆隧道并通知平台层。
+     */
+    private static void testWarmupCredentialSource() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-warm-source");
+        CredentialCache cache = new CredentialCache(tmp.resolve("credentials"));
+        final List<String> lifecycle = new ArrayList<String>();
+        WarmupController.Listener listener = new WarmupController.Listener() {
+            @Override
+            public void onTunnelStarting(Credentials cred, int port) {
+            }
+
+            @Override
+            public void onTunnelClosed(Credentials cred, int port) {
+                lifecycle.add("closed:" + cred.room());
+            }
+        };
+        WarmupController warmup = new WarmupController(new FakeBridge(tmp), cache,
+                Timings.defaults(), listener, 0, null);
+        Credentials cached = sampleCredAt("cached-room", "k1");
+        cache.store(cached);
+        final List<Credentials> source = new ArrayList<Credentials>();
+        Credentials invite = InviteCode.decode(InviteCode.encode(
+                Credentials.goncP2p("0123456789abcdef0123456789abcdef", "invite-room",
+                        null, null, null, 0)));
+        source.add(invite);
+        warmup.setCredentialSource(new WarmupController.CredentialSource() {
+            @Override
+            public List<Credentials> current() {
+                return new ArrayList<Credentials>(source);
+            }
+        });
+
+        List<Credentials> desired = warmup.desiredCredentials();
+        check("希望集合 = 缓存 + 来源", desired.size() == 2
+                && desired.get(0).dedupKey().equals(cached.dedupKey())
+                && desired.get(1).dedupKey().equals(invite.dedupKey()));
+        warmup.reconcile(desired);
+        check("来源里的邀请码进入房间表", warmup.tracksForTest(invite) && warmup.tracksForTest(cached));
+
+        // 同键冲突：来源覆盖缓存
+        Credentials rotated = sampleCredAt("cached-room", "k2");
+        source.add(rotated);
+        warmup.reconcile(warmup.desiredCredentials());
+        check("同键时来源的参数覆盖缓存", warmup.tracksForTest(rotated));
+
+        warmup.injectReadyForTest(invite, AgentEvent.parse("{\"event\":\"ready\",\"port\":25596}"));
+        check("邀请码隧道可按端口反查", invite.dedupKey().equals(
+                warmup.credentialsForPort(25596).dedupKey()));
+        source.remove(invite);
+        warmup.reconcile(warmup.desiredCredentials());
+        check("邀请码从来源撤下即拆隧道", !warmup.tracksForTest(invite)
+                && lifecycle.contains("closed:invite-room"));
+        check("缓存里的邀请码不落盘", cache.loadAll().size() == 1);
+        warmup.shutdown();
+    }
+
+    /**
+     * 经邀请码条目进服后服务端照常下发凭证：origin 由平台层推导为合成的
+     * 邀请码 origin，这份凭证不得写进缓存——列表条目才是来源，删了条目
+     * 隧道就该消失。
+     */
+    private static void testUpgradeDoesNotCacheInviteCredentials() throws Exception {
+        Path tmp = Files.createTempDirectory("netherway-invite-cache");
+        FakeBridge bridge = new FakeBridge(tmp);
+        String code = InviteCode.encode(Credentials.goncP2p("0123456789abcdef0123456789abcdef",
+                "minecraft", "tcp://broker.example.com:1883", null, null, 0));
+        bridge.currentServer = InviteCode.originOf(code);
+        CredentialCache cache = new CredentialCache(tmp.resolve("credentials"));
+        WarmupController warmup = new WarmupController(bridge, cache, Timings.defaults(),
+                null, 0, null);
+        UpgradeController controller = new UpgradeController(bridge, Timings.defaults(), cache,
+                warmup, null);
+        Credentials fromServer = Credentials.goncP2p("0123456789abcdef0123456789abcdef",
+                "minecraft", "tcp://broker.example.com:1883", null, null, 0);
+        Credentials invite = InviteCode.decode(code);
+        // 玩家正经邀请码隧道游玩：采认后服务端的下发命中重复分支。
+        check("采认邀请码隧道", controller.adoptDirectConnection(invite,
+                AgentEvent.parse("{\"event\":\"ready\",\"port\":25597}")));
+        check("重复下发不再升级", !controller.onCredentials(fromServer));
+        boolean skipped = false;
+        for (String line : bridge.logs) {
+            if (line.contains("来自邀请码条目，不写缓存")) {
+                skipped = true;
+            }
+        }
+        check("邀请码 origin 的凭证跳过缓存并记 debug", skipped);
+        Thread.sleep(200);
+        check("缓存目录里没有邀请码凭证", cache.loadAll().isEmpty());
+        controller.shutdown();
+        warmup.shutdown();
     }
 
     private static void check(String name, boolean ok) {

@@ -620,6 +620,13 @@ public final class UpgradeController {
             bridge.debug(L10n.tr("upgrade.skipCache"));
             return;
         }
+        // An invite-code entry is its own source of truth (WarmupController's
+        // CredentialSource re-reads the server list): caching a copy would
+        // keep the tunnel alive after the player deleted the entry.
+        if (InviteCode.isInviteOrigin(cred)) {
+            bridge.debug(L10n.tr("upgrade.skipCacheInvite", cred.room()));
+            return;
+        }
         Thread worker = new Thread(new Runnable() {
             @Override
             public void run() {
