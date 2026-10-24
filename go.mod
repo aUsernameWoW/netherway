@@ -1,11 +1,11 @@
 module github.com/aUsernameWoW/netherway
 
-go 1.26.4
+go 1.26.9
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/mochi-mqtt/server/v2 v2.7.9
-	github.com/pires/go-proxyproto v0.15.0
+	github.com/pires/go-proxyproto v0.16.0
 	github.com/threatexpert/gonc/v2 v2.6.9
 	github.com/xtaci/smux v2.0.1+incompatible
 )
@@ -26,9 +26,9 @@ require (
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/xtaci/kcp-go/v5 v5.6.72 // indirect
 	github.com/xtaci/lossyconn v0.0.0-20200209145036-adba10fffc37 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
-	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/net v0.61.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
