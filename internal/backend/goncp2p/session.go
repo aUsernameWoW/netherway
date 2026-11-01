@@ -136,18 +136,29 @@ func muxConfig() *smux.Config {
 // process) then exits and the mod rebuilds the tunnel through its normal
 // retry path.
 func serveLocal(ctx context.Context, conn net.Conn, opts backend.Options) error {
+	// A listener handed in by the caller is owned from here on, even when
+	// the session cannot be set up, so it never leaks.
+	ln := opts.Listener
 	sess, err := smux.Client(conn, muxConfig())
 	if err != nil {
 		_ = conn.Close()
+		if ln != nil {
+			_ = ln.Close()
+		}
 		return err
 	}
 	defer sess.Close()
 
-	ln, err := net.Listen("tcp", net.JoinHostPort(opts.BindAddr, strconv.Itoa(opts.BindPort)))
-	if err != nil {
-		return err
+	if ln == nil {
+		ln, err = net.Listen("tcp", net.JoinHostPort(opts.BindAddr, strconv.Itoa(opts.BindPort)))
+		if err != nil {
+			return err
+		}
 	}
 	defer ln.Close()
+	if opts.OnListening != nil {
+		opts.OnListening()
+	}
 
 	// Transport death must unblock Accept immediately, and smux's IsClosed /
 	// CloseChan only flip on explicit Close or keepalive timeout — a socket

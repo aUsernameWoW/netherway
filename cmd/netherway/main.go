@@ -106,19 +106,24 @@ func cmdServe(args []string) error {
 	}
 }
 
-// pickPort prefers want and falls back to a system-assigned free port when
-// it is taken. tunnel mode reports the actual port in the STARTING event, so
-// the caller does not care which one it got.
-func pickPort(want int) (int, error) {
+// reserveListener binds a loopback listener on want, falling back to a
+// system-assigned free port when it is taken, and returns it still open.
+// Holding the listener (instead of probing a port and closing it again)
+// makes the reservation atomic: two agents on one machine, e.g. two modpacks
+// started side by side that both ask for the same default port, can never
+// both believe they own it. tunnel mode reports the actual port in the
+// STARTING event, so the caller does not care which one it got.
+func reserveListener(want int) (net.Listener, error) {
 	if want > 0 && portFree(want) {
-		return want, nil
+		if l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", want)); err == nil {
+			return l, nil
+		}
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return 0, i18n.Errorf("main.noFreePort", err)
+		return nil, i18n.Errorf("main.noFreePort", err)
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
+	return l, nil
 }
 
 func portFree(port int) bool {
