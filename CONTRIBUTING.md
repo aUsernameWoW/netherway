@@ -22,6 +22,15 @@ Contributions are licensed under the project's current license
   的 `SelfTest`（命令见 CLAUDE.md）。
   Run `go build ./... && go vet ./... && go test ./...` and the Java-side
   `SelfTest` locally (commands in CLAUDE.md).
+- 用 AI agent 写代码的话，请装上 `gopls` 和 `jdtls`：仓库已为 Claude Code
+  启用 `gopls-lsp`/`jdtls-lsp` 插件、为 Codex 挂了 `gopls mcp`，缺了二进制
+  agent 就只能靠文本搜索改跨 Go↔Java 的代码。安装方式见
+  [AGENTS.md](AGENTS.md)。
+  If you code with an AI agent, install `gopls` and `jdtls`: the repo
+  enables the `gopls-lsp`/`jdtls-lsp` plugins for Claude Code and wires
+  `gopls mcp` into Codex, and without the binaries the agent falls back to
+  plain text search across the Go↔Java contracts. See
+  [AGENTS.md](AGENTS.md) for install steps.
 - 示例地址用 `203.0.113.x` 和 `example.com`，真实服务器地址别写进代码、
   PR 描述或 commit message。
   Use `203.0.113.x` and `example.com` for example addresses; keep real

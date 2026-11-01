@@ -23,4 +23,9 @@ mod/platform/**/run/
 
 *.log
 
+# agent 的本机状态：项目级共享配置（.claude/settings.json、hooks、.codex/config.toml）要提交，
+# 个人覆盖与 worktree 不提交
+.claude/settings.local.json
+.claude/worktrees/
+
 .DS_Store
