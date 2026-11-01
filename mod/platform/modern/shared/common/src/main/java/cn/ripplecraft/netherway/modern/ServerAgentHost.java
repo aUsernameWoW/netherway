@@ -5,6 +5,7 @@ import cn.ripplecraft.netherway.core.Credentials;
 import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.Platform;
 import cn.ripplecraft.netherway.core.ServeCommand;
+import cn.ripplecraft.netherway.core.ShortCode;
 import cn.ripplecraft.netherway.core.telemetry.QualityObserver;
 import cn.ripplecraft.netherway.core.telemetry.QualitySummary;
 import cn.ripplecraft.netherway.core.telemetry.ServeTelemetry;
@@ -53,11 +54,15 @@ public final class ServerAgentHost {
     }
 
     /**
-     * 用一组独立参数起第二个 serve（短码）：它走默认公共 broker、不带内嵌会合点，
+     * 为短码起第二个 serve：参数换成短码派生值，走默认公共 broker、不带内嵌会合点，
      * 因为 Go 的 Serve 把 broker/STUN 列表写进进程级全局，同一进程无法同时服务
-     * 两套 broker 配置。
+     * 两套 broker 配置。调用方 start 时 rendezvousPort 传 0。
      */
-    public ServerAgentHost(ModConfig config, QualityObserver quality,
+    public static ServerAgentHost forShortCode(ModConfig config, String shortCode) {
+        return new ServerAgentHost(config, null, ShortCode.params(shortCode), "[serve:shortcode]");
+    }
+
+    private ServerAgentHost(ModConfig config, QualityObserver quality,
             Map<String, String> paramsOverride, String logTag) {
         this.config = config;
         this.paramsOverride = paramsOverride;

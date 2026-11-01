@@ -3,6 +3,7 @@ package cn.ripplecraft.netherway.forge;
 import cn.ripplecraft.netherway.core.Credentials;
 import cn.ripplecraft.netherway.core.InviteCode;
 import cn.ripplecraft.netherway.core.L10n;
+import cn.ripplecraft.netherway.core.ShortCode;
 import net.minecraftforge.fml.common.FMLCommonHandler;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.SidedProxy;
@@ -104,10 +105,9 @@ public final class Netherway {
         serverAgent.start(server.getFile("netherway").toPath(), port, rendezvousPort);
         String shortCode = config.serverShortCode();
         if (!shortCode.isEmpty()) {
-            shortCodeAgent = new ServerAgent(config, null,
-                    cn.ripplecraft.netherway.core.ShortCode.params(shortCode), "[serve:shortcode]");
+            shortCodeAgent = ServerAgent.forShortCode(config, shortCode);
             shortCodeAgent.start(server.getFile("netherway").toPath(), port, 0);
-            LOG.info(L10n.tr("shortcode.enabled", cn.ripplecraft.netherway.core.ShortCode.PREFIX));
+            LOG.info(L10n.tr("shortcode.enabled", ShortCode.PREFIX));
         }
     }
 

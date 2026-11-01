@@ -1141,11 +1141,11 @@ public final class L10n {
                 "A server-list entry looks like an invite code but could not be read: {0}",
                 "服务器列表里有一条像邀请码的条目但无法解读: {0}");
         def("invite.found",
-                "Invite code in the server list: warming up room {0} as {1}",
-                "服务器列表里发现邀请码：按 {1} 为房间 {0} 预热");
+                "Invite or short code in the server list: warming up room {0} as {1}",
+                "服务器列表里发现邀请码/短码：按 {1} 为房间 {0} 预热");
         def("invite.gone",
-                "Invite code entry {0} was removed from the server list; its tunnel will be closed",
-                "邀请码条目 {0} 已从服务器列表移除，对应隧道将关闭");
+                "Invite or short code entry {0} was removed from the server list; its tunnel will be closed",
+                "邀请码/短码条目 {0} 已从服务器列表移除，对应隧道将关闭");
         def("shortcode.badPrefix",
                 "not a short code (expected the {0} prefix followed by the code)",
                 "不是短码（应为 {0} 加短码）");

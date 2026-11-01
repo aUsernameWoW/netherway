@@ -245,14 +245,26 @@ public final class InviteCode {
         if (ShortCode.isShortCode(code)) {
             return ShortCode.originOf(code);
         }
-        return ServerCandidates.Address.of(ORIGIN_HOST_PREFIX + fingerprint(code),
-                ServerCandidates.DEFAULT_PORT);
+        return syntheticOrigin(ORIGIN_HOST_PREFIX, code);
     }
 
     /** True if the credential's origin was synthesised from an invite or short code. */
     public static boolean isInviteOrigin(Credentials cred) {
-        return cred != null && cred.hasOrigin()
-                && (cred.originHost().startsWith(ORIGIN_HOST_PREFIX) || ShortCode.isShortOrigin(cred));
+        if (cred == null || !cred.hasOrigin()) {
+            return false;
+        }
+        String host = cred.originHost();
+        return host.startsWith(ORIGIN_HOST_PREFIX) || host.startsWith(ShortCode.ORIGIN_HOST_PREFIX);
+    }
+
+    /**
+     * {@code <hostPrefix><12 hex of SHA-256(text)>} on the default port: the
+     * synthetic origin shape shared by invite and short codes. The hash keeps
+     * the key out of routing logs and cache file names.
+     */
+    static ServerCandidates.Address syntheticOrigin(String hostPrefix, String text) {
+        return ServerCandidates.Address.of(hostPrefix + fingerprint(text),
+                ServerCandidates.DEFAULT_PORT);
     }
 
     /**

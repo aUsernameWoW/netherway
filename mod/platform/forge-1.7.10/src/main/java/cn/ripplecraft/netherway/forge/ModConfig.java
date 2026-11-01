@@ -9,6 +9,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import net.minecraftforge.common.config.Configuration;
 import org.apache.logging.log4j.LogManager;
@@ -199,28 +200,13 @@ public final class ModConfig {
         serveProxyProtocol = pp;
         serverPreauth = cfg.getBoolean("preauth", "server", true,
                 L10n.tr("cfg.server.preauth"));
-        String shortCode = cfg.getString("shortCode", "server", "",
-                L10n.tr("cfg.server.shortCode")).trim();
-        if (ShortCode.normalize(shortCode).isEmpty()) {
-            shortCode = "";
+        List<String> shortCodeWarnings = new ArrayList<String>();
+        serverShortCode = ShortCode.fromConfig(
+                cfg.getString("shortCode", "server", "", L10n.tr("cfg.server.shortCode")),
+                serverRunAgent, serverEnabled, shortCodeWarnings);
+        for (String warning : shortCodeWarnings) {
+            LOG.warn(warning);
         }
-        if (!shortCode.isEmpty() && ShortCode.looksLikeHost(shortCode)) {
-            // 客户端把 nw-play.example.com 这类条目当普通地址，这样的短码玩家永远连不上
-            LOG.warn(L10n.tr("shortcode.looksLikeHost", shortCode));
-            shortCode = "";
-        }
-        if (!shortCode.isEmpty() && !serverRunAgent) {
-            // 监听短码玩家的是内置 serve（第二个进程）；没有它就没人听，按关闭处理
-            LOG.warn(L10n.tr("shortcode.needsRunAgent"));
-            shortCode = "";
-        }
-        if (!shortCode.isEmpty() && serverEnabled) {
-            String weak = ShortCode.strengthWarning(shortCode);
-            if (weak != null) {
-                LOG.warn(L10n.tr(weak));
-            }
-        }
-        serverShortCode = shortCode;
         // Forge 默认按字母排序，导致新人先看到 backend/localPort，再在文件末尾
         // 才发现模式开关。把「能否直接用」的四项放在 server 类目最前面。
         // Forge 1.7.10 会把配置里未列出的旧字段/拼错字段追加到传入列表。

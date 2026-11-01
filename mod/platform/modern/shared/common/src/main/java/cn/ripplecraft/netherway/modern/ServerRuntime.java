@@ -3,6 +3,7 @@ package cn.ripplecraft.netherway.modern;
 import cn.ripplecraft.netherway.core.Credentials;
 import cn.ripplecraft.netherway.core.InviteCode;
 import cn.ripplecraft.netherway.core.L10n;
+import cn.ripplecraft.netherway.core.ShortCode;
 import cn.ripplecraft.netherway.core.PreauthService;
 import cn.ripplecraft.netherway.core.telemetry.TelemetryCollector;
 import cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment;
@@ -83,10 +84,9 @@ public final class ServerRuntime {
         agent.start(workDir, port, rendezvousPort);
         String shortCode = config.serverShortCode();
         if (!shortCode.isEmpty()) {
-            shortCodeAgent = new ServerAgentHost(config, null,
-                    cn.ripplecraft.netherway.core.ShortCode.params(shortCode), "[serve:shortcode]");
+            shortCodeAgent = ServerAgentHost.forShortCode(config, shortCode);
             shortCodeAgent.start(workDir, port, 0);
-            LOG.info(L10n.tr("shortcode.enabled", cn.ripplecraft.netherway.core.ShortCode.PREFIX));
+            LOG.info(L10n.tr("shortcode.enabled", ShortCode.PREFIX));
         }
     }
 

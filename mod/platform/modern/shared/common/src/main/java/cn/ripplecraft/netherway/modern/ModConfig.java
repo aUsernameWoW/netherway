@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -175,28 +176,13 @@ public final class ModConfig {
         serveProxyProtocol = pp;
         serverPreauth = cfg.getBoolean("preauth", "server", true,
                 L10n.tr("cfg.server.preauth"));
-        String shortCode = cfg.getString("shortCode", "server", "",
-                L10n.tr("cfg.server.shortCode")).trim();
-        if (ShortCode.normalize(shortCode).isEmpty()) {
-            shortCode = "";
+        List<String> shortCodeWarnings = new ArrayList<String>();
+        serverShortCode = ShortCode.fromConfig(
+                cfg.getString("shortCode", "server", "", L10n.tr("cfg.server.shortCode")),
+                serverRunAgent, serverEnabled, shortCodeWarnings);
+        for (String warning : shortCodeWarnings) {
+            LOG.warn(warning);
         }
-        if (!shortCode.isEmpty() && ShortCode.looksLikeHost(shortCode)) {
-            // 客户端把 nw-play.example.com 这类条目当普通地址，这样的短码玩家永远连不上
-            LOG.warn(L10n.tr("shortcode.looksLikeHost", shortCode));
-            shortCode = "";
-        }
-        if (!shortCode.isEmpty() && !serverRunAgent) {
-            // 监听短码玩家的是内置 serve（第二个进程）；没有它就没人听，按关闭处理
-            LOG.warn(L10n.tr("shortcode.needsRunAgent"));
-            shortCode = "";
-        }
-        if (!shortCode.isEmpty() && serverEnabled) {
-            String weak = ShortCode.strengthWarning(shortCode);
-            if (weak != null) {
-                LOG.warn(L10n.tr(weak));
-            }
-        }
-        serverShortCode = shortCode;
         cfg.setCategoryPropertyOrder("server", new ArrayList<String>(Arrays.asList(
                 "enabled", "rendezvous", "runAgent", "params",
                 "backend", "localPort", "preauth", "punchTimeoutSeconds",

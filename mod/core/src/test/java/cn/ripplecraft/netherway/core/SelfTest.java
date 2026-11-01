@@ -3036,7 +3036,7 @@ public final class SelfTest {
                         && !cred.needsRendezvousAddress());
         check("短码凭证带合成 origin 且被识别为邀请类来源",
                 cred.hasOrigin() && cred.originHost().startsWith("short-")
-                        && InviteCode.isInviteOrigin(cred) && ShortCode.isShortOrigin(cred)
+                        && InviteCode.isInviteOrigin(cred)
                         && cred.originHost().equals(InviteCode.originOf("NW-hello").host));
         check("不同短码 origin 不同", !InviteCode.originOf("nw-aaa").equals(InviteCode.originOf("nw-bbb")));
         check("短码在 ServerCandidates 中与邀请码同待遇",
@@ -3049,10 +3049,31 @@ public final class SelfTest {
         check("collect 同时收短码并按 dedupKey 区分同一短码的重复条目",
                 found.size() == 2 && found.get(0).dedupKey().equals(found.get(1).dedupKey()));
 
-        check("过短短码告警", "shortcode.weakShort".equals(ShortCode.strengthWarning("nw-abc")));
-        check("字符过少告警", "shortcode.weakRepetitive".equals(ShortCode.strengthWarning("aaaaaaaaaa")));
+        check("过短短码告警", L10n.tr("shortcode.weakShort").equals(ShortCode.strengthWarning("nw-abc")));
+        check("字符过少告警", L10n.tr("shortcode.weakRepetitive").equals(ShortCode.strengthWarning("aaaaaaaaaa")));
         check("足够强度无告警", ShortCode.strengthWarning("nw-open sesame 42") == null
                 && ShortCode.strengthWarning("我的小世界我的小世界啊") == null);
+
+        java.util.List<String> warnings = new java.util.ArrayList<String>();
+        check("fromConfig：空 / 只有前缀视为关闭且不告警",
+                ShortCode.fromConfig(null, true, true, warnings).isEmpty()
+                        && ShortCode.fromConfig("  nw-  ", true, true, warnings).isEmpty()
+                        && warnings.isEmpty());
+        check("fromConfig：trim 后原样返回，强码不告警",
+                "nw-Open Sesame 42".equals(ShortCode.fromConfig("  nw-Open Sesame 42 ", true, true, warnings))
+                        && warnings.isEmpty());
+        check("fromConfig：形如域名禁用并告警",
+                ShortCode.fromConfig("nw-play.example.com", true, true, warnings).isEmpty()
+                        && warnings.size() == 1);
+        warnings.clear();
+        check("fromConfig：runAgent=false 禁用并告警",
+                ShortCode.fromConfig("open sesame 42", false, true, warnings).isEmpty()
+                        && warnings.size() == 1);
+        warnings.clear();
+        check("fromConfig：弱码照常启用但告警；服务端关闭时不告警",
+                "abc".equals(ShortCode.fromConfig("abc", true, true, warnings)) && warnings.size() == 1
+                        && "abc".equals(ShortCode.fromConfig("abc", true, false, warnings))
+                        && warnings.size() == 1);
     }
 
     private static final String SHORTCODE_HELLO_KEY =

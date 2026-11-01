@@ -3,12 +3,14 @@ package cn.ripplecraft.netherway.core;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.security.GeneralSecurityException;
-import java.security.MessageDigest;
 import java.text.Normalizer;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import javax.crypto.SecretKeyFactory;
@@ -171,52 +173,67 @@ public final class ShortCode {
      * Stable, derivable from the list entry alone, and does not reveal the key.
      */
     public static ServerCandidates.Address originOf(String text) {
-        return ServerCandidates.Address.of(ORIGIN_HOST_PREFIX + fingerprint(normalize(text)),
-                ServerCandidates.DEFAULT_PORT);
-    }
-
-    /** True if the credential's origin was synthesised from a short code. */
-    public static boolean isShortOrigin(Credentials cred) {
-        return cred != null && cred.hasOrigin() && cred.originHost().startsWith(ORIGIN_HOST_PREFIX);
+        return InviteCode.syntheticOrigin(ORIGIN_HOST_PREFIX, normalize(text));
     }
 
     /**
-     * Localization key of the warning a code deserves, or null if it looks
-     * acceptable: too short, or built from too few distinct characters (a
-     * password anyone can guess is an open door to the tunnel).
+     * Resolves {@code server.shortCode} as read from the config file into the
+     * code the server should serve, or {@code ""} when short codes are off.
+     * A code is switched off (with a warning) when it is empty after
+     * normalization, {@linkplain #looksLikeHost looks like a host name}, or
+     * when no built-in serve would listen for it ({@code runAgent=false}).
+     * Strength warnings are only raised when the server side is enabled.
+     *
+     * @param warnings receives localized warnings for the caller to log
+     */
+    public static String fromConfig(String raw, boolean runAgent, boolean serverEnabled,
+                                    List<String> warnings) {
+        String code = raw == null ? "" : raw.trim();
+        if (normalize(code).isEmpty()) {
+            return "";
+        }
+        if (looksLikeHost(code)) {
+            // 客户端把 nw-play.example.com 这类条目当普通地址，这样的短码玩家永远连不上
+            warnings.add(L10n.tr("shortcode.looksLikeHost", code));
+            return "";
+        }
+        if (!runAgent) {
+            // 监听短码玩家的是内置 serve（第二个进程）；没有它就没人听，按关闭处理
+            warnings.add(L10n.tr("shortcode.needsRunAgent"));
+            return "";
+        }
+        if (serverEnabled) {
+            String weak = strengthWarning(code);
+            if (weak != null) {
+                warnings.add(weak);
+            }
+        }
+        return code;
+    }
+
+    /**
+     * Localized warning a code deserves, or null if it looks acceptable: too
+     * short, or built from too few distinct characters (a password anyone can
+     * guess is an open door to the tunnel).
      */
     public static String strengthWarning(String text) {
         String code = normalize(text);
         if (code.codePointCount(0, code.length()) < MIN_RECOMMENDED_LENGTH) {
-            return "shortcode.weakShort";
+            return L10n.tr("shortcode.weakShort");
         }
         if (distinctCodePoints(code) < 4) {
-            return "shortcode.weakRepetitive";
+            return L10n.tr("shortcode.weakRepetitive");
         }
         return null;
     }
 
     private static int distinctCodePoints(String s) {
-        java.util.Set<Integer> seen = new java.util.HashSet<Integer>();
+        Set<Integer> seen = new HashSet<Integer>();
         for (int i = 0; i < s.length(); ) {
             int cp = s.codePointAt(i);
             seen.add(cp);
             i += Character.charCount(cp);
         }
         return seen.size();
-    }
-
-    private static String fingerprint(String code) {
-        try {
-            byte[] hash = MessageDigest.getInstance("SHA-256").digest(code.getBytes(UTF8));
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < 6; i++) {
-                sb.append(Character.forDigit((hash[i] >> 4) & 0xF, 16));
-                sb.append(Character.forDigit(hash[i] & 0xF, 16));
-            }
-            return sb.toString();
-        } catch (GeneralSecurityException e) {
-            throw new IllegalStateException(e); // every Java ships SHA-256
-        }
     }
 }
