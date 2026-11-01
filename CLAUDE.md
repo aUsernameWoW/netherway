@@ -311,6 +311,13 @@ stream、一条 NAT 规则都可以。gonc 默认的公共 broker 会破坏「�
   easyp2p 只用 QoS 1 非 retain 的精确 topic（钉在 `TestGoncSignalingInterop`：
   gonc 的 hello/wait 真跑在我们的 broker 上，bump gonc 或改 broker 能力都
   得过它）。
+- **监听器用自己的 `netListener`，不用 mochi 的 `listeners.NewNet`**：
+  mochi v2.7.9 的 `Net` 在 accept 循环与连接 goroutine 间共享 `err`
+  （`-race` 报竞争），且只关已完成 CONNECT 的连接——而 mochi 读 CONNECT
+  不设超时、`Server.Close` 又等所有连接 goroutine，经嗅探器转进来的半个
+  CONNECT 就能让 broker（连同 serve）永远关不掉。`netListener` 跟踪每条
+  已 accept 的连接、Close 时全部关掉，钉在 `TestCloseWhileClientsConnect`。
+  bump mochi 时可核对上游是否已修，修了也不急着换回。
 - **broker 匿名准入，但 ACL 只放精确 topic**（`signalbroker.aclHook`）：
   topic 是会话密钥的哈希、载荷由 easyp2p 加密，broker 拿到的全是不透明
   字节——前提是外人猜不到、也列不出 topic。嗅探器会把任何人发到 Minecraft
