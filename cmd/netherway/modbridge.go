@@ -267,9 +267,9 @@ func cmdTunnel(args []string) error {
 			Listener:    ln,
 			OnListening: func() { listeningOnce.Do(func() { close(listening) }) },
 			Timings:     timings,
-			LogLevel: logLevelOf(*verbose),
-			LogTo:    *logPath,
-			Logf:     diagf,
+			LogLevel:    logLevelOf(*verbose),
+			LogTo:       *logPath,
+			Logf:        diagf,
 			// The backend's own log lines are echoed to stderr and reach
 			// the game log through the mod: a failure only the tunnel
 			// library can explain no longer lives in a file alone.
