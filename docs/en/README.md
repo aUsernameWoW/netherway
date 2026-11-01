@@ -144,6 +144,11 @@ Note:
   repetitive.
 - Two servers using the same short code share one rendezvous, so a player may
   land on the other one ("cross-talk"). Keep your code unique.
+- A short code must not look like a host name: an entry such as
+  `nw-play.example.com` (only letters, digits, hyphens, with dots) stays an
+  ordinary server address (so real hosts with that name keep working), and the
+  server warns and disables a code of that shape. Codes with spaces or other
+  characters, or without dots, are unaffected.
 - The existing credentials, prefetch and invite codes are unchanged and can be
   used alongside. Like invite codes, short codes are never written to the
   client credential cache; removing the list entry closes its tunnel.

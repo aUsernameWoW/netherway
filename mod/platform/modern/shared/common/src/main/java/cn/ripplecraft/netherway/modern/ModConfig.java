@@ -180,6 +180,11 @@ public final class ModConfig {
         if (ShortCode.normalize(shortCode).isEmpty()) {
             shortCode = "";
         }
+        if (!shortCode.isEmpty() && ShortCode.looksLikeHost(shortCode)) {
+            // 客户端把 nw-play.example.com 这类条目当普通地址，这样的短码玩家永远连不上
+            LOG.warn(L10n.tr("shortcode.looksLikeHost", shortCode));
+            shortCode = "";
+        }
         if (!shortCode.isEmpty() && !serverRunAgent) {
             // 监听短码玩家的是内置 serve（第二个进程）；没有它就没人听，按关闭处理
             LOG.warn(L10n.tr("shortcode.needsRunAgent"));

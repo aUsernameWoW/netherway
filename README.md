@@ -24,6 +24,8 @@ Netherway 让这类服务器也能 P2P 直连：玩家和服务器打洞成功�
 
 目前提供 Forge 1.7.10、Forge 1.12.2、Forge/Fabric 1.16.5、1.18.2、1.20.1 以及 Bukkit（Spigot/Paper 1.13+，仅服务端）版本。安装、默认配置、可选功能和故障排查请阅读[完整中文文档](docs/zh-CN/README.md)。
 
+没有公网入口的服务器，服主可以在配置里设一个易记的短码（`server.shortCode`），玩家在多人游戏的服务器地址栏填 `nw-<短码>` 即可直连；短码相当于密码，详见完整文档的「短码」一节。
+
 ---
 
 ## English
@@ -44,6 +46,8 @@ Download the Netherway build matching your Minecraft version and platform from [
 - Bukkit: place the JAR in the server's `plugins/` folder.
 
 Builds are available for Forge 1.7.10, Forge 1.12.2, Forge/Fabric 1.16.5, 1.18.2 and 1.20.1, and Bukkit (Spigot/Paper 1.13+, server only). See the [complete English documentation](docs/en/README.md) for installation, default configuration, optional features, and troubleshooting.
+
+Servers without any public entry can set a memorable short code (`server.shortCode`); players then type `nw-<code>` as the server address in the multiplayer screen. The code acts as a password; see the "Short codes" section of the full documentation.
 
 ---
 

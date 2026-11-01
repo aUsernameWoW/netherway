@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 
@@ -55,6 +56,10 @@ public final class ShortCode {
     private static final int KEY_BITS = 256;
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
+    /** Normalized code (prefix stripped) that, with the prefix, is a dotted host[:port]. */
+    private static final Pattern HOST_LIKE =
+            Pattern.compile("[a-z0-9-]+(\\.[a-z0-9-]+)+\\.?(:[0-9]{1,5})?");
+
     /**
      * Derived keys by normalized code. The client re-reads the server list
      * every second on the game thread; PBKDF2 must run once per distinct code,
@@ -65,14 +70,29 @@ public final class ShortCode {
     private ShortCode() {
     }
 
-    /** True if the text (trimmed) is {@value #PREFIX} plus at least one character. */
+    /**
+     * True if the text (trimmed) is {@value #PREFIX} plus at least one character
+     * and does not {@linkplain #looksLikeHost look like a host name} — a real
+     * server such as {@code nw-play.example.com} must keep working as an address.
+     */
     public static boolean isShortCode(String text) {
         if (text == null) {
             return false;
         }
         String s = text.trim();
         return s.length() > PREFIX.length()
-                && s.regionMatches(true, 0, PREFIX, 0, PREFIX.length());
+                && s.regionMatches(true, 0, PREFIX, 0, PREFIX.length())
+                && !looksLikeHost(s);
+    }
+
+    /**
+     * True if {@value #PREFIX}{@code <code>} would read as a dotted host name
+     * (optionally with a port), e.g. {@code nw-play.example.com:25565}. Such
+     * entries stay ordinary addresses on the client, so the server must refuse
+     * a code of this shape. Accepts the code with or without the prefix.
+     */
+    public static boolean looksLikeHost(String text) {
+        return HOST_LIKE.matcher(normalize(text)).matches();
     }
 
     /**

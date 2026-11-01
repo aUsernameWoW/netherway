@@ -1161,6 +1161,9 @@ public final class L10n {
         def("shortcode.enabled",
                 "Short code enabled: players can enter {0}<code> as the server address. Keep the code private to your players; another server using the same code would share this rendezvous",
                 "短码已启用：玩家在服务器地址栏填写 {0}<短码> 即可直连。请只告诉你的玩家；另一台服务器若使用同一短码，会与本服共用会合点");
+        def("shortcode.looksLikeHost",
+                "server.shortCode {0} looks like a host name (letters, digits and dots only); clients keep treating such entries as ordinary addresses, so the short code is disabled. Use a code with a space or other character, or without dots",
+                "server.shortCode {0} 形如域名（只含字母、数字和点）；客户端会把这类条目当作普通地址，因此短码被禁用。请换一个含空格等其他字符、或不含点的短码");
         def("shortcode.needsRunAgent",
                 "server.shortCode is set but server.runAgent=false: the built-in serve is what listens for short-code players, so the short code is disabled",
                 "设置了 server.shortCode 但 server.runAgent=false：监听短码玩家的是内置 serve，因此短码被禁用");

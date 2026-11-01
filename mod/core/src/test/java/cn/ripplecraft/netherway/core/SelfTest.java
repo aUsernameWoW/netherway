@@ -3004,6 +3004,14 @@ public final class SelfTest {
         check("空短码 / 邀请码 / 域名不是短码", !ShortCode.isShortCode("nw-")
                 && !ShortCode.isShortCode("nw1-abc") && !ShortCode.isShortCode("nw")
                 && !ShortCode.isShortCode("mc.example.com") && !ShortCode.isShortCode(null));
+        check("nw- 开头的真实域名仍是普通地址", !ShortCode.isShortCode("nw-play.example.com")
+                && !ShortCode.isShortCode("NW-Play.Example.com:25565")
+                && !InviteCode.isInviteCode("nw-mc.example.com.")
+                && ShortCode.looksLikeHost("nw-play.example.com")
+                && "nw-play.example.com".equals(ServerCandidates.parseEntry("nw-play.example.com").host));
+        check("含点但不像域名的短码照常识别", ShortCode.isShortCode("nw-v1.2 survival")
+                && ShortCode.isShortCode("nw-我的.服务器") && ShortCode.isShortCode("nw-play")
+                && ShortCode.isShortCode("nw-a.b_c") && !ShortCode.looksLikeHost("nw-open sesame"));
         check("邀请码前缀不会被当成短码", !ShortCode.isShortCode(InviteCode.PREFIX + "xyz")
                 && InviteCode.isInviteCode(InviteCode.PREFIX + "xyz"));
         check("规范化：大小写、全角、前缀有无都等价",

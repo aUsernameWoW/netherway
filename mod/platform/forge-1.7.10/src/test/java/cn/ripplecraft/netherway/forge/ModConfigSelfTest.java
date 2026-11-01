@@ -133,39 +133,26 @@ public final class ModConfigSelfTest {
     /** server.shortCode：默认关闭；设置后 getter 原样返回；runAgent=false 或只写前缀时按关闭处理。 */
     private static void shortCodeConfig(Path root) throws Exception {
         Path fresh = root.resolve("shortcode-default.cfg");
-        Files.write(fresh, "general {
-    S:language=en
-}
-".getBytes(StandardCharsets.UTF_8));
+        Files.write(fresh, "general {\n    S:language=en\n}\n".getBytes(StandardCharsets.UTF_8));
         ModConfig defaults = new ModConfig(fresh.toFile());
         check(defaults.serverShortCode().isEmpty(), "短码默认关闭");
         String saved = new String(Files.readAllBytes(fresh), StandardCharsets.UTF_8);
         check(saved.contains("S:shortCode="), "回写的 cfg 应列出 shortCode 键供服主填写");
 
         Path on = root.resolve("shortcode-on.cfg");
-        Files.write(on, ("server {
-    S:shortCode=  nw-Open Sesame 42 
-}
-")
+        Files.write(on, ("server {\n    S:shortCode=  nw-Open Sesame 42 \n}\n")
                 .getBytes(StandardCharsets.UTF_8));
         check("nw-Open Sesame 42".equals(new ModConfig(on.toFile()).serverShortCode()),
                 "短码应 trim 后原样返回");
 
         Path noAgent = root.resolve("shortcode-no-agent.cfg");
-        Files.write(noAgent, ("server {
-    B:runAgent=false
-    S:shortCode=open-sesame-42
-}
-")
+        Files.write(noAgent, ("server {\n    B:runAgent=false\n    S:shortCode=open-sesame-42\n}\n")
                 .getBytes(StandardCharsets.UTF_8));
         check(new ModConfig(noAgent.toFile()).serverShortCode().isEmpty(),
                 "runAgent=false 时短码没人监听，应按关闭处理");
 
         Path prefixOnly = root.resolve("shortcode-prefix-only.cfg");
-        Files.write(prefixOnly, "server {
-    S:shortCode=nw-
-}
-".getBytes(StandardCharsets.UTF_8));
+        Files.write(prefixOnly, "server {\n    S:shortCode=nw-\n}\n".getBytes(StandardCharsets.UTF_8));
         check(new ModConfig(prefixOnly.toFile()).serverShortCode().isEmpty(),
                 "只有前缀没有内容不算短码");
     }
