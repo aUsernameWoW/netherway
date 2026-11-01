@@ -82,6 +82,16 @@ JAVA_HOME=/Library/Java/JavaVirtualMachines/zulu-21.jdk/Contents/Home ./gradlew 
 下载大文件常被掐断且不会断点续传：先用 `curl -L -C -` 把大件补进 `~/.m2`
 对应路径（`settings.gradle` 里 `mavenLocal()` 排最前就是为这个）。
 
+### Agent 的代码智能工具（必装）
+
+`.claude/settings.json` 启用官方 marketplace 的 `gopls-lsp` 与
+`jdtls-lsp` 插件，SessionStart 钩子（`.claude/hooks/check-tools.sh`）在
+`gopls`/`jdtls` 不在 PATH 上时提醒；Codex 经 `.codex/config.toml` 挂
+`gopls mcp`。安装命令见 `AGENTS.md`。找引用、改契约字段、删 i18n key
+前先用 LSP 查引用，不要只靠文本搜索。jdtls 对 `mod/core` 走无构建文件的
+松散源码模式，对平台层会尝试导入 Gradle 工程（RFG/Loom，需 Java 21+），
+首次索引慢属正常。
+
 ## 架构
 
 ### 两侧之间的契约

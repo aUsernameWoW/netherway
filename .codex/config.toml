@@ -1,0 +1,7 @@
+# Codex 项目级配置（仅对已信任的项目生效）。
+# Codex 没有 LSP 插件机制；gopls 自带 MCP 模式（gopls v0.20+），提供与
+# Claude Code 的 gopls-lsp 插件相当的跳转/引用/诊断能力。安装：
+#   go install golang.org/x/tools/gopls@latest
+[mcp_servers.gopls]
+command = "gopls"
+args = ["mcp"]
