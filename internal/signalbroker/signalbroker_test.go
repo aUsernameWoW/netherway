@@ -151,6 +151,48 @@ func TestCloseIsIdempotentAndContextCloses(t *testing.T) {
 	}
 }
 
+// TestCloseWhileClientsConnect pins netListener's shutdown path: closing
+// the broker while connections are still before or inside CONNECT. With
+// mochi's listeners.Net this was a data race under -race (shared err in
+// the accept loop) and, for a peer that sent half a CONNECT and stalled,
+// a Close that never returned.
+func TestCloseWhileClientsConnect(t *testing.T) {
+	// fixed header CONNECT + remaining length 16, then only the start of
+	// the protocol name: mochi blocks reading the rest, with no deadline
+	partial := []byte{0x10, 0x10, 0x00, 0x04, 'M', 'Q'}
+	for i := 0; i < 10; i++ {
+		port := freePort(t)
+		svc, err := Start(t.Context(), Options{BindPort: port})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for j := 0; j < 4; j++ {
+			c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			if j%2 == 0 {
+				if _, err := c.Write(partial); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond) // let the broker accept them
+
+		closed := make(chan struct{})
+		go func() {
+			svc.Close()
+			close(closed)
+		}()
+		select {
+		case <-closed:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Close hangs while peers are stalled inside CONNECT")
+		}
+	}
+}
+
 // TestGoncSignalingInterop is the behavior-level guard: gonc's own
 // hello/wait signaling (easyp2p) must complete over OUR broker.
 // Compiling is not enough: a broker capability we switch off, or a

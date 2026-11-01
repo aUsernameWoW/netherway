@@ -50,7 +50,6 @@ import (
 	"sync/atomic"
 
 	mqtt "github.com/mochi-mqtt/server/v2"
-	"github.com/mochi-mqtt/server/v2/listeners"
 	"github.com/mochi-mqtt/server/v2/packets"
 
 	"github.com/aUsernameWoW/netherway/internal/i18n"
@@ -160,7 +159,7 @@ func Start(ctx context.Context, opts Options) (*Service, error) {
 		_ = ln.Close()
 		return nil, i18n.Errorf("sb.start", err)
 	}
-	if err := srv.AddListener(listeners.NewNet("signal", ln)); err != nil {
+	if err := srv.AddListener(newNetListener("signal", ln)); err != nil {
 		_ = ln.Close()
 		return nil, i18n.Errorf("sb.start", err)
 	}
