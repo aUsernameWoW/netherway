@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aUsernameWoW/netherway/internal/backend"
@@ -193,11 +195,18 @@ func cmdTunnel(args []string) error {
 	// Default to an automatically assigned port: the player's machine may
 	// well have its own 25565 open, and the mod reads the port from the
 	// status output anyway.
-	port, err := pickPort(*wantPort)
+	//
+	// The listener stays open from here on and is handed to the backend:
+	// the port is ours from this moment, not only once the punch succeeds.
+	// Otherwise a second agent on the machine (another modpack asking for
+	// the same default port) would read the first one's tunnel as its own.
+	ln, err := reserveListener(*wantPort)
 	if err != nil {
 		emit(failedEvent(failureStageStart, failureCodeBindPortFailed, err.Error()))
 		return err
 	}
+	defer ln.Close() // no-op once the backend took ownership
+	port := ln.Addr().(*net.TCPAddr).Port
 
 	if *logPath == "" {
 		*logPath = filepath.Join(os.TempDir(), "netherway-tunnel.log")
@@ -249,14 +258,18 @@ func cmdTunnel(args []string) error {
 	}.Normalize()
 
 	tunnelErr := make(chan error, 1)
+	listening := make(chan struct{})
+	var listeningOnce sync.Once
 	go func() {
 		tunnelErr <- b.Run(ctx, merged, backend.Options{
-			BindAddr: "127.0.0.1",
-			BindPort: port,
-			Timings:  timings,
-			LogLevel: logLevelOf(*verbose),
-			LogTo:    *logPath,
-			Logf:     diagf,
+			BindAddr:    "127.0.0.1",
+			BindPort:    port,
+			Listener:    ln,
+			OnListening: func() { listeningOnce.Do(func() { close(listening) }) },
+			Timings:     timings,
+			LogLevel:    logLevelOf(*verbose),
+			LogTo:       *logPath,
+			Logf:        diagf,
 			// The backend's own log lines are echoed to stderr and reach
 			// the game log through the mod: a failure only the tunnel
 			// library can explain no longer lives in a file alone.
@@ -271,6 +284,17 @@ func cmdTunnel(args []string) error {
 	rttCh := make(chan time.Duration, 1)
 	probeErr := make(chan error, 1)
 	go func() {
+		// Probe only once the backend is accepting on our own listener:
+		// until the punch succeeds nothing behind this port is the tunnel,
+		// and an early probe could only succeed by hitting someone else.
+		select {
+		case <-listening:
+		case <-time.After(time.Until(deadline)):
+			probeErr <- i18n.Errorf("tunnel.notReadyIn", *timeout)
+			return
+		case <-ctx.Done():
+			return
+		}
 		st, rtt, err := mcping.WaitReady("127.0.0.1", port, deadline,
 			timings.ProbeInterval, timings.ProbeTimeout)
 		if err != nil {

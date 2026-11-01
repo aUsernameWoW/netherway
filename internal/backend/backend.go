@@ -15,6 +15,7 @@ package backend
 import (
 	"context"
 	"io"
+	"net"
 	"sort"
 
 	"github.com/aUsernameWoW/netherway/internal/config"
@@ -27,6 +28,18 @@ type Options struct {
 	// connecting to it is connecting to the Minecraft server.
 	BindAddr string
 	BindPort int
+	// Listener, when non-nil, is an already-bound listener the backend must
+	// serve on instead of opening BindAddr:BindPort itself. The caller binds
+	// early so the port is reserved atomically: several agents on one machine
+	// (two modpacks running side by side) can never end up believing they
+	// own the same port. The backend owns the listener from then on and
+	// closes it on return.
+	Listener net.Listener
+	// OnListening, when non-nil, is called once the backend is accepting
+	// connections on the local listener. Anything dialing the port before
+	// this point is not talking to this tunnel yet, so readiness probes must
+	// wait for it.
+	OnListening func()
 	// Timings, normalized by the caller.
 	Timings config.Timings
 	// LogLevel/LogTo direct the backend's own log output. In tunnel mode

@@ -264,6 +264,65 @@ func TestMuxGlue(t *testing.T) {
 	}
 }
 
+// TestServeLocalUsesGivenListener pins the cross-talk fix: a listener bound
+// by the caller is the one served on (the port stays reserved from the start),
+// and OnListening fires only once the backend is really accepting on it.
+func TestServeLocalUsesGivenListener(t *testing.T) {
+	serverEnd, clientEnd := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		sess, err := newTestMuxServer(serverEnd)
+		if err != nil {
+			return
+		}
+		defer sess.Close()
+		<-ctx.Done()
+	}()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+
+	listening := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- serveLocal(ctx, clientEnd, backend.Options{
+			BindAddr: "127.0.0.1", BindPort: 1, // must be ignored: Listener wins
+			Listener:    ln,
+			OnListening: func() { close(listening) },
+		})
+	}()
+
+	select {
+	case <-listening:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnListening was not called")
+	}
+	c, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatalf("given listener is not being served: %v", err)
+	}
+	c.Close()
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serveLocal after cancel = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveLocal did not return after cancel")
+	}
+	// serveLocal owns the listener and must have closed it.
+	if c, err := net.DialTimeout("tcp", addr, 500*time.Millisecond); err == nil {
+		c.Close()
+		t.Fatal("listener still open after serveLocal returned")
+	}
+}
+
 // TestSessionLoss pins the failure contract: when the transport under the
 // mux dies, serveLocal must return a non-nil error so the agent process
 // exits and the mod rebuilds the tunnel.
