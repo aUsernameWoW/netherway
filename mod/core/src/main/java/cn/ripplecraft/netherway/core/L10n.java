@@ -1146,6 +1146,27 @@ public final class L10n {
         def("invite.gone",
                 "Invite code entry {0} was removed from the server list; its tunnel will be closed",
                 "邀请码条目 {0} 已从服务器列表移除，对应隧道将关闭");
+        def("shortcode.badPrefix",
+                "not a short code (expected the {0} prefix followed by the code)",
+                "不是短码（应为 {0} 加短码）");
+        def("shortcode.badCredentials",
+                "the short code does not describe a usable credential: {0}",
+                "短码无法生成可用凭证: {0}");
+        def("shortcode.weakShort",
+                "server.shortCode is shorter than 8 characters; anyone who guesses it can reach this server through the tunnel (the whitelist still applies). Use a longer code",
+                "server.shortCode 不足 8 个字符；任何人猜中它都能经隧道连到本服务器（白名单仍然生效）。建议使用更长的短码");
+        def("shortcode.weakRepetitive",
+                "server.shortCode uses too few distinct characters and is easy to guess; use a more varied code",
+                "server.shortCode 用到的不同字符太少，容易被猜中；建议使用更丰富的短码");
+        def("shortcode.enabled",
+                "Short code enabled: players can enter {0}<code> as the server address. Keep the code private to your players; another server using the same code would share this rendezvous",
+                "短码已启用：玩家在服务器地址栏填写 {0}<短码> 即可直连。请只告诉你的玩家；另一台服务器若使用同一短码，会与本服共用会合点");
+        def("shortcode.needsRunAgent",
+                "server.shortCode is set but server.runAgent=false: the built-in serve is what listens for short-code players, so the short code is disabled",
+                "设置了 server.shortCode 但 server.runAgent=false：监听短码玩家的是内置 serve，因此短码被禁用");
+        def("cfg.server.shortCode",
+                "Short code (optional; empty = off). Players enter nw-<code> as the server address and connect over P2P without any credential. The code is a password: use 8+ varied characters and share it only with your players. Needs runAgent=true. Case-insensitive",
+                "短码（可选，留空 = 关闭）。玩家在服务器地址栏填写 nw-<短码> 即可 P2P 直连，无需任何凭证。短码即密码：请使用 8 个以上、字符丰富的短码，只告诉你的玩家。需要 runAgent=true。不区分大小写");
         def("upgrade.skipCacheInvite",
                 "Credentials for room {0} came from an invite-code entry; not cached (the list entry is the source)",
                 "房间 {0} 的凭证来自邀请码条目，不写缓存（列表条目本身就是来源）");

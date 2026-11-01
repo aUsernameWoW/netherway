@@ -102,6 +102,7 @@ public final class SelfTest {
         testInviteCodeRoundTrip();
         testInviteCodeRejects();
         testServerCandidatesSkipInviteCodes();
+        testShortCode();
         testWarmupCredentialSource();
         testUpgradeDoesNotCacheInviteCredentials();
 
@@ -2995,6 +2996,59 @@ public final class SelfTest {
                         .equals(ServerCandidates.parseEntry("Play.Example.com:25566")));
         check("parseEntry 对回环仍返回 null", ServerCandidates.parseEntry("127.0.0.1:25565") == null);
     }
+
+    /** 短码：识别、规范化、确定性派生、凭证与合成 origin，以及与邀请码共用的入口。 */
+    private static void testShortCode() throws Exception {
+        check("nw- 加内容是短码", ShortCode.isShortCode("nw-我的服务器")
+                && ShortCode.isShortCode("  NW-Abc  "));
+        check("空短码 / 邀请码 / 域名不是短码", !ShortCode.isShortCode("nw-")
+                && !ShortCode.isShortCode("nw1-abc") && !ShortCode.isShortCode("nw")
+                && !ShortCode.isShortCode("mc.example.com") && !ShortCode.isShortCode(null));
+        check("邀请码前缀不会被当成短码", !ShortCode.isShortCode(InviteCode.PREFIX + "xyz")
+                && InviteCode.isInviteCode(InviteCode.PREFIX + "xyz"));
+        check("规范化：大小写、全角、前缀有无都等价",
+                ShortCode.normalize("NW-Hello").equals("hello")
+                        && ShortCode.normalize("ＨＥＬＬＯ").equals("hello")
+                        && ShortCode.normalize("  nw-hello ").equals("hello"));
+
+        String key = ShortCode.deriveSessionKey("nw-Hello World");
+        check("派生密钥确定且与大小写无关", key.equals(ShortCode.deriveSessionKey("NW-hello world"))
+                && key.equals(ShortCode.deriveSessionKey("hello world")));
+        check("不同短码派生不同密钥", !key.equals(ShortCode.deriveSessionKey("nw-hello worle")));
+        check("密钥是 43 字符 base64url（256 位）", key.length() == 43 && key.matches("[A-Za-z0-9_-]+"));
+        // 固定向量：钉住 PBKDF2WithHmacSHA256 / 盐 / 迭代数，改动会让新旧版本互相连不上
+        check("派生密钥固定向量", ShortCode.deriveSessionKey("nw-hello").equals(SHORTCODE_HELLO_KEY));
+
+        Credentials cred = InviteCode.decode("nw-Hello");
+        check("短码凭证：gonc-p2p / 固定房间 / 派生密钥",
+                Credentials.BACKEND_GONC_P2P.equals(cred.backendId())
+                        && ShortCode.ROOM.equals(cred.room())
+                        && ShortCode.deriveSessionKey("hello").equals(cred.params().get("sessionKey"))
+                        && !cred.params().containsKey(Credentials.PARAM_BROKERS)
+                        && !cred.needsRendezvousAddress());
+        check("短码凭证带合成 origin 且被识别为邀请类来源",
+                cred.hasOrigin() && cred.originHost().startsWith("short-")
+                        && InviteCode.isInviteOrigin(cred) && ShortCode.isShortOrigin(cred)
+                        && cred.originHost().equals(InviteCode.originOf("NW-hello").host));
+        check("不同短码 origin 不同", !InviteCode.originOf("nw-aaa").equals(InviteCode.originOf("nw-bbb")));
+        check("短码在 ServerCandidates 中与邀请码同待遇",
+                ServerCandidates.parse("nw-hello") == null
+                        && InviteCode.originOf("nw-hello").equals(ServerCandidates.parseEntry("nw-hello")));
+
+        FakeBridge bridge = new FakeBridge(Files.createTempDirectory("netherway-shortcode"));
+        java.util.List<Credentials> found = InviteCode.collect(java.util.Arrays.asList(
+                "mc.example.com", "nw-hello", "nw-", "NW-Hello"), bridge);
+        check("collect 同时收短码并按 dedupKey 区分同一短码的重复条目",
+                found.size() == 2 && found.get(0).dedupKey().equals(found.get(1).dedupKey()));
+
+        check("过短短码告警", "shortcode.weakShort".equals(ShortCode.strengthWarning("nw-abc")));
+        check("字符过少告警", "shortcode.weakRepetitive".equals(ShortCode.strengthWarning("aaaaaaaaaa")));
+        check("足够强度无告警", ShortCode.strengthWarning("nw-open sesame 42") == null
+                && ShortCode.strengthWarning("我的小世界我的小世界啊") == null);
+    }
+
+    private static final String SHORTCODE_HELLO_KEY =
+            "sCu2sU-HTQmIokrDVXvawSvPWG3mt0SNWBlX4ijyayY"; // 独立用 Python hashlib.pbkdf2_hmac 算出
 
     /**
      * 缓存之外的凭证来源（服务器列表里的邀请码）与缓存合并成希望集合：

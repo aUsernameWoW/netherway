@@ -47,6 +47,8 @@ public final class Netherway {
 
     private ModConfig config;
     private ServerAgent serverAgent;
+    /** 短码用的第二个 serve（走默认公共 broker，见 ServerAgent 的参数覆盖构造器）。 */
+    private ServerAgent shortCodeAgent;
 
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
@@ -100,6 +102,13 @@ public final class Netherway {
         cn.ripplecraft.netherway.core.telemetry.TelemetryFlusher.start(telemetry, 60L);
         serverAgent = new ServerAgent(config, telemetry);
         serverAgent.start(server.getFile("netherway").toPath(), port, rendezvousPort);
+        String shortCode = config.serverShortCode();
+        if (!shortCode.isEmpty()) {
+            shortCodeAgent = new ServerAgent(config, null,
+                    cn.ripplecraft.netherway.core.ShortCode.params(shortCode), "[serve:shortcode]");
+            shortCodeAgent.start(server.getFile("netherway").toPath(), port, 0);
+            LOG.info(L10n.tr("shortcode.enabled", cn.ripplecraft.netherway.core.ShortCode.PREFIX));
+        }
     }
 
     /**
@@ -139,6 +148,10 @@ public final class Netherway {
         if (serverAgent != null) {
             serverAgent.stop();
             serverAgent = null;
+        }
+        if (shortCodeAgent != null) {
+            shortCodeAgent.stop();
+            shortCodeAgent = null;
         }
     }
 

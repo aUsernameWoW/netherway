@@ -14,6 +14,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.logging.log4j.LogManager;
@@ -38,13 +39,29 @@ public final class ServerAgentHost {
 
     private final ModConfig config;
     private final ServeTelemetry telemetry;
+    /** 非 null 时替代 {@code server.params}（短码用的第二个 serve）。 */
+    private final Map<String, String> paramsOverride;
+    /** 日志前缀：主 serve 为 {@code [serve]}，短码 serve 为 {@code [serve:shortcode]}。 */
+    private final String logTag;
     private final AtomicBoolean stopping = new AtomicBoolean(false);
 
     private volatile Process process;
     private Thread shutdownHook;
 
     public ServerAgentHost(ModConfig config, QualityObserver quality) {
+        this(config, quality, null, "[serve]");
+    }
+
+    /**
+     * 用一组独立参数起第二个 serve（短码）：它走默认公共 broker、不带内嵌会合点，
+     * 因为 Go 的 Serve 把 broker/STUN 列表写进进程级全局，同一进程无法同时服务
+     * 两套 broker 配置。
+     */
+    public ServerAgentHost(ModConfig config, QualityObserver quality,
+            Map<String, String> paramsOverride, String logTag) {
         this.config = config;
+        this.paramsOverride = paramsOverride;
+        this.logTag = logTag;
         this.telemetry = new ServeTelemetry(quality,
                 QualitySummary.Backend.fromBackendId(config.serverBackendId()));
     }
@@ -85,7 +102,8 @@ public final class ServerAgentHost {
             return;
         }
         try {
-            List<String> cmd = ServeCommand.build(exe, config.serverBackendId(), config.serverParams(), localPort,
+            List<String> cmd = ServeCommand.build(exe, config.serverBackendId(),
+                    paramsOverride != null ? paramsOverride : config.serverParams(), localPort,
                     new ServeCommand.Options()
                             .proxyProtocol(config.serveProxyProtocol())
                             .rendezvousPort(rendezvousPort));
@@ -150,9 +168,9 @@ public final class ServerAgentHost {
                 }
                 telemetry.onLogLine(t);
                 if (t.startsWith(ServeTelemetry.GONC_WARN_MARKER)) {
-                    LOG.warn("[serve] {}", t);
+                    LOG.warn("{} {}", logTag, t);
                 } else {
-                    LOG.info("[serve] {}", t);
+                    LOG.info("{} {}", logTag, t);
                 }
             }
         } catch (IOException ignored) {

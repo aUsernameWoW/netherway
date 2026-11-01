@@ -3,6 +3,7 @@ package cn.ripplecraft.netherway.forge;
 import cn.ripplecraft.netherway.core.Credentials;
 import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.ServeCommand;
+import cn.ripplecraft.netherway.core.ShortCode;
 import cn.ripplecraft.netherway.core.Timings;
 import java.io.File;
 import java.util.ArrayList;
@@ -52,6 +53,8 @@ public final class ModConfig {
     private final String serveProxyProtocol;
     private final boolean serverPreauth;
     private final boolean serverRendezvous;
+    /** 生效的短码（原文，trim 后）；空串 = 关闭。 */
+    private final String serverShortCode;
 
     // ---- client ----
     private final boolean clientEnabled;
@@ -196,6 +199,23 @@ public final class ModConfig {
         serveProxyProtocol = pp;
         serverPreauth = cfg.getBoolean("preauth", "server", true,
                 L10n.tr("cfg.server.preauth"));
+        String shortCode = cfg.getString("shortCode", "server", "",
+                L10n.tr("cfg.server.shortCode")).trim();
+        if (ShortCode.normalize(shortCode).isEmpty()) {
+            shortCode = "";
+        }
+        if (!shortCode.isEmpty() && !serverRunAgent) {
+            // 监听短码玩家的是内置 serve（第二个进程）；没有它就没人听，按关闭处理
+            LOG.warn(L10n.tr("shortcode.needsRunAgent"));
+            shortCode = "";
+        }
+        if (!shortCode.isEmpty() && serverEnabled) {
+            String weak = ShortCode.strengthWarning(shortCode);
+            if (weak != null) {
+                LOG.warn(L10n.tr(weak));
+            }
+        }
+        serverShortCode = shortCode;
         // Forge 默认按字母排序，导致新人先看到 backend/localPort，再在文件末尾
         // 才发现模式开关。把「能否直接用」的四项放在 server 类目最前面。
         // Forge 1.7.10 会把配置里未列出的旧字段/拼错字段追加到传入列表。
@@ -204,7 +224,7 @@ public final class ModConfig {
         cfg.setCategoryPropertyOrder("server", new ArrayList<String>(Arrays.asList(
                 "enabled", "rendezvous", "runAgent", "params",
                 "backend", "localPort", "preauth", "punchTimeoutSeconds",
-                "proxyProtocol")));
+                "proxyProtocol", "shortCode")));
 
         cfg.setCategoryComment("client", L10n.tr("cfg.client.category"));
         clientEnabled = cfg.getBoolean("enabled", "client", true,
@@ -371,6 +391,11 @@ public final class ModConfig {
      */
     public boolean serverRendezvous() {
         return serverRendezvous;
+    }
+
+    /** 服主配置的短码（trim 后原文）；空串 = 未启用。已保证 runAgent=true 才非空。 */
+    public String serverShortCode() {
+        return serverShortCode;
     }
 
     /** 32 位十六进制随机密钥，密码学强度随机源。 */

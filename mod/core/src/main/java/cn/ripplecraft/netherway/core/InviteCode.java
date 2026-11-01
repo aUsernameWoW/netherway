@@ -108,9 +108,14 @@ public final class InviteCode {
     private InviteCode() {
     }
 
-    /** True if the text (trimmed) starts with the invite marker. */
+    /**
+     * True if the text (trimmed) is a self-sufficient entry code: an invite
+     * ({@value #PREFIX}) or a {@link ShortCode}. Short codes ride the same
+     * list-entry path (warm-up scan, routing, no cache, no prefetch), so every
+     * "is this entry a code" caller treats them alike.
+     */
     public static boolean isInviteCode(String text) {
-        return text != null && text.trim().startsWith(PREFIX);
+        return text != null && (text.trim().startsWith(PREFIX) || ShortCode.isShortCode(text));
     }
 
     /**
@@ -169,6 +174,9 @@ public final class InviteCode {
      */
     public static Credentials decode(String text) throws IOException {
         String code = text == null ? "" : text.trim();
+        if (ShortCode.isShortCode(code)) {
+            return ShortCode.decode(code);
+        }
         if (!code.startsWith(PREFIX)) {
             throw new IOException(L10n.tr("invite.badPrefix", PREFIX));
         }
@@ -234,13 +242,17 @@ public final class InviteCode {
      */
     public static ServerCandidates.Address originOf(String text) {
         String code = text == null ? "" : text.trim();
+        if (ShortCode.isShortCode(code)) {
+            return ShortCode.originOf(code);
+        }
         return ServerCandidates.Address.of(ORIGIN_HOST_PREFIX + fingerprint(code),
                 ServerCandidates.DEFAULT_PORT);
     }
 
-    /** True if the credential's origin was synthesised from an invite code. */
+    /** True if the credential's origin was synthesised from an invite or short code. */
     public static boolean isInviteOrigin(Credentials cred) {
-        return cred != null && cred.hasOrigin() && cred.originHost().startsWith(ORIGIN_HOST_PREFIX);
+        return cred != null && cred.hasOrigin()
+                && (cred.originHost().startsWith(ORIGIN_HOST_PREFIX) || ShortCode.isShortOrigin(cred));
     }
 
     /**

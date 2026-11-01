@@ -120,6 +120,34 @@ when the list is too long. Deleting the entry closes its tunnel; invite
 credentials are never written to the client's credential cache, the list
 entry itself is the source.
 
+### Short codes (a memorable, credential-free entry)
+
+If pasting a long invite code is too much to ask of players, give the server
+a **memorable short code** instead, any characters you like:
+
+1. In `netherway.cfg`, category `server`, set `shortCode`, e.g.
+   `S:shortCode=open sesame 42` (needs `runAgent=true`: a second process of
+   the built-in serve listens for short-code players).
+2. Players open "Add Server" and type **`nw-<code>` as the server address**
+   (e.g. `nw-open sesame 42`). The mod resolves it automatically and tries a
+   P2P connection, exactly like an invite code.
+
+The short code is a password: both sides derive the session key from it with
+PBKDF2 and meet through the default public signaling brokers, so no reachable
+Minecraft entry is needed and no credential has to be handed out. Case,
+full-width/half-width forms and surrounding spaces make no difference.
+Admission is still decided by the Minecraft server's whitelist/online-mode.
+Note:
+
+- A short code is a weak secret. Use 8+ varied characters and share it only
+  with your players; the startup log warns when a code is too short or too
+  repetitive.
+- Two servers using the same short code share one rendezvous, so a player may
+  land on the other one ("cross-talk"). Keep your code unique.
+- The existing credentials, prefetch and invite codes are unchanged and can be
+  used alongside. Like invite codes, short codes are never written to the
+  client credential cache; removing the list entry closes its tunnel.
+
 ### PROXY protocol (`server.proxyProtocol`)
 
 Set it to `v2` (or `v1`) and connections arriving through the direct tunnel
@@ -150,7 +178,7 @@ By default, once warm-up succeeds, selecting the original multiplayer entry conn
 
 Set `client.replaceServerEntries` to `false` to keep separate `[P2P直连] <room> (<endpoint>)` entries visible alongside the original entries.
 
-A server-list entry starting with `nw1-` is treated as an invite code (see above); nothing else needs to be configured.
+A server-list entry starting with `nw1-` is treated as an invite code and one starting with `nw-` as a short code (see above); nothing else needs to be configured.
 
 ## Known limitations
 
