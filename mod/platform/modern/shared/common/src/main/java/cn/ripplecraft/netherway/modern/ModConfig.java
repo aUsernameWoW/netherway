@@ -3,11 +3,13 @@ package cn.ripplecraft.netherway.modern;
 import cn.ripplecraft.netherway.core.Credentials;
 import cn.ripplecraft.netherway.core.L10n;
 import cn.ripplecraft.netherway.core.ServeCommand;
+import cn.ripplecraft.netherway.core.ShortCode;
 import cn.ripplecraft.netherway.core.Timings;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -48,6 +50,8 @@ public final class ModConfig {
     private final String serveProxyProtocol;
     private final boolean serverPreauth;
     private final boolean serverRendezvous;
+    /** 生效的短码（原文，trim 后）；空串 = 关闭。 */
+    private final String serverShortCode;
 
     // ---- client ----
     private final boolean clientEnabled;
@@ -172,10 +176,17 @@ public final class ModConfig {
         serveProxyProtocol = pp;
         serverPreauth = cfg.getBoolean("preauth", "server", true,
                 L10n.tr("cfg.server.preauth"));
+        List<String> shortCodeWarnings = new ArrayList<String>();
+        serverShortCode = ShortCode.fromConfig(
+                cfg.getString("shortCode", "server", "", L10n.tr("cfg.server.shortCode")),
+                serverRunAgent, serverEnabled, shortCodeWarnings);
+        for (String warning : shortCodeWarnings) {
+            LOG.warn(warning);
+        }
         cfg.setCategoryPropertyOrder("server", new ArrayList<String>(Arrays.asList(
                 "enabled", "rendezvous", "runAgent", "params",
                 "backend", "localPort", "preauth", "punchTimeoutSeconds",
-                "proxyProtocol")));
+                "proxyProtocol", "shortCode")));
 
         cfg.setCategoryComment("client", L10n.tr("cfg.client.category"));
         clientEnabled = cfg.getBoolean("enabled", "client", true,
@@ -316,6 +327,11 @@ public final class ModConfig {
 
     public boolean serverRendezvous() {
         return serverRendezvous;
+    }
+
+    /** 服主配置的短码（trim 后原文）；空串 = 未启用。已保证 runAgent=true 才非空。 */
+    public String serverShortCode() {
+        return serverShortCode;
     }
 
     /** 32 位十六进制随机密钥，密码学强度随机源。 */

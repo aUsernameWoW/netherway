@@ -1,0 +1,239 @@
+package cn.ripplecraft.netherway.core;
+
+import java.io.IOException;
+import java.nio.charset.Charset;
+import java.security.GeneralSecurityException;
+import java.text.Normalizer;
+import java.util.Base64;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+
+/**
+ * Short codes: a memorable, operator-chosen string that stands for a whole
+ * credential. The operator sets {@code server.shortCode}; a player types
+ * {@code nw-<code>} as the "server address" and the mod does the rest.
+ *
+ * <p>Unlike an {@link InviteCode} the short code carries no data, so both
+ * sides must derive the same credential from the text alone: the session key
+ * is {@code PBKDF2(normalize(code))}, signaling goes through the default
+ * public brokers, the room is fixed. The code is therefore a password — whoever
+ * knows it can reach the Minecraft port through the tunnel (admission stays
+ * with the server's whitelist/online-mode), and two servers sharing one code
+ * share one rendezvous. The slow hash only makes offline guessing of a weak
+ * code from an observed topic more expensive; it cannot make a weak code
+ * strong ({@link #strengthWarning}).
+ *
+ * <p>Client-side identity mirrors invite codes: the credential's origin is the
+ * synthetic {@code short-<12 hex of SHA-256(normalized code)>} so routing,
+ * caching rules and the "which server am I on" bridges need no new concepts.
+ * {@link InviteCode} dispatches to this class for {@value #PREFIX} entries.
+ *
+ * <p>The derivation constants below are a wire contract between client and
+ * server builds; changing any of them silently splits the two.
+ */
+public final class ShortCode {
+
+    /** Leading marker; also how a list entry is recognised as a short code. */
+    public static final String PREFIX = "nw-";
+
+    /** Room name shared by every short-code credential. */
+    public static final String ROOM = "minecraft";
+
+    /** Origin host prefix of a credential that came from a short code. */
+    static final String ORIGIN_HOST_PREFIX = "short-";
+
+    /** Normalized codes shorter than this earn a weakness warning. */
+    static final int MIN_RECOMMENDED_LENGTH = 8;
+
+    private static final String SALT = "netherway-shortcode-v1";
+    private static final int ITERATIONS = 100000;
+    private static final int KEY_BITS = 256;
+    private static final Charset UTF8 = Charset.forName("UTF-8");
+
+    /** Normalized code (prefix stripped) that, with the prefix, is a dotted host[:port]. */
+    private static final Pattern HOST_LIKE =
+            Pattern.compile("[a-z0-9-]+(\\.[a-z0-9-]+)+\\.?(:[0-9]{1,5})?");
+
+    /**
+     * Derived keys by normalized code. The client re-reads the server list
+     * every second on the game thread; PBKDF2 must run once per distinct code,
+     * not once per scan.
+     */
+    private static final Map<String, String> KEY_CACHE = new ConcurrentHashMap<String, String>();
+
+    private ShortCode() {
+    }
+
+    /**
+     * True if the text (trimmed) is {@value #PREFIX} plus at least one character
+     * and does not {@linkplain #looksLikeHost look like a host name} — a real
+     * server such as {@code nw-play.example.com} must keep working as an address.
+     */
+    public static boolean isShortCode(String text) {
+        if (text == null) {
+            return false;
+        }
+        String s = text.trim();
+        return s.length() > PREFIX.length()
+                && s.regionMatches(true, 0, PREFIX, 0, PREFIX.length())
+                && !looksLikeHost(s);
+    }
+
+    /**
+     * True if {@value #PREFIX}{@code <code>} would read as a dotted host name
+     * (optionally with a port), e.g. {@code nw-play.example.com:25565}. Such
+     * entries stay ordinary addresses on the client, so the server must refuse
+     * a code of this shape. Accepts the code with or without the prefix.
+     */
+    public static boolean looksLikeHost(String text) {
+        return HOST_LIKE.matcher(normalize(text)).matches();
+    }
+
+    /**
+     * Canonical form of a code, with or without the prefix: trimmed,
+     * prefix-stripped, NFKC-folded (full-width letters and compatibility forms
+     * collapse), lower-cased. Players mistype case and IMEs emit full-width
+     * characters; none of that may change the derived key.
+     */
+    public static String normalize(String text) {
+        String s = text == null ? "" : text.trim();
+        if (s.regionMatches(true, 0, PREFIX, 0, PREFIX.length())) {
+            s = s.substring(PREFIX.length());
+        }
+        return Normalizer.normalize(s, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT).trim();
+    }
+
+    /** Session key for a code (deterministic; cached per normalized code). */
+    public static String deriveSessionKey(String text) {
+        String code = normalize(text);
+        String key = KEY_CACHE.get(code);
+        if (key == null) {
+            key = pbkdf2(code);
+            KEY_CACHE.put(code, key);
+        }
+        return key;
+    }
+
+    private static String pbkdf2(String code) {
+        try {
+            SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            PBEKeySpec spec = new PBEKeySpec(code.toCharArray(), SALT.getBytes(UTF8),
+                    ITERATIONS, KEY_BITS);
+            byte[] raw = f.generateSecret(spec).getEncoded();
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException(e); // PBKDF2WithHmacSHA256 ships since Java 8
+        }
+    }
+
+    /**
+     * The parameters both ends hand to the gonc-p2p backend for a code. The
+     * server's second serve process takes these verbatim; {@link #decode}
+     * wraps them in a credential.
+     */
+    public static Map<String, String> params(String text) {
+        Map<String, String> p = new LinkedHashMap<String, String>();
+        p.put("sessionKey", deriveSessionKey(text));
+        p.put(Credentials.PARAM_ROOM, ROOM);
+        return p;
+    }
+
+    /**
+     * Credential for a list entry, carrying the synthetic origin
+     * ({@link #originOf}).
+     *
+     * @throws IOException when the text is not a usable short code; the
+     *         message is localized
+     */
+    public static Credentials decode(String text) throws IOException {
+        if (!isShortCode(text)) {
+            throw new IOException(L10n.tr("shortcode.badPrefix", PREFIX));
+        }
+        Credentials cred;
+        try {
+            cred = new Credentials(Credentials.BACKEND_GONC_P2P, params(text), 0);
+        } catch (IllegalArgumentException e) {
+            throw new IOException(L10n.tr("shortcode.badCredentials", e.getMessage()));
+        }
+        ServerCandidates.Address origin = originOf(text);
+        return cred.withOrigin(origin.host, origin.port);
+    }
+
+    /**
+     * The synthetic Minecraft entry a short code stands for on this client:
+     * {@code short-<12 hex of SHA-256(normalized code)>} on the default port.
+     * Stable, derivable from the list entry alone, and does not reveal the key.
+     */
+    public static ServerCandidates.Address originOf(String text) {
+        return InviteCode.syntheticOrigin(ORIGIN_HOST_PREFIX, normalize(text));
+    }
+
+    /**
+     * Resolves {@code server.shortCode} as read from the config file into the
+     * code the server should serve, or {@code ""} when short codes are off.
+     * A code is switched off (with a warning) when it is empty after
+     * normalization, {@linkplain #looksLikeHost looks like a host name}, or
+     * when no built-in serve would listen for it ({@code runAgent=false}).
+     * Strength warnings are only raised when the server side is enabled.
+     *
+     * @param warnings receives localized warnings for the caller to log
+     */
+    public static String fromConfig(String raw, boolean runAgent, boolean serverEnabled,
+                                    List<String> warnings) {
+        String code = raw == null ? "" : raw.trim();
+        if (normalize(code).isEmpty()) {
+            return "";
+        }
+        if (looksLikeHost(code)) {
+            // 客户端把 nw-play.example.com 这类条目当普通地址，这样的短码玩家永远连不上
+            warnings.add(L10n.tr("shortcode.looksLikeHost", code));
+            return "";
+        }
+        if (!runAgent) {
+            // 监听短码玩家的是内置 serve（第二个进程）；没有它就没人听，按关闭处理
+            warnings.add(L10n.tr("shortcode.needsRunAgent"));
+            return "";
+        }
+        if (serverEnabled) {
+            String weak = strengthWarning(code);
+            if (weak != null) {
+                warnings.add(weak);
+            }
+        }
+        return code;
+    }
+
+    /**
+     * Localized warning a code deserves, or null if it looks acceptable: too
+     * short, or built from too few distinct characters (a password anyone can
+     * guess is an open door to the tunnel).
+     */
+    public static String strengthWarning(String text) {
+        String code = normalize(text);
+        if (code.codePointCount(0, code.length()) < MIN_RECOMMENDED_LENGTH) {
+            return L10n.tr("shortcode.weakShort");
+        }
+        if (distinctCodePoints(code) < 4) {
+            return L10n.tr("shortcode.weakRepetitive");
+        }
+        return null;
+    }
+
+    private static int distinctCodePoints(String s) {
+        Set<Integer> seen = new HashSet<Integer>();
+        for (int i = 0; i < s.length(); ) {
+            int cp = s.codePointAt(i);
+            seen.add(cp);
+            i += Character.charCount(cp);
+        }
+        return seen.size();
+    }
+}

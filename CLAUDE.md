@@ -132,6 +132,10 @@ Go agent 与 Java mod 通过 **stdout 上的逐行 JSON** 通信，这是两者�
 - 邀请码格式（`InviteCode`：前缀 `nw1-`、backend/键编码表、字典）是
   服务端 mod ↔ 客户端 mod 之间的 Java↔Java 契约，append-only，由 SelfTest
   钉住往返与拒绝路径。
+- 短码派生（`ShortCode`：前缀 `nw-`、规范化 trim+去前缀+NFKC+小写、
+  PBKDF2WithHmacSHA256 / 盐 `netherway-shortcode-v1` / 100000 次 / 256 位、
+  房间 `minecraft`、形如域名的判定）同样是服务端 ↔ 客户端的 Java↔Java 契约：
+  任何一项改动都会让新旧版本互相连不上，SelfTest 用固定向量钉住。
 
 agent 的 stderr 是诊断通道：backend 的参数快照、被忽略的未知键、gonc 的
 打洞过程日志都会回显到这里，mod 逐行转进游戏日志（`bridge.debug`）。
@@ -410,6 +414,29 @@ ServerData 所以切换后仍在」是错的）——所以 `connectTo` 在清�
   ——缓存一份副本会让删掉条目后隧道仍活着。
 - 刻意不做：直连（Direct Connect）按钮里粘邀请码（没预热就没隧道，走原版
   失败即可）、邀请码携带 MC 入口（有入口就直接填地址）。
+
+### 短码（2026-11-01 起）
+
+邀请码太长记不住；短码是服主在 `server.shortCode` 里自定的易记字符串，玩家在
+服务器地址栏填 `nw-<短码>`：
+
+- **短码即密码**：短码不携带数据，两侧各自从码文推出同一份凭证——
+  `sessionKey = PBKDF2(normalize(码))`、默认公共 broker/STUN、固定房间。猜中
+  短码就能经隧道摸到 MC 端口（准入仍归白名单/正版验证）；两台服务器用同一短码
+  会共用会合点而串台——文档与启动告警（不足 8 字符、字符种类过少）提示，不做
+  技术拦截。慢哈希只抬高「从观察到的 topic 离线猜弱码」的成本。
+- **服务端多起一个内置 serve**：gonc 的 broker/STUN 列表是进程级全局量，
+  主 serve 可能用内嵌会合点（`origin` 占位），无法在同一进程里再挂一个走公共
+  broker 的 key。于是三处启动器（forge ×2 `Netherway`、modern `ServerRuntime`，
+  bukkit 复用）在主 agent 之后再起一个 `ServerAgent`（参数覆盖为短码派生值、
+  `rendezvousPort=0`、日志标签 `[serve:shortcode]`）。要求 `runAgent=true`。
+- **客户端零新概念**：`InviteCode.isInviteCode/decode/originOf/isInviteOrigin`
+  遇到 `nw-` 条目分派给 `ShortCode`，origin 合成为 `short-<12 hex>`，其余（
+  `InviteEntries` 轮询、路由、跳过落盘）沿用邀请码路径。`nw1-` 与 `nw-` 互不为
+  前缀。
+- **与域名的歧义**：`nw-play.example.com(:端口)` 这种「去掉前缀后只含字母数字
+  连字符且带点」的条目仍按普通地址处理（`ShortCode.looksLikeHost`）；服务端
+  遇到这种形状的短码直接禁用并 warn，因为客户端永远不会把它当短码。
 
 ### 就绪判断靠主动探测
 

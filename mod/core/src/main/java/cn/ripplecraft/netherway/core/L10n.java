@@ -1141,11 +1141,35 @@ public final class L10n {
                 "A server-list entry looks like an invite code but could not be read: {0}",
                 "服务器列表里有一条像邀请码的条目但无法解读: {0}");
         def("invite.found",
-                "Invite code in the server list: warming up room {0} as {1}",
-                "服务器列表里发现邀请码：按 {1} 为房间 {0} 预热");
+                "Invite or short code in the server list: warming up room {0} as {1}",
+                "服务器列表里发现邀请码/短码：按 {1} 为房间 {0} 预热");
         def("invite.gone",
-                "Invite code entry {0} was removed from the server list; its tunnel will be closed",
-                "邀请码条目 {0} 已从服务器列表移除，对应隧道将关闭");
+                "Invite or short code entry {0} was removed from the server list; its tunnel will be closed",
+                "邀请码/短码条目 {0} 已从服务器列表移除，对应隧道将关闭");
+        def("shortcode.badPrefix",
+                "not a short code (expected the {0} prefix followed by the code)",
+                "不是短码（应为 {0} 加短码）");
+        def("shortcode.badCredentials",
+                "the short code does not describe a usable credential: {0}",
+                "短码无法生成可用凭证: {0}");
+        def("shortcode.weakShort",
+                "server.shortCode is shorter than 8 characters; anyone who guesses it can reach this server through the tunnel (the whitelist still applies). Use a longer code",
+                "server.shortCode 不足 8 个字符；任何人猜中它都能经隧道连到本服务器（白名单仍然生效）。建议使用更长的短码");
+        def("shortcode.weakRepetitive",
+                "server.shortCode uses too few distinct characters and is easy to guess; use a more varied code",
+                "server.shortCode 用到的不同字符太少，容易被猜中；建议使用更丰富的短码");
+        def("shortcode.enabled",
+                "Short code enabled: players can enter {0}<code> as the server address. Keep the code private to your players; another server using the same code would share this rendezvous",
+                "短码已启用：玩家在服务器地址栏填写 {0}<短码> 即可直连。请只告诉你的玩家；另一台服务器若使用同一短码，会与本服共用会合点");
+        def("shortcode.looksLikeHost",
+                "server.shortCode {0} looks like a host name (letters, digits and dots only); clients keep treating such entries as ordinary addresses, so the short code is disabled. Use a code with a space or other character, or without dots",
+                "server.shortCode {0} 形如域名（只含字母、数字和点）；客户端会把这类条目当作普通地址，因此短码被禁用。请换一个含空格等其他字符、或不含点的短码");
+        def("shortcode.needsRunAgent",
+                "server.shortCode is set but server.runAgent=false: the built-in serve is what listens for short-code players, so the short code is disabled",
+                "设置了 server.shortCode 但 server.runAgent=false：监听短码玩家的是内置 serve，因此短码被禁用");
+        def("cfg.server.shortCode",
+                "Short code (optional; empty = off). Players enter nw-<code> as the server address and connect over P2P without any credential. The code is a password: use 8+ varied characters and share it only with your players. Needs runAgent=true. Case-insensitive",
+                "短码（可选，留空 = 关闭）。玩家在服务器地址栏填写 nw-<短码> 即可 P2P 直连，无需任何凭证。短码即密码：请使用 8 个以上、字符丰富的短码，只告诉你的玩家。需要 runAgent=true。不区分大小写");
         def("upgrade.skipCacheInvite",
                 "Credentials for room {0} came from an invite-code entry; not cached (the list entry is the source)",
                 "房间 {0} 的凭证来自邀请码条目，不写缓存（列表条目本身就是来源）");

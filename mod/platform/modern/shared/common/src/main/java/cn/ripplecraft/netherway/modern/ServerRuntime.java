@@ -3,6 +3,7 @@ package cn.ripplecraft.netherway.modern;
 import cn.ripplecraft.netherway.core.Credentials;
 import cn.ripplecraft.netherway.core.InviteCode;
 import cn.ripplecraft.netherway.core.L10n;
+import cn.ripplecraft.netherway.core.ShortCode;
 import cn.ripplecraft.netherway.core.PreauthService;
 import cn.ripplecraft.netherway.core.telemetry.TelemetryCollector;
 import cn.ripplecraft.netherway.core.telemetry.TelemetryEnvironment;
@@ -30,6 +31,8 @@ public final class ServerRuntime {
     private final TelemetryWiring telemetryWiring;
     private final SnifferCore.AddressRewriter addressRewriter;
     private ServerAgentHost agent;
+    /** 短码用的第二个 serve（走默认公共 broker，见 ServerAgentHost 的参数覆盖构造器）。 */
+    private ServerAgentHost shortCodeAgent;
 
     /**
      * @param addressRewriter platform hook for the PROXY-protocol address
@@ -79,6 +82,12 @@ public final class ServerRuntime {
         TelemetryFlusher.start(telemetry, 60L);
         agent = new ServerAgentHost(config, telemetry);
         agent.start(workDir, port, rendezvousPort);
+        String shortCode = config.serverShortCode();
+        if (!shortCode.isEmpty()) {
+            shortCodeAgent = ServerAgentHost.forShortCode(config, shortCode);
+            shortCodeAgent.start(workDir, port, 0);
+            LOG.info(L10n.tr("shortcode.enabled", ShortCode.PREFIX));
+        }
     }
 
     public void onServerStopping() {
@@ -86,6 +95,10 @@ public final class ServerRuntime {
         if (agent != null) {
             agent.stop();
             agent = null;
+        }
+        if (shortCodeAgent != null) {
+            shortCodeAgent.stop();
+            shortCodeAgent = null;
         }
     }
 
