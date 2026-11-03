@@ -56,8 +56,9 @@ public final class Netherway {
         config = ModConfig.loadSafely(event.getSuggestedConfigurationFile());
         FMLEventChannel channel = NetworkRegistry.INSTANCE.newEventDrivenChannel(CHANNEL);
 
-        // 服务端半边。客户端上它也在（省一个 proxy 分支），但只有真正启动
-        // 服务端生命周期后才会工作；单纯启动客户端、浏览服务器列表不会起 serve。
+        // 服务端半边。客户端上它也在（省一个 proxy 分支），但只在专用服务器上
+        // 工作：单人游戏的内置服务器同样跑完服务端生命周期，由 serverStarted 与
+        // CredentialSender 按物理端跳过（上游 issue #28）。
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(new CredentialSender(channel, config));
         channel.register(new UpgradeReportReceiver(config));
         logServerConfig(config);
@@ -69,7 +70,10 @@ public final class Netherway {
     /** 服务器就绪后挂嗅探器、启动内置 serve：此时监听端点与端口都已确定。 */
     @Mod.EventHandler
     public void serverStarted(FMLServerStartedEvent event) {
-        if (!config.serverEnabled()) {
+        // 单人游戏的内置服务器跑在物理客户端上：既没有对外的 MC 端口可供直连，
+        // 客户端 jar 里也没有 @SideOnly(SERVER) 的 getServerPort（调用即
+        // NoSuchMethodError，上游 issue #28）。服务端角色只在专用服务器上启用。
+        if (!config.serverEnabled() || FMLCommonHandler.instance().getSide().isClient()) {
             return;
         }
         // 预认证与剥头共用一个嗅探 handler（它们抢的是同一批首字节）。
