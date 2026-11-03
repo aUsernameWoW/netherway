@@ -1,6 +1,5 @@
 package cn.ripplecraft.netherway.modern;
 
-import cn.ripplecraft.netherway.modern.mixin.ConnectionAddressAccessor;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import java.net.InetSocketAddress;

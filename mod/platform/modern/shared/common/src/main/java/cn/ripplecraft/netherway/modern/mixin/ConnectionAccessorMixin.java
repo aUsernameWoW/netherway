@@ -1,5 +1,6 @@
 package cn.ripplecraft.netherway.modern.mixin;
 
+import cn.ripplecraft.netherway.modern.ConnectionAddressAccessor;
 import java.net.SocketAddress;
 import net.minecraft.network.Connection;
 import org.spongepowered.asm.mixin.Mixin;

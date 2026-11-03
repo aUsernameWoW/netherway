@@ -381,6 +381,24 @@ jobs:
             sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
             echo "flag=-PmodVersion=${sha:0:7}" >> "$GITHUB_OUTPUT"
           fi
+      # Mixin 拒绝加载 mixin 包里的任何非 @Mixin 类（IllegalClassLoadError），
+      # 而 CI 从不启动 jar，编译期看不出来：2.0.1 及以前的 duck interface 就
+      # 放错了包，所有 modern jar 一启动就崩。这里逐个 mixins.json 钉住。
+      - name: mixin 包里只许有 @Mixin 类
+        shell: bash
+        run: |
+          bad=0
+          for cfg in $(find mod/platform/modern -name '*.mixins.json' -path '*/src/main/resources/*'); do
+            pkg=$(sed -n 's/.*"package": *"\([^"]*\)".*/\1/p' "$cfg")
+            dir=$(printf '%s' "$pkg" | tr . /)
+            while IFS= read -r f; do
+              if ! grep -q '@Mixin' "$f"; then
+                echo "::error file=$f::$f 在 $cfg 声明的 mixin 包 $pkg 里却不是 @Mixin 类"
+                bad=1
+              fi
+            done < <(find mod/platform/modern -path "*/src/main/java/$dir/*.java")
+          done
+          exit $bad
       - name: Gradle build
         working-directory: mod/platform/modern/${{ matrix.mc }}
         run: >-
