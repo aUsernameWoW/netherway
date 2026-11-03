@@ -6,6 +6,7 @@ import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.PlayerEvent;
 import cpw.mods.fml.common.network.FMLEventChannel;
 import cpw.mods.fml.common.network.internal.FMLProxyPacket;
+import cpw.mods.fml.common.FMLCommonHandler;
 import io.netty.buffer.Unpooled;
 import net.minecraft.entity.player.EntityPlayerMP;
 import org.apache.logging.log4j.LogManager;
@@ -42,7 +43,10 @@ public final class CredentialSender {
 
     @SubscribeEvent
     public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
-        if (!config.serverEnabled() || !(event.player instanceof EntityPlayerMP)) {
+        // 单人游戏的内置服务器不起 serve（见 Netherway.serverStarted），下发凭证只会让
+        // 客户端对着一个不存在的会合点打洞。
+        if (!config.serverEnabled() || FMLCommonHandler.instance().getSide().isClient()
+                || !(event.player instanceof EntityPlayerMP)) {
             return;
         }
         Credentials cred = config.serverCredentials();

@@ -69,7 +69,10 @@ public final class Netherway {
     /** 服务器就绪后挂嗅探器、启动内置 serve：此时监听端点与端口都已确定。 */
     @Mod.EventHandler
     public void serverStarted(FMLServerStartedEvent event) {
-        if (!config.serverEnabled()) {
+        // 单人游戏的内置服务器跑在物理客户端上：既没有对外的 MC 端口可供直连，
+        // 客户端 jar 里也没有 @SideOnly(SERVER) 的 getServerPort（调用即
+        // NoSuchMethodError，上游 issue #28）。服务端角色只在专用服务器上启用。
+        if (!config.serverEnabled() || FMLCommonHandler.instance().getSide().isClient()) {
             return;
         }
         // 预认证与剥头共用一个嗅探 handler（它们抢的是同一批首字节）。
