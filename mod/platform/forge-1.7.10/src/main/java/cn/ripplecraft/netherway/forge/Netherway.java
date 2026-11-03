@@ -56,8 +56,9 @@ public final class Netherway {
         config = ModConfig.loadSafely(event.getSuggestedConfigurationFile());
         FMLEventChannel channel = NetworkRegistry.INSTANCE.newEventDrivenChannel(CHANNEL);
 
-        // 服务端半边。客户端上它也在（省一个 proxy 分支），但只有真正启动
-        // 服务端生命周期后才会工作；单纯启动客户端、浏览服务器列表不会起 serve。
+        // 服务端半边。客户端上它也在（省一个 proxy 分支），但只在专用服务器上
+        // 工作：单人游戏的内置服务器同样跑完服务端生命周期，由 serverStarted 与
+        // CredentialSender 按物理端跳过（上游 issue #28）。
         FMLCommonHandler.instance().bus().register(new CredentialSender(channel, config));
         channel.register(new UpgradeReportReceiver(config));
         logServerConfig(config);
